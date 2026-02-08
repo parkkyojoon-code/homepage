@@ -35,6 +35,7 @@ export default function Header() {
   }
 
   const menuItems = [
+    { label: "홈", href: "/" },
     { label: "클래스", href: "/classes" },
     { label: "강사 라인업", href: "/instructors" },
     { label: "합격후기", href: "/success" },
