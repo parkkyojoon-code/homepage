@@ -81,9 +81,21 @@ export async function POST(request: NextRequest) {
     }
 
     let sheetSuccess = false
+    let sheetErrorMessage = ''
+
+    // 환경변수 확인
+    const serviceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+    console.log('=== 구글 시트 연동 디버깅 ===')
+    console.log('GOOGLE_SHEET_ID:', GOOGLE_SHEET_ID)
+    console.log('GOOGLE_SERVICE_ACCOUNT_JSON 존재:', !!serviceAccountJson)
+    console.log('JSON 길이:', serviceAccountJson?.length || 0)
 
     // 구글 시트에 데이터 추가 (알림톡은 Python apply_checker.py가 발송)
     try {
+      if (!serviceAccountJson || serviceAccountJson === '{}') {
+        throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON 환경변수가 설정되지 않았습니다')
+      }
+
       const sheets = await getGoogleSheetsClient()
       
       // 새 행 데이터 (A~P 컬럼) - 구글폼 형식에 맞춤
@@ -107,6 +119,8 @@ export async function POST(request: NextRequest) {
         ''                                                         // P: 청구서 ID
       ]
 
+      console.log('구글 시트 API 호출 시도...')
+      
       await sheets.spreadsheets.values.append({
         spreadsheetId: GOOGLE_SHEET_ID,
         range: `${SHEET_NAME}!A:P`,
@@ -116,15 +130,22 @@ export async function POST(request: NextRequest) {
         }
       })
       
+      console.log('구글 시트 저장 성공!')
       sheetSuccess = true
-    } catch (sheetError) {
-      console.error('구글 시트 저장 오류:', sheetError)
+    } catch (sheetError: any) {
+      sheetErrorMessage = sheetError?.message || String(sheetError)
+      console.error('=== 구글 시트 저장 오류 ===')
+      console.error('에러 메시지:', sheetErrorMessage)
+      console.error('전체 에러:', sheetError)
     }
 
-    // 개발 환경에서는 시트 연동 없이도 성공 처리
-    if (!sheetSuccess && process.env.NODE_ENV === 'development') {
-      console.log('개발 모드: 구글 시트 연동 스킵')
-      sheetSuccess = true
+    // 개발 환경에서도 에러 메시지 표시
+    if (!sheetSuccess) {
+      console.log('구글 시트 연동 실패:', sheetErrorMessage)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('개발 모드: 성공 처리로 변경')
+        sheetSuccess = true
+      }
     }
 
     if (sheetSuccess) {
