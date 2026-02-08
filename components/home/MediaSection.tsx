@@ -386,7 +386,7 @@ export default function MediaSection() {
 
           {/* YouTube 채널 */}
           <motion.a
-            href="https://youtube.com/@parkmath"
+            href="https://www.youtube.com/@수학천재박교준"
             target="_blank"
             rel="noopener noreferrer"
             whileHover={{ scale: 1.05, y: -2 }}

@@ -78,7 +78,7 @@ export default function Footer() {
               gap: '0.75rem'
             }}>
               <a
-                href="https://youtube.com/@parkmath"
+                href="https://www.youtube.com/@수학천재박교준"
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
