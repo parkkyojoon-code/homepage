@@ -702,13 +702,12 @@ export default function ClassesPage() {
   // 메모이제이션된 필터링 및 검색
   const filteredClasses = useMemo(() => {
     return classesData.filter(cls => {
-      const matchType = cls.type === classType
       const matchCategory = selectedCategory === "all" || cls.category === selectedCategory
       const matchSearch = cls.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           cls.description.toLowerCase().includes(searchQuery.toLowerCase())
-      return matchType && matchCategory && matchSearch
+      return matchCategory && matchSearch
     })
-  }, [classType, selectedCategory, searchQuery])
+  }, [selectedCategory, searchQuery])
 
   // 메모이제이션된 정렬
   const sortedClasses = useMemo(() => {
