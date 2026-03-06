@@ -70,7 +70,7 @@ export default function FinalCTA() {
           }}>
             {/* Kakao Consultation */}
             <motion.a
-              href="https://pf.kakao.com/_xnxaxmxj"
+              href="http://pf.kakao.com/_YFDjn/chat"
               target="_blank"
               rel="noopener noreferrer"
               whileHover={{ y: -4 }}

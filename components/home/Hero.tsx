@@ -221,7 +221,7 @@ export default function Hero() {
           >
             {/* 수업 상담하기 - 카카오채널 연결 */}
             <a 
-              href="http://pf.kakao.com/_YFDjn" 
+              href="http://pf.kakao.com/_YFDjn/chat" 
               target="_blank"
               rel="noopener noreferrer"
               style={{ textDecoration: 'none', width: isMobile ? '100%' : 'auto', maxWidth: isMobile ? '280px' : 'none' }}

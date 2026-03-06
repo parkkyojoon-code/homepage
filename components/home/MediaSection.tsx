@@ -359,7 +359,7 @@ export default function MediaSection() {
         >
           {/* 수업 상담하기 (카카오채널) */}
           <motion.a
-            href="http://pf.kakao.com/_YFDjn"
+            href="http://pf.kakao.com/_YFDjn/chat"
             target="_blank"
             rel="noopener noreferrer"
             whileHover={{ scale: 1.05, y: -2 }}

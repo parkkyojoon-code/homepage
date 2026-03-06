@@ -140,7 +140,7 @@ export default function InstructorIntro2() {
               background: '#0A0A0A'
             }}>
               <Image
-                src="/instructor.png"
+                src="/images/parkkyojoon.jpeg"
                 alt="박교준"
                 fill
                 style={{

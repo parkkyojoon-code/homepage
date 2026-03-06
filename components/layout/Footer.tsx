@@ -1,8 +1,7 @@
 "use client"
 
-import { Youtube, MapPin, ArrowUpRight, MessageCircle } from "lucide-react"
+import { Youtube, ArrowUpRight, MessageCircle, Mail } from "lucide-react"
 import Link from "next/link"
-import Image from "next/image"
 
 export default function Footer() {
   return (
@@ -49,36 +48,34 @@ export default function Footer() {
         }}>
           {/* Company Info */}
           <div>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              marginBottom: '1.5rem'
-            }}>
-              <Image 
-                src="/logo.png" 
-                alt="박교준 입시연구소" 
-                width={120}
-                height={40}
-                style={{ objectFit: 'contain' }}
-              />
-            </div>
-            <p style={{
-              fontSize: '0.9rem',
-              color: '#808080',
+            <h3 style={{
+              fontWeight: '700',
+              color: '#FFFFFF',
               marginBottom: '1.5rem',
-              lineHeight: 1.6,
+              fontSize: '1.1rem',
               letterSpacing: '-0.01em'
             }}>
-              대치동 최고의<br />
-              수학 교육 전문 기관
-            </p>
+              박교준 수리논술
+            </h3>
+            <div style={{
+              fontSize: '0.85rem',
+              color: '#808080',
+              lineHeight: 1.8,
+              letterSpacing: '-0.01em'
+            }}>
+              <p style={{ marginBottom: '0.5rem' }}>상호명: 박교준 입시연구소</p>
+              <p style={{ marginBottom: '0.5rem' }}>사업자번호: 255-97-01477</p>
+              <p style={{ marginBottom: '0.5rem' }}>대표자명: 박교준</p>
+              <p style={{ marginBottom: '0.5rem' }}>주소: 인천광역시 연수구 해돋이로 120번길 23, 6층 608호 (송도동, 아크리아 빌딩2)</p>
+              <p>이메일: parkkyojoon@gmail.com</p>
+            </div>
             <div style={{
               display: 'flex',
-              gap: '0.75rem'
+              gap: '0.75rem',
+              marginTop: '1.5rem'
             }}>
               <a
-                href="https://www.youtube.com/@수학천재박교준"
+                href="https://youtube.com/channel/UCBM-oZPd4yv9TYrv5QN7-Wg?si=0hVIWOq14It047bO"
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
@@ -106,6 +103,35 @@ export default function Footer() {
               >
                 <Youtube size={18} style={{ color: '#FF0000' }} />
               </a>
+              <a
+                href="http://pf.kakao.com/_YFDjn/chat"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  background: 'rgba(254, 229, 0, 0.1)',
+                  border: '1px solid rgba(254, 229, 0, 0.2)',
+                  borderRadius: '10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.3s',
+                  cursor: 'pointer'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(254, 229, 0, 0.2)';
+                  e.currentTarget.style.borderColor = 'rgba(254, 229, 0, 0.4)';
+                  e.currentTarget.style.transform = 'translateY(-2px)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(254, 229, 0, 0.1)';
+                  e.currentTarget.style.borderColor = 'rgba(254, 229, 0, 0.2)';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                }}
+              >
+                <MessageCircle size={18} style={{ color: '#FEE500' }} />
+              </a>
             </div>
           </div>
 
@@ -129,10 +155,8 @@ export default function Footer() {
               gap: '0.75rem'
             }}>
               {[
-                { href: '/classes', label: '클래스' },
-                { href: '/instructors', label: '강사 라인업' },
-                { href: '/#reviews', label: '합격 후기' },
-                { href: '/#contact', label: '문의' }
+                { href: '/curriculum', label: '커리큘럼' },
+                { href: '/classes', label: '수업 신청' }
               ].map((link) => (
                 <li key={link.href}>
                   <Link
@@ -183,30 +207,6 @@ export default function Footer() {
             }}>
               <li>
                 <Link
-                  href="/classes?category=수능수학"
-                  style={{
-                    color: '#808080',
-                    textDecoration: 'none',
-                    fontSize: '0.9rem',
-                    transition: 'all 0.2s',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.25rem'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = '#0099FF';
-                    e.currentTarget.style.transform = 'translateX(3px)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = '#808080';
-                    e.currentTarget.style.transform = 'translateX(0)';
-                  }}
-                >
-                  수능수학 완성반
-                </Link>
-              </li>
-              <li>
-                <Link
                   href="/classes?category=수리논술"
                   style={{
                     color: '#808080',
@@ -226,26 +226,32 @@ export default function Footer() {
                     e.currentTarget.style.transform = 'translateX(0)';
                   }}
                 >
-                  수리논술 집중반
+                  수리논술
                 </Link>
               </li>
               <li>
-                <span style={{
-                  color: '#505050',
-                  fontSize: '0.9rem',
-                  cursor: 'default'
-                }}>
-                  의대반 특별반
-                </span>
-              </li>
-              <li>
-                <span style={{
-                  color: '#505050',
-                  fontSize: '0.9rem',
-                  cursor: 'default'
-                }}>
-                  1:1 맞춤 과외
-                </span>
+                <Link
+                  href="/classes?category=수능수학"
+                  style={{
+                    color: '#808080',
+                    textDecoration: 'none',
+                    fontSize: '0.9rem',
+                    transition: 'all 0.2s',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.25rem'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = '#0099FF';
+                    e.currentTarget.style.transform = 'translateX(3px)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = '#808080';
+                    e.currentTarget.style.transform = 'translateX(0)';
+                  }}
+                >
+                  수능수학
+                </Link>
               </li>
             </ul>
           </div>
@@ -269,13 +275,9 @@ export default function Footer() {
               flexDirection: 'column',
               gap: '1rem'
             }}>
-              <li style={{
-                display: 'flex',
-                alignItems: 'start',
-                gap: '0.75rem'
-              }}>
+              <li>
                 <a
-                  href="http://pf.kakao.com/_YFDjn"
+                  href="http://pf.kakao.com/_YFDjn/chat"
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{
@@ -330,15 +332,14 @@ export default function Footer() {
                   flexShrink: 0,
                   marginTop: '2px'
                 }}>
-                  <MapPin size={14} style={{ color: '#0099FF' }} />
+                  <Mail size={14} style={{ color: '#0099FF' }} />
                 </div>
                 <span style={{
                   fontSize: '0.9rem',
                   color: '#808080',
                   lineHeight: 1.5
                 }}>
-                  서울특별시 강남구 언주로 313<br />
-                  2층 205호
+                  parkkyojoon@gmail.com
                 </span>
               </li>
             </ul>
@@ -362,7 +363,7 @@ export default function Footer() {
               fontSize: '0.85rem',
               color: '#606060'
             }}>
-              © 2024 박교준 입시연구소. All rights reserved.
+              © 2025 박교준 입시연구소. All rights reserved.
             </p>
             <div style={{
               display: 'flex',
@@ -370,7 +371,25 @@ export default function Footer() {
               fontSize: '0.85rem'
             }}>
               <Link
+                href="/terms"
+                target="_blank"
+                style={{
+                  color: '#606060',
+                  textDecoration: 'none',
+                  transition: 'color 0.2s'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = '#0099FF';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = '#606060';
+                }}
+              >
+                이용약관(환불정책 포함)
+              </Link>
+              <Link
                 href="/privacy"
+                target="_blank"
                 style={{
                   color: '#606060',
                   textDecoration: 'none',

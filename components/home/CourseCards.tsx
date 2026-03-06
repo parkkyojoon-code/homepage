@@ -847,7 +847,7 @@ export default function CourseCards() {
                 transition={{ delay: 0.5, duration: 0.6 }}
                 whileHover={{ y: -2 }}
                 whileTap={{ scale: 0.98 }}
-                onClick={() => window.open('https://pf.kakao.com/_xnxaxmxj', '_blank')}
+                onClick={() => window.open('http://pf.kakao.com/_YFDjn/chat', '_blank')}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
