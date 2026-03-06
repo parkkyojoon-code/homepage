@@ -472,6 +472,7 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
         }} />
 
         <div style={{ position: 'relative', zIndex: 1 }}>
+          {classDetail.classType === 'live' && (
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -498,6 +499,7 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
               LIVE
             </span>
           </motion.div>
+          )}
 
           <h2 style={{
             fontSize: '1.4rem',
@@ -1429,12 +1431,12 @@ export default function ClassDetailPage() {
                     <div style={{ marginBottom: '20px' }}>
                       <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '12px', color: '#FFFFFF' }}>기준 금액</h4>
                       <ul style={{ paddingLeft: '20px', fontSize: '0.95rem', lineHeight: '1.8', color: 'rgba(255, 255, 255, 0.8)' }}>
-                        <li>박교준 수리논술 온라인 정규 과정 (4주): ₩360,000</li>
-                        <li>박교준 수리논술 온라인 정규 주 2회 과정 (4주): ₩578,000</li>
-                        <li>박교준 수리논술 온라인 정규 주 3회 과정｜12주 코스 (4주): ₩650,000</li>
+                        <li>박교준 수리논술 온라인 정규 과정 (4주): ₩400,000</li>
+                        <li>박교준 수리논술 온라인 정규 주 2회 과정 (4주): ₩600,000</li>
+                        <li>박교준 수리논술 온라인 정규 주 3회 과정｜12주 코스 (4주): ₩800,000</li>
                         <li>박교준 수리논술 오프라인 과정 (4주): ₩800,000</li>
                         <li>박교준 수능 수학 추월반 패스 (4주): ₩300,000</li>
-                        <li>박교준 수능 수학 단과 과정 (4주): ₩200,000</li>
+                        <li>박교준 수능 수학 단과 과정 (4주): ₩280,000</li>
                       </ul>
                     </div>
 
