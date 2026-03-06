@@ -11,7 +11,7 @@
   "dependencies": {
     "react": "^18",
     "react-dom": "^18",
-    "next": "14.2.5",
+    "next": "14.2.35",
     "framer-motion": "^11.0.0",
     "lucide-react": "^0.300.0",
     "clsx": "^2.0.0",
@@ -26,6 +26,6 @@
     "postcss": "^8.4.27",
     "tailwindcss": "^3.4.0",
     "eslint": "^8",
-    "eslint-config-next": "14.2.5"
+    "eslint-config-next": "14.2.35"
   }
 }
