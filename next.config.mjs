@@ -1,3 +1,5 @@
+
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   eslint: {
@@ -8,4 +10,4 @@ const nextConfig = {
   },
 };
 
-export default nextConfig;S
+export default nextConfig;
