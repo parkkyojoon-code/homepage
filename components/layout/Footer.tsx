@@ -411,37 +411,75 @@ export default function Footer() {
           </div>
         </div>
 
-        {/* Scroll to Top Button */}
-        <button
-          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          style={{
-            position: 'fixed',
-            bottom: '2rem',
-            right: '2rem',
-            width: '50px',
-            height: '50px',
-            background: 'linear-gradient(135deg, #0066FF 0%, #0099FF 100%)',
-            border: 'none',
-            borderRadius: '50%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            boxShadow: '0 4px 20px rgba(0, 102, 255, 0.5)',
-            transition: 'all 0.3s',
-            zIndex: 1000
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.transform = 'translateY(-3px)';
-            e.currentTarget.style.boxShadow = '0 6px 30px rgba(0, 102, 255, 0.7)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.transform = 'translateY(0)';
-            e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 102, 255, 0.5)';
-          }}
-        >
-          <ArrowUpRight size={24} style={{ color: '#FFFFFF' }} />
-        </button>
+        {/* Floating Buttons */}
+        <div style={{
+          position: 'fixed',
+          bottom: '2rem',
+          right: '2rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem',
+          zIndex: 1000
+        }}>
+          {/* KakaoTalk Button */}
+          <a
+            href="http://pf.kakao.com/_YFDjn/chat"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              width: '50px',
+              height: '50px',
+              background: '#FEE500',
+              border: 'none',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 4px 20px rgba(254, 229, 0, 0.5)',
+              transition: 'all 0.3s',
+              textDecoration: 'none'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'translateY(-3px)';
+              e.currentTarget.style.boxShadow = '0 6px 30px rgba(254, 229, 0, 0.7)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0)';
+              e.currentTarget.style.boxShadow = '0 4px 20px rgba(254, 229, 0, 0.5)';
+            }}
+          >
+            <MessageCircle size={22} style={{ color: '#000000' }} />
+          </a>
+
+          {/* Scroll to Top Button */}
+          <button
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            style={{
+              width: '50px',
+              height: '50px',
+              background: 'linear-gradient(135deg, #0066FF 0%, #0099FF 100%)',
+              border: 'none',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              boxShadow: '0 4px 20px rgba(0, 102, 255, 0.5)',
+              transition: 'all 0.3s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'translateY(-3px)';
+              e.currentTarget.style.boxShadow = '0 6px 30px rgba(0, 102, 255, 0.7)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0)';
+              e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 102, 255, 0.5)';
+            }}
+          >
+            <ArrowUpRight size={24} style={{ color: '#FFFFFF' }} />
+          </button>
+        </div>
       </div>
     </footer>
   )
