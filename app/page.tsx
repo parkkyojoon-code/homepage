@@ -4,13 +4,14 @@ import Stats from "@/components/home/Stats"
 import TargetAudience from "@/components/home/TargetAudience"
 import TypingEffect from "@/components/home/TypingEffect"
 import ReviewScroll from "@/components/home/ReviewScroll"
+import InstructorIntro2 from "@/components/home/InstructorIntro2"
 import WhyParkGyoJun from "@/components/home/WhyParkGyoJun"
 import ManagementSystem from "@/components/home/ManagementSystem"
-import CourseConsultation from "@/components/home/CourseConsultation"
+import SuccessStories from "@/components/home/SuccessStories"
+import InstructorIntro from "@/components/home/InstructorIntro"
+import Curriculum from "@/components/home/Curriculum"
 import MediaSection from "@/components/home/MediaSection"
-import FAQ from "@/components/home/FAQ"
 import FinalCTA from "@/components/home/FinalCTA"
-import Footer from "@/components/layout/Footer"
 import NotificationSystem from "@/components/NotificationSystem"
 
 export default function Home() {
@@ -21,14 +22,14 @@ export default function Home() {
       <TargetAudience />
       <TypingEffect />
       <ReviewScroll />
+      <InstructorIntro2 />
       <WhyParkGyoJun />
       <ManagementSystem />
       <CourseCards />
-      <CourseConsultation />
+      <SuccessStories />
+      <Curriculum />
       <MediaSection />
-      <FAQ />
       <FinalCTA />
-      <Footer />
       <NotificationSystem />
     </main>
   )

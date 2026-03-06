@@ -140,7 +140,7 @@ export default function CurriculumPage() {
             padding: '2rem'
           }}>
             <img
-              src={selectedTab === "suri" ? "/images/curriculum-suri.png" : "/images/curriculum-suneung.png"}
+              src={selectedTab === "suri" ? "/images/suricuri.png" : "/images/suengcuri.jpg"}
               alt={selectedTab === "suri" ? "수리논술 커리큘럼" : "수능수학 커리큘럼"}
               style={{
                 width: '100%',
@@ -181,7 +181,7 @@ export default function CurriculumPage() {
             카카오톡으로 1:1 상담을 받아보세요
           </p>
           <a
-            href="http://pf.kakao.com/_YFDjn/chat"
+            href="http://pf.kakao.com/_YFDjn"
             target="_blank"
             rel="noopener noreferrer"
             style={{ textDecoration: 'none' }}

@@ -16,8 +16,7 @@ export default function Header() {
 
   const menuItems = [
     { label: "커리큘럼", href: "/curriculum" },
-    { label: "수업 신청", href: "/classes" },
-    { label: "수업 시간표 확인하기", href: "/schedule" }
+    { label: "수업 신청", href: "/classes" }
   ]
 
   return (
