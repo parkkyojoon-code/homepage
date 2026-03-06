@@ -29,7 +29,8 @@ export async function POST(request: NextRequest) {
       parentPhone,
       studentPhone,
       birthYear,
-      courseType,      // 수업 종류: 'surinonseul', 'surinonseul-trial', 'sunung', 'sunung-trial'
+      courseType,      // 수업 종류
+      campus,          // 오프라인 캠퍼스
       confirmPayment,
       agreePrivacy,
       timestamp
@@ -62,16 +63,38 @@ export async function POST(request: NextRequest) {
 
     // 수업명 매핑 - 구글폼과 동일한 형식
     switch (courseType) {
+      case 'surinonseul-online':
+        surinonseulRegular = '【수리논술 온라인】 정규 수업 신청'
+        break
+      case 'surinonseul-offline':
+        surinonseulRegular = `【수리논술 현강】 ${campus || '서울 대치'}ㅣ개강일정 추후 안내`
+        break
       case 'surinonseul':
         surinonseulRegular = '【수리논술 현강】 서울 대치ㅣ개강일정 추후 안내'
         break
       case 'surinonseul-trial':
         surinonseulTrial = '【수리논술 체험수업】 서울 대치ㅣ체험수업 일정 추후 안내'
         break
+      case 'sunung-blueprint-online':
+        sunungSelect = '【블루프린트】 수업ㅣ1~3등급 대상 학생'
+        sunungRegular = '【수능수학 온라인】ㅣ개강일정 추후 안내'
+        break
+      case 'sunung-blueprint-offline':
+        sunungSelect = '【블루프린트】 수업ㅣ1~3등급 대상 학생'
+        sunungRegular = `【수능수학 현강】 ${campus || '인천 송도'}ㅣ개강일정 추후 안내`
+        break
       case 'sunung-blueprint':
         // 수능수학 블루프린트 (1~3등급)
         sunungSelect = '【블루프린트】 수업ㅣ1~3등급 대상 학생'
         sunungRegular = '【수능수학 온라인】ㅣ개강일정 추후 안내'
+        break
+      case 'sunung-escape-online':
+        sunungSelect = '【노베탈출】 수업ㅣ3등급 이하 학생'
+        sunungRegular = '【수능수학 온라인】ㅣ개강일정 추후 안내'
+        break
+      case 'sunung-escape-offline':
+        sunungSelect = '【노베탈출】 수업ㅣ3등급 이하 학생'
+        sunungRegular = `【수능수학 현강】 ${campus || '인천 송도'}ㅣ개강일정 추후 안내`
         break
       case 'sunung-escape':
         // 수능수학 노베탈출 (3등급 이하)

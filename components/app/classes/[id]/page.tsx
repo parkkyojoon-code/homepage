@@ -421,6 +421,12 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
   // 수리논술은 교재 필수
   const isSuriNonsul = classDetail.category === "수리논술"
 
+  // 캠퍼스 목록 - 수리논술: 4개, 수능수학: 2개
+  const campusList = isSuriNonsul
+    ? ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡']
+    : ['인천 송도', '부산 센텀']
+  const [selectedCampus, setSelectedCampus] = useState<string>(isSuriNonsul ? '서울 대치' : '인천 송도')
+
   const calculateTotal = () => {
     const packagePrice = selectedOption === 'online' ? onlinePrice : offlinePrice
     // 수리논술은 교재 필수 포함
@@ -595,6 +601,52 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
             </div>
           </motion.button>
         </div>
+
+        {/* 캠퍼스 선택 - 오프라인 선택 시 표시 */}
+        {selectedOption === 'offline' && (
+          <div style={{ marginBottom: '16px' }}>
+            <div style={{
+              fontSize: '0.8rem',
+              color: 'rgba(255,255,255,0.5)',
+              marginBottom: '8px',
+              fontWeight: '600',
+              letterSpacing: '0.02em'
+            }}>
+              캠퍼스 선택
+            </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '8px'
+            }}>
+              {campusList.map((campus) => (
+                <motion.button
+                  key={campus}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => setSelectedCampus(campus)}
+                  style={{
+                    padding: '12px 8px',
+                    background: selectedCampus === campus
+                      ? 'linear-gradient(135deg, rgba(138, 43, 226, 0.8), rgba(147, 51, 234, 0.6))'
+                      : 'rgba(255, 255, 255, 0.04)',
+                    border: selectedCampus === campus
+                      ? '2px solid rgba(138, 43, 226, 0.8)'
+                      : '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '12px',
+                    color: selectedCampus === campus ? '#FFFFFF' : 'rgba(255,255,255,0.6)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    fontSize: '0.85rem',
+                    fontWeight: '600'
+                  }}
+                >
+                  {campus}
+                </motion.button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Textbook - 수리논술은 필수 포함 */}
         {isSuriNonsul ? (
@@ -819,7 +871,7 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
           <motion.button
             whileHover={{ scale: 1.02, y: -1 }}
             whileTap={{ scale: 0.98 }}
-            onClick={() => router.push(`/apply/${classDetail.id}`)}
+            onClick={() => router.push(`/apply/${classDetail.id}?option=${selectedOption}&campus=${encodeURIComponent(selectedCampus)}`)}
             style={{
               width: '100%',
               padding: '18px',
@@ -1377,12 +1429,12 @@ export default function ClassDetailPage() {
                     <div style={{ marginBottom: '20px' }}>
                       <h4 style={{ fontSize: '1rem', fontWeight: '600', marginBottom: '12px', color: '#FFFFFF' }}>기준 금액</h4>
                       <ul style={{ paddingLeft: '20px', fontSize: '0.95rem', lineHeight: '1.8', color: 'rgba(255, 255, 255, 0.8)' }}>
-                        <li>박교준 수리논술 온라인 정규 과정 (4주): ₩400,000</li>
-                        <li>박교준 수리논술 온라인 정규 주 2회 과정 (4주): ₩600,000</li>
-                        <li>박교준 수리논술 온라인 정규 주 3회 과정｜12주 코스 (4주): ₩800,000</li>
+                        <li>박교준 수리논술 온라인 정규 과정 (4주): ₩360,000</li>
+                        <li>박교준 수리논술 온라인 정규 주 2회 과정 (4주): ₩578,000</li>
+                        <li>박교준 수리논술 온라인 정규 주 3회 과정｜12주 코스 (4주): ₩650,000</li>
                         <li>박교준 수리논술 오프라인 과정 (4주): ₩800,000</li>
                         <li>박교준 수능 수학 추월반 패스 (4주): ₩300,000</li>
-                        <li>박교준 수능 수학 단과 과정 (4주): ₩280,000</li>
+                        <li>박교준 수능 수학 단과 과정 (4주): ₩200,000</li>
                       </ul>
                     </div>
 

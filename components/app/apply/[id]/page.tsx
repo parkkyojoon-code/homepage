@@ -1,24 +1,31 @@
-"use client"
-
 import { useState, useEffect } from "react"
-import { useParams, useRouter } from "next/navigation"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
 import { CheckCircle, ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
 
 // 수업 정보
-const courseInfo: { [key: string]: { title: string; category: string; courseType: string } } = {
-  "1": { title: "수리논술 정규반", category: "수리논술", courseType: "surinonseul" },
+const courseInfo: { [key: string]: { title: string; category: string; courseType: string; courseTypeOffline?: string } } = {
+  "1": { title: "수리논술 정규반", category: "수리논술", courseType: "surinonseul-online", courseTypeOffline: "surinonseul-offline" },
   "2": { title: "수리논술 체험반", category: "수리논술", courseType: "surinonseul-trial" },
-  "3": { title: "수능수학 블루프린트", category: "수능수학", courseType: "sunung-blueprint" },  // 1~3등급
-  "4": { title: "수능수학 노베탈출", category: "수능수학", courseType: "sunung-escape" }         // 3등급 이하
+  "3": { title: "수능수학 블루프린트", category: "수능수학", courseType: "sunung-blueprint-online", courseTypeOffline: "sunung-blueprint-offline" },
+  "4": { title: "수능수학 노베탈출", category: "수능수학", courseType: "sunung-escape-online", courseTypeOffline: "sunung-escape-offline" }
 }
 
 export default function ApplyPage() {
   const params = useParams()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const courseId = params.id as string
-  const course = courseInfo[courseId] || { title: "수업", category: "", courseType: "" }
+  const option = searchParams.get('option') || 'online'
+  const campus = searchParams.get('campus') || '서울 대치'
+  
+  const courseBase = courseInfo[courseId] || { title: "수업", category: "", courseType: "" }
+  // 온라인/오프라인에 따라 courseType 분기
+  const courseType = (option === "offline" && courseBase.courseTypeOffline)
+    ? courseBase.courseTypeOffline
+    : courseBase.courseType
+  const course = { ...courseBase, courseType, campus }
 
   const [isMobile, setIsMobile] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -92,6 +99,7 @@ export default function ApplyPage() {
         body: JSON.stringify({
           ...formData,
           courseType: course.courseType,
+          campus: course.campus,
           timestamp: new Date().toISOString()
         })
       })
