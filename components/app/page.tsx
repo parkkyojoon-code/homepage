@@ -9,6 +9,7 @@ import WhyParkGyoJun from "@/components/home/WhyParkGyoJun"
 import ManagementSystem from "@/components/home/ManagementSystem"
 import MediaSection from "@/components/home/MediaSection"
 import FinalCTA from "@/components/home/FinalCTA"
+import FAQ from "@/components/home/FAQ"
 import NotificationSystem from "@/components/NotificationSystem"
 
 export default function Home() {
@@ -25,6 +26,7 @@ export default function Home() {
       <CourseCards />
       <MediaSection />
       <FinalCTA />
+      <FAQ />
       <NotificationSystem />
     </main>
   )
