@@ -156,11 +156,14 @@ export default function Footer() {
             }}>
               {[
                 { href: '/curriculum', label: '커리큘럼' },
-                { href: '/classes', label: '수업 신청' }
+                { href: '/classes', label: '수업 신청' },
+                { href: 'https://m.blog.naver.com/PostView.naver?blogId=kseede&logNo=223160015159&referrerCode=0&searchKeyword=%EB%85%B8%EB%8B%B5%20%EC%9E%AC%EC%88%98%EC%83%9D', label: '합격 후기', external: true }
               ].map((link) => (
                 <li key={link.href}>
                   <Link
                     href={link.href}
+                    target={link.external ? '_blank' : undefined}
+                    rel={link.external ? 'noopener noreferrer' : undefined}
                     style={{
                       color: '#808080',
                       textDecoration: 'none',
