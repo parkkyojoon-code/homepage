@@ -8,7 +8,6 @@ import InstructorIntro2 from "@/components/home/InstructorIntro2"
 import WhyParkGyoJun from "@/components/home/WhyParkGyoJun"
 import ManagementSystem from "@/components/home/ManagementSystem"
 import MediaSection from "@/components/home/MediaSection"
-import FinalCTA from "@/components/home/FinalCTA"
 import NotificationSystem from "@/components/NotificationSystem"
 
 export default function Home() {
@@ -24,7 +23,6 @@ export default function Home() {
       <ManagementSystem />
       <CourseCards />
       <MediaSection />
-      <FinalCTA />
       <NotificationSystem />
     </main>
   )
