@@ -406,7 +406,7 @@ const SectionNav = ({ activeSection, onSectionChange }: {
 }
 
 // Purchase Options Component
-const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
+const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, isMobile: boolean }) => {
   const searchParams = useSearchParams()
   const initialOption = searchParams.get('option') as 'online' | 'offline' || 'online'
   
@@ -441,8 +441,8 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       style={{
-        position: 'sticky',
-        top: '20px',
+        position: isMobile ? 'relative' : 'sticky',
+        top: isMobile ? 'auto' : '20px',
         background: 'linear-gradient(135deg, rgba(0, 0, 0, 0.2), rgba(20, 20, 30, 0.3))',
         backdropFilter: 'blur(100px) saturate(350%)',
         WebkitBackdropFilter: 'blur(100px) saturate(350%)',
@@ -450,9 +450,7 @@ const PurchaseOptions = ({ classDetail }: { classDetail: ClassDetail }) => {
         borderRadius: '24px',
         padding: '0',
         boxShadow: '0 40px 120px rgba(0, 0, 0, 0.6), inset 0 2px 0 rgba(255, 255, 255, 0.15), inset 0 -1px 0 rgba(255, 255, 255, 0.05)',
-        maxHeight: 'calc(100vh - 40px)',
-        overflowY: 'auto',
-        overflow: 'hidden'
+        overflowY: 'auto'
       }}
     >
       {/* Hero Section */}
@@ -945,6 +943,14 @@ export default function ClassDetailPage() {
   const router = useRouter()
   const [activeSection, setActiveSection] = useState('overview')
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 1024)
+    check()
+    window.addEventListener('resize', check)
+    return () => window.removeEventListener('resize', check)
+  }, [])
 
   const classDetail = getClassDetail(params.id as string)
 
@@ -986,14 +992,14 @@ export default function ClassDetailPage() {
       <div style={{
         maxWidth: '1400px',
         margin: '0 auto',
-        padding: '40px 20px',
+        padding: isMobile ? '20px 16px' : '40px 20px',
         display: 'grid',
-        gridTemplateColumns: '1fr 380px',
-        gap: '60px',
+        gridTemplateColumns: isMobile ? '1fr' : '1fr 380px',
+        gap: isMobile ? '40px' : '60px',
         alignItems: 'start'
       }}>
         {/* Left Section - Class Details */}
-        <div>
+        <div style={{ order: isMobile ? 2 : 1 }}>
           {/* Hero Image */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1473,8 +1479,8 @@ export default function ClassDetailPage() {
         </div>
 
         {/* Right Section - Purchase Options */}
-        <div>
-          <PurchaseOptions classDetail={classDetail} />
+        <div style={{ order: isMobile ? 1 : 2 }}>
+          <PurchaseOptions classDetail={classDetail} isMobile={isMobile} />
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 "use client"
 
 import { motion } from "framer-motion"
-import { ChevronDown, MessageCircle } from "lucide-react"
+import { ChevronDown, Sparkles, Zap } from "lucide-react"
 import { useState, useEffect } from "react"
 import Link from "next/link"
 
@@ -219,11 +219,9 @@ export default function Hero() {
               padding: isMobile ? '0 1rem' : '0'
             }}
           >
-            {/* 수업 상담하기 - 카카오채널 연결 */}
-            <a 
-              href="http://pf.kakao.com/_YFDjn/chat" 
-              target="_blank"
-              rel="noopener noreferrer"
+            {/* 수업 신청하기 - 수업 목록 페이지 이동 */}
+            <Link 
+              href="/classes"
               style={{ textDecoration: 'none', width: isMobile ? '100%' : 'auto', maxWidth: isMobile ? '280px' : 'none' }}
             >
               <button
@@ -255,10 +253,10 @@ export default function Hero() {
                   e.currentTarget.style.boxShadow = '0 4px 30px rgba(0, 102, 255, 0.3)';
                 }}
               >
-                <span style={{ position: 'relative', zIndex: 1 }}>수업 상담하기</span>
-                <MessageCircle size={20} style={{ position: 'relative', zIndex: 1 }} />
+                <span style={{ position: 'relative', zIndex: 1 }}>수업 신청하기</span>
+                <Zap size={20} style={{ position: 'relative', zIndex: 1 }} />
               </button>
-            </a>
+            </Link>
 
             {/* 커리큘럼 확인하기 - 커리큘럼 페이지 이동 */}
             <Link href="/curriculum" style={{ textDecoration: 'none', width: isMobile ? '100%' : 'auto', maxWidth: isMobile ? '280px' : 'none' }}>
@@ -292,7 +290,7 @@ export default function Hero() {
 
         </motion.div>
 
-        {/* Scroll Indicator */}
+        {/* Scroll Indicator - 더 아래로 */}
         {!isMobile && (
           <motion.div
             initial={{ opacity: 0 }}
