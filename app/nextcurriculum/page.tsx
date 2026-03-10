@@ -105,30 +105,41 @@ export default function Week10ApplyPage() {
   }
 
   const openAddressSearch = () => {
-    if (!daumLoaded || typeof window.daum === "undefined") {
-      alert("주소 검색 서비스를 불러오는 중입니다. 잠시 후 다시 시도해주세요.")
-      return
-    }
-    new window.daum.Postcode({
-      oncomplete: (data) => {
-        let fullAddress = data.address
-        let extraAddress = ""
-        if (data.addressType === "R") {
-          if (data.bname !== "") extraAddress += data.bname
-          if (data.buildingName !== "") {
-            extraAddress += extraAddress !== "" ? `, ${data.buildingName}` : data.buildingName
+    const open = () => {
+      new window.daum.Postcode({
+        oncomplete: (data) => {
+          let fullAddress = data.address
+          let extraAddress = ""
+          if (data.addressType === "R") {
+            if (data.bname !== "") extraAddress += data.bname
+            if (data.buildingName !== "") {
+              extraAddress += extraAddress !== "" ? `, ${data.buildingName}` : data.buildingName
+            }
+            if (extraAddress !== "") fullAddress += ` (${extraAddress})`
           }
-          if (extraAddress !== "") fullAddress += ` (${extraAddress})`
-        }
-        setFormData((prev) => ({
-          ...prev,
-          zipCode: data.zonecode,
+          setFormData((prev) => ({
+            ...prev,
+            zipCode: data.zonecode,
           address: fullAddress,
           addressDetail: "",
         }))
         setErrors((prev) => ({ ...prev, address: "", zipCode: "" }))
       },
     }).open()
+  }
+
+  // 스크립트 미로드 시 동적 삽입 후 실행
+  if (typeof window.daum !== "undefined") {
+      open()
+    } else {
+      const script = document.createElement("script")
+      script.src = "//t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"
+      script.onload = () => {
+        setDaumLoaded(true)
+        open()
+      }
+      document.head.appendChild(script)
+    }
   }
 
   const validateForm = () => {
@@ -195,9 +206,11 @@ export default function Week10ApplyPage() {
       })
       if (response.ok || response.status >= 400) {
         setIsComplete(true)
+        window.scrollTo({ top: 0, behavior: "smooth" })
       }
     } catch {
       setIsComplete(true)
+      window.scrollTo({ top: 0, behavior: "smooth" })
     }
 
     setIsSubmitting(false)
