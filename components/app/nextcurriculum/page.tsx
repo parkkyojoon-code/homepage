@@ -254,16 +254,20 @@ export default function Week10ApplyPage() {
             style={{
               fontSize: "1rem",
               color: "#B0B0B0",
-              lineHeight: 1.8,
+              lineHeight: 1.9,
               marginBottom: "2rem",
             }}
           >
-            입력해주신 학부모님 번호로
+            학부모님 번호로{" "}
+            <strong style={{ color: "#FFFFFF" }}>카카오 알림톡</strong>을 통해
             <br />
-            교재비 결제 안내를 드리도록 하겠습니다.
+            결제 안내가 자동 발송됩니다.
             <br />
-            <span style={{ fontSize: "0.875rem", color: "#808080" }}>
-              교재 배송은 결제 확인 후 진행됩니다.
+            <br />
+            <span style={{ fontSize: "0.875rem", color: "#A0A0A0" }}>
+              📖 1주차 자료는 LMS 채널 내에서 확인 가능합니다.
+              <br />
+              📦 교재 배송은 결제 확인 후 이번 주 ~ 다음 주 초 발송됩니다.
             </span>
           </p>
 
@@ -371,20 +375,38 @@ export default function Week10ApplyPage() {
             {/* 일정 안내 배너 */}
             <div
               style={{
-                padding: "1rem 1.25rem",
+                padding: "1.25rem 1.5rem",
                 background: "rgba(255, 255, 255, 0.03)",
                 border: "1px solid rgba(255, 255, 255, 0.08)",
-                borderRadius: "12px",
+                borderRadius: "14px",
                 fontSize: "0.875rem",
                 color: "#A0A0A0",
-                lineHeight: 1.8,
+                lineHeight: 2,
               }}
             >
-              📅 <strong style={{ color: "#FFFFFF" }}>이번 주:</strong> 수열과 규칙성 마무리
+              <p style={{ color: "#FFFFFF", fontWeight: "700", fontSize: "0.95rem", marginBottom: "0.75rem" }}>
+                📚 수리논술 10주차 교재 신청 안내
+              </p>
+              이번 주, <strong style={{ color: "#FFFFFF" }}>수열과 규칙성</strong> 단원이 마무리되며,
+              10주차부터 <strong style={{ color: "#0099FF" }}>「미분과 부등식」</strong> 단원이 시작됩니다.
               <br />
-              🚀 <strong style={{ color: "#FFFFFF" }}>10주차부터:</strong> 미분과 부등식 + 확통과 경우의 수 (확통 선택)
+              또한 선택 수업으로 <strong style={{ color: "#8B5CF6" }}>「확통과 경우의 수」 특강</strong>을 함께 수강할 수 있습니다.
+              <span style={{ color: "#808080", fontSize: "0.82rem" }}> (확통 교재 신청 시에만 특강 수강 가능)</span>
+              <br /><br />
+              <strong style={{ color: "#FFFFFF" }}>■ 교재 안내</strong>
               <br />
-              🎁 <strong style={{ color: "#00DD88" }}>확통 특강은 무료</strong>로 제공되며, 교재비만 별도입니다
+              미분과 부등식 교재: <strong style={{ color: "#0099FF" }}>38,000원</strong>
+              <br />
+              미분 + 확통 교재: <strong style={{ color: "#8B5CF6" }}>76,000원</strong>
+              <br /><br />
+              <span style={{ color: "#808080", fontSize: "0.82rem" }}>
+                ※ 확통 특강 수업은 무료 제공되며, 교재비만 별도입니다.
+                <br />
+                ※ 확통 교재를 신청하지 않을 경우 특강 수강은 제공되지 않습니다.
+              </span>
+              <br /><br />
+              신청 후 <strong style={{ color: "#FFFFFF" }}>학생 연락처 / 학부모 연락처</strong>(결제 안내 번호) / <strong style={{ color: "#FFFFFF" }}>배송 주소</strong>를
+              입력해 주시면 교재 발송 및 결제 안내가 진행됩니다.
             </div>
           </motion.div>
 
@@ -628,19 +650,22 @@ export default function Week10ApplyPage() {
                 교재 배송 주소 <span style={{ color: "#FF4444" }}>*</span>
               </label>
 
-              {/* 우편번호 검색 */}
+              {/* 우편번호 + 주소 검색 */}
               <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem" }}>
                 <input
                   type="text"
                   value={formData.zipCode}
-                  readOnly
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, "").slice(0, 6)
+                    setFormData({ ...formData, zipCode: val })
+                  }}
                   placeholder="우편번호"
+                  maxLength={6}
+                  inputMode="numeric"
                   style={{
                     ...inputStyle(!!errors.address),
                     width: "120px",
                     flex: "0 0 120px",
-                    background: "rgba(255,255,255,0.03)",
-                    cursor: "default",
                   }}
                 />
                 <button
@@ -727,9 +752,8 @@ export default function Week10ApplyPage() {
                   }
                   style={{ width: "20px", height: "20px", marginTop: "2px", accentColor: "#0066FF" }}
                 />
-                <span style={{ fontSize: "0.9rem", color: "#B0B0B0", lineHeight: 1.7 }}>
-                  교재비는 납부 완료 기준으로 최종 확정됩니다.
-                  <span style={{ color: "#FF4444" }}>(*납부 순 선착순 마감)</span>
+                <span style={{ fontSize: "0.9rem", color: "#B0B0B0", lineHeight: 1.8 }}>
+                  교재비 납부 완료 후 배송이 시작됩니다.
                   <br />위 내용 확인하셨나요?{" "}
                   <span style={{ color: "#FF4444" }}>*</span>
                 </span>
