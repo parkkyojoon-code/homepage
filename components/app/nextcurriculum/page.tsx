@@ -1,8 +1,8 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { motion } from "framer-motion"
-import { CheckCircle, ArrowLeft, Loader2, MapPin, BookOpen } from "lucide-react"
+import { CheckCircle, ArrowLeft, Loader2, MapPin, BookOpen, AlertCircle } from "lucide-react"
 import Link from "next/link"
 import Script from "next/script"
 
@@ -67,6 +67,12 @@ export default function Week10ApplyPage() {
   })
 
   const [errors, setErrors] = useState<{ [key: string]: string }>({})
+  const [duplicateCheck, setDuplicateCheck] = useState<{ checking: boolean; isDuplicate: boolean; message: string }>({
+    checking: false,
+    isDuplicate: false,
+    message: "",
+  })
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768)
@@ -74,6 +80,29 @@ export default function Week10ApplyPage() {
     window.addEventListener("resize", check)
     return () => window.removeEventListener("resize", check)
   }, [])
+
+  const checkDuplicate = (phone: string) => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    const normalized = phone.replace(/\D/g, "")
+    if (normalized.length < 10) {
+      setDuplicateCheck({ checking: false, isDuplicate: false, message: "" })
+      return
+    }
+    setDuplicateCheck({ checking: true, isDuplicate: false, message: "" })
+    debounceTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/check-duplicate?phone=${encodeURIComponent(phone)}&type=nextcurriculum`)
+        const data = await res.json()
+        setDuplicateCheck({
+          checking: false,
+          isDuplicate: data.duplicate,
+          message: data.duplicate ? data.message : "✓ 확인되었습니다.",
+        })
+      } catch {
+        setDuplicateCheck({ checking: false, isDuplicate: false, message: "" })
+      }
+    }, 600)
+  }
 
   const openAddressSearch = () => {
     if (!daumLoaded || typeof window.daum === "undefined") {
@@ -116,6 +145,8 @@ export default function Week10ApplyPage() {
       newErrors.parentPhone = "학부모님 연락처를 입력해주세요"
     } else if (!/^01[0-9]-?[0-9]{3,4}-?[0-9]{4}$/.test(formData.parentPhone.replace(/-/g, ""))) {
       newErrors.parentPhone = "올바른 연락처 형식이 아닙니다"
+    } else if (duplicateCheck.isDuplicate) {
+      newErrors.parentPhone = "이미 교재 신청이 완료된 번호입니다."
     }
     if (!formData.zipCode) newErrors.address = "주소 검색을 통해 주소를 입력해주세요"
     if (!formData.addressDetail.trim()) newErrors.addressDetail = "상세주소를 입력해주세요"
@@ -633,11 +664,32 @@ export default function Week10ApplyPage() {
               <input
                 type="tel"
                 value={formData.parentPhone}
-                onChange={(e) => setFormData({ ...formData, parentPhone: e.target.value })}
+                onChange={(e) => {
+                  setFormData({ ...formData, parentPhone: e.target.value })
+                  checkDuplicate(e.target.value)
+                }}
                 placeholder="010-0000-0000"
-                style={inputStyle(!!errors.parentPhone)}
+                style={inputStyle(!!errors.parentPhone || duplicateCheck.isDuplicate)}
               />
-              {errors.parentPhone && (
+              {/* 중복 확인 상태 표시 */}
+              {duplicateCheck.checking && (
+                <p style={{ color: "#808080", fontSize: "0.8rem", marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                  <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
+                  확인 중...
+                </p>
+              )}
+              {!duplicateCheck.checking && duplicateCheck.isDuplicate && (
+                <p style={{ color: "#FF4444", fontSize: "0.8rem", marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                  <AlertCircle size={13} />
+                  {duplicateCheck.message}
+                </p>
+              )}
+              {!duplicateCheck.checking && !duplicateCheck.isDuplicate && duplicateCheck.message && (
+                <p style={{ color: "#00DD88", fontSize: "0.8rem", marginTop: "0.5rem" }}>
+                  {duplicateCheck.message}
+                </p>
+              )}
+              {errors.parentPhone && !duplicateCheck.isDuplicate && (
                 <p style={{ color: "#FF4444", fontSize: "0.8rem", marginTop: "0.5rem" }}>
                   {errors.parentPhone}
                 </p>

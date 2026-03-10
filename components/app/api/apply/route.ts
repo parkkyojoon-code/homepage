@@ -3,7 +3,8 @@ import { google } from 'googleapis'
 
 // 환경변수에서 설정 로드
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g'
-const SHEET_NAME = '수업 신청'  // Python apply_checker.py와 같은 시트 사용
+const SHEET_NAME = '수업 신청'
+const SHEET_NAME_TEXTBOOK = 'textbook'
 
 // Google Sheets API 인증
 async function getGoogleSheetsClient() {
@@ -118,40 +119,56 @@ export async function POST(request: NextRequest) {
 
     let sheetSuccess = false
 
+    const isTextbook = courseType?.includes('week10')
+    const targetSheet = isTextbook ? SHEET_NAME_TEXTBOOK : SHEET_NAME
+
     try {
       const sheets = await getGoogleSheetsClient()
-      
-      // A~T 컬럼 (Q~T: 10주차 추가 필드)
-      const rowData = [
-        formattedTimestamp,                                        // A: 타임스탬프
-        userType === '학생' ? '학생 본인' : (userType || '학생 본인'), // B: 신청자
-        studentName,                                               // C: 학생 이름
-        parentPhone,                                               // D: 학부모님 연락처
-        studentPhone,                                              // E: 학생 연락처
-        birthYear || '',                                           // F: 학생 출생년도
-        surinonseulRegular,                                        // G: [수리논술] 정규 수업 신청
-        surinonseulTrial,                                          // H: [수리논술] 체험 수업 신청
-        sunungSelect,                                              // I: [수능 수학] 수업 선택
-        sunungRegular,                                             // J: [수능 수학] 정규 수업 신청
-        confirmPayment ? '넵, 확인하였습니다.' : '',               // K: 원비 납부 확인
-        agreePrivacy ? '넵, 동의합니다.' : '',                     // L: 개인정보 수집 동의
-        '',                                                        // M: 결제 상태
-        '',                                                        // N: 문자 발송 (Python이 기록)
-        '',                                                        // O: 청구서 발송
-        '',                                                        // P: 청구서 ID
-        textbookOption || '',                                      // Q: 교재 선택 (10주차)
-        zipCode || '',                                             // R: 우편번호
-        address || '',                                             // S: 주소
-        addressDetail || '',                                       // T: 상세주소
-      ]
+
+      let rowData: string[]
+
+      if (isTextbook) {
+        // textbook 시트: A~J (간소화된 컬럼)
+        rowData = [
+          formattedTimestamp,   // A: 타임스탬프
+          studentName,          // B: 학생 이름
+          studentPhone,         // C: 학생 연락처
+          parentPhone,          // D: 학부모님 연락처 (결제)
+          campus || '',         // E: 캠퍼스
+          textbookOption || '', // F: 교재 선택
+          zipCode || '',        // G: 우편번호
+          address || '',        // H: 주소
+          addressDetail || '',  // I: 상세주소
+          '',                   // J: 결제 상태 (apply_checker가 기록)
+        ]
+      } else {
+        // 수업 신청 시트: A~T
+        rowData = [
+          formattedTimestamp,
+          userType === '학생' ? '학생 본인' : (userType || '학생 본인'),
+          studentName,
+          parentPhone,
+          studentPhone,
+          birthYear || '',
+          surinonseulRegular,
+          surinonseulTrial,
+          sunungSelect,
+          sunungRegular,
+          confirmPayment ? '넵, 확인하였습니다.' : '',
+          agreePrivacy ? '넵, 동의합니다.' : '',
+          '', '', '', '',
+          textbookOption || '',
+          zipCode || '',
+          address || '',
+          addressDetail || '',
+        ]
+      }
 
       await sheets.spreadsheets.values.append({
         spreadsheetId: GOOGLE_SHEET_ID,
-        range: `${SHEET_NAME}!A:T`,
+        range: `${targetSheet}!A:J`,
         valueInputOption: 'USER_ENTERED',
-        requestBody: {
-          values: [rowData]
-        }
+        requestBody: { values: [rowData] }
       })
       
       sheetSuccess = true

@@ -1,8 +1,8 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { CheckCircle, ArrowLeft, Loader2, MapPin, BookOpen, AlertCircle } from "lucide-react"
+import { CheckCircle, ArrowLeft, Loader2, MapPin, BookOpen } from "lucide-react"
 import Link from "next/link"
 import Script from "next/script"
 
@@ -67,12 +67,6 @@ export default function Week10ApplyPage() {
   })
 
   const [errors, setErrors] = useState<{ [key: string]: string }>({})
-  const [duplicateCheck, setDuplicateCheck] = useState<{ checking: boolean; isDuplicate: boolean; message: string }>({
-    checking: false,
-    isDuplicate: false,
-    message: "",
-  })
-  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768)
@@ -80,29 +74,6 @@ export default function Week10ApplyPage() {
     window.addEventListener("resize", check)
     return () => window.removeEventListener("resize", check)
   }, [])
-
-  const checkDuplicate = (phone: string) => {
-    if (debounceTimer.current) clearTimeout(debounceTimer.current)
-    const normalized = phone.replace(/\D/g, "")
-    if (normalized.length < 10) {
-      setDuplicateCheck({ checking: false, isDuplicate: false, message: "" })
-      return
-    }
-    setDuplicateCheck({ checking: true, isDuplicate: false, message: "" })
-    debounceTimer.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/check-duplicate?phone=${encodeURIComponent(phone)}&type=nextcurriculum`)
-        const data = await res.json()
-        setDuplicateCheck({
-          checking: false,
-          isDuplicate: data.duplicate,
-          message: data.duplicate ? data.message : "✓ 확인되었습니다.",
-        })
-      } catch {
-        setDuplicateCheck({ checking: false, isDuplicate: false, message: "" })
-      }
-    }, 600)
-  }
 
   const openAddressSearch = () => {
     if (!daumLoaded || typeof window.daum === "undefined") {
@@ -145,8 +116,6 @@ export default function Week10ApplyPage() {
       newErrors.parentPhone = "학부모님 연락처를 입력해주세요"
     } else if (!/^01[0-9]-?[0-9]{3,4}-?[0-9]{4}$/.test(formData.parentPhone.replace(/-/g, ""))) {
       newErrors.parentPhone = "올바른 연락처 형식이 아닙니다"
-    } else if (duplicateCheck.isDuplicate) {
-      newErrors.parentPhone = "이미 교재 신청이 완료된 번호입니다."
     }
     if (!formData.zipCode) newErrors.address = "주소 검색을 통해 주소를 입력해주세요"
     if (!formData.addressDetail.trim()) newErrors.addressDetail = "상세주소를 입력해주세요"
@@ -285,20 +254,16 @@ export default function Week10ApplyPage() {
             style={{
               fontSize: "1rem",
               color: "#B0B0B0",
-              lineHeight: 1.9,
+              lineHeight: 1.8,
               marginBottom: "2rem",
             }}
           >
-            학부모님 번호로{" "}
-            <strong style={{ color: "#FFFFFF" }}>카카오 알림톡</strong>을 통해
+            입력해주신 학부모님 번호로
             <br />
-            결제 안내가 자동 발송됩니다.
+            교재비 결제 안내를 드리도록 하겠습니다.
             <br />
-            <br />
-            <span style={{ fontSize: "0.875rem", color: "#A0A0A0" }}>
-              📖 1주차 자료는 LMS 채널 내에서 확인 가능합니다.
-              <br />
-              📦 교재 배송은 결제 확인 후 이번 주 ~ 다음 주 초 발송됩니다.
+            <span style={{ fontSize: "0.875rem", color: "#808080" }}>
+              교재 배송은 결제 확인 후 진행됩니다.
             </span>
           </p>
 
@@ -406,38 +371,20 @@ export default function Week10ApplyPage() {
             {/* 일정 안내 배너 */}
             <div
               style={{
-                padding: "1.25rem 1.5rem",
+                padding: "1rem 1.25rem",
                 background: "rgba(255, 255, 255, 0.03)",
                 border: "1px solid rgba(255, 255, 255, 0.08)",
-                borderRadius: "14px",
+                borderRadius: "12px",
                 fontSize: "0.875rem",
                 color: "#A0A0A0",
-                lineHeight: 2,
+                lineHeight: 1.8,
               }}
             >
-              <p style={{ color: "#FFFFFF", fontWeight: "700", fontSize: "0.95rem", marginBottom: "0.75rem" }}>
-                📚 수리논술 10주차 교재 신청 안내
-              </p>
-              이번 주, <strong style={{ color: "#FFFFFF" }}>수열과 규칙성</strong> 단원이 마무리되며,
-              10주차부터 <strong style={{ color: "#0099FF" }}>「미분과 부등식」</strong> 단원이 시작됩니다.
+              📅 <strong style={{ color: "#FFFFFF" }}>이번 주:</strong> 수열과 규칙성 마무리
               <br />
-              또한 선택 수업으로 <strong style={{ color: "#8B5CF6" }}>「확통과 경우의 수」 특강</strong>을 함께 수강할 수 있습니다.
-              <span style={{ color: "#808080", fontSize: "0.82rem" }}> (확통 교재 신청 시에만 특강 수강 가능)</span>
-              <br /><br />
-              <strong style={{ color: "#FFFFFF" }}>■ 교재 안내</strong>
+              🚀 <strong style={{ color: "#FFFFFF" }}>10주차부터:</strong> 미분과 부등식 + 확통과 경우의 수 (확통 선택)
               <br />
-              미분과 부등식 교재: <strong style={{ color: "#0099FF" }}>38,000원</strong>
-              <br />
-              미분 + 확통 교재: <strong style={{ color: "#8B5CF6" }}>76,000원</strong>
-              <br /><br />
-              <span style={{ color: "#808080", fontSize: "0.82rem" }}>
-                ※ 확통 특강 수업은 무료 제공되며, 교재비만 별도입니다.
-                <br />
-                ※ 확통 교재를 신청하지 않을 경우 특강 수강은 제공되지 않습니다.
-              </span>
-              <br /><br />
-              신청 후 <strong style={{ color: "#FFFFFF" }}>학생 연락처 / 학부모 연락처</strong>(결제 안내 번호) / <strong style={{ color: "#FFFFFF" }}>배송 주소</strong>를
-              입력해 주시면 교재 발송 및 결제 안내가 진행됩니다.
+              🎁 <strong style={{ color: "#00DD88" }}>확통 특강은 무료</strong>로 제공되며, 교재비만 별도입니다
             </div>
           </motion.div>
 
@@ -664,32 +611,11 @@ export default function Week10ApplyPage() {
               <input
                 type="tel"
                 value={formData.parentPhone}
-                onChange={(e) => {
-                  setFormData({ ...formData, parentPhone: e.target.value })
-                  checkDuplicate(e.target.value)
-                }}
+                onChange={(e) => setFormData({ ...formData, parentPhone: e.target.value })}
                 placeholder="010-0000-0000"
-                style={inputStyle(!!errors.parentPhone || duplicateCheck.isDuplicate)}
+                style={inputStyle(!!errors.parentPhone)}
               />
-              {/* 중복 확인 상태 표시 */}
-              {duplicateCheck.checking && (
-                <p style={{ color: "#808080", fontSize: "0.8rem", marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                  <Loader2 size={13} style={{ animation: "spin 1s linear infinite" }} />
-                  확인 중...
-                </p>
-              )}
-              {!duplicateCheck.checking && duplicateCheck.isDuplicate && (
-                <p style={{ color: "#FF4444", fontSize: "0.8rem", marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                  <AlertCircle size={13} />
-                  {duplicateCheck.message}
-                </p>
-              )}
-              {!duplicateCheck.checking && !duplicateCheck.isDuplicate && duplicateCheck.message && (
-                <p style={{ color: "#00DD88", fontSize: "0.8rem", marginTop: "0.5rem" }}>
-                  {duplicateCheck.message}
-                </p>
-              )}
-              {errors.parentPhone && !duplicateCheck.isDuplicate && (
+              {errors.parentPhone && (
                 <p style={{ color: "#FF4444", fontSize: "0.8rem", marginTop: "0.5rem" }}>
                   {errors.parentPhone}
                 </p>
@@ -702,22 +628,19 @@ export default function Week10ApplyPage() {
                 교재 배송 주소 <span style={{ color: "#FF4444" }}>*</span>
               </label>
 
-              {/* 우편번호 + 주소 검색 */}
+              {/* 우편번호 검색 */}
               <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem" }}>
                 <input
                   type="text"
                   value={formData.zipCode}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, "").slice(0, 6)
-                    setFormData({ ...formData, zipCode: val })
-                  }}
+                  readOnly
                   placeholder="우편번호"
-                  maxLength={6}
-                  inputMode="numeric"
                   style={{
                     ...inputStyle(!!errors.address),
                     width: "120px",
                     flex: "0 0 120px",
+                    background: "rgba(255,255,255,0.03)",
+                    cursor: "default",
                   }}
                 />
                 <button
@@ -804,8 +727,9 @@ export default function Week10ApplyPage() {
                   }
                   style={{ width: "20px", height: "20px", marginTop: "2px", accentColor: "#0066FF" }}
                 />
-                <span style={{ fontSize: "0.9rem", color: "#B0B0B0", lineHeight: 1.8 }}>
-                  교재비 납부 완료 후 배송이 시작됩니다.
+                <span style={{ fontSize: "0.9rem", color: "#B0B0B0", lineHeight: 1.7 }}>
+                  교재비는 납부 완료 기준으로 최종 확정됩니다.
+                  <span style={{ color: "#FF4444" }}>(*납부 순 선착순 마감)</span>
                   <br />위 내용 확인하셨나요?{" "}
                   <span style={{ color: "#FF4444" }}>*</span>
                 </span>
