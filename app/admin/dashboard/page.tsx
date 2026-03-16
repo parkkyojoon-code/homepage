@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface StatusData {
@@ -12,84 +12,72 @@ interface StatusData {
 export default function AdminDashboard() {
   const [status, setStatus] = useState<StatusData | null>(null)
   const [statusLoading, setStatusLoading] = useState(true)
-  const [file, setFile] = useState<File | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [dragging, setDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
 
-  // 상태 불러오기
-  async function fetchStatus() {
-    setStatusLoading(true)
-    try {
-      const res = await fetch('/api/admin/homework/status', { cache: 'no-store' })
-      if (res.status === 401) { router.push('/admin'); return }
-      const data = await res.json()
-      setStatus(data)
-    } catch {
-      setStatus(null)
-    } finally {
-      setStatusLoading(false)
-    }
-  }
+  useEffect(() => {
+    fetch('/api/admin/homework/status', { cache: 'no-store' })
+      .then(res => {
+        if (res.status === 401) { router.push('/admin'); return null }
+        return res.json()
+      })
+      .then(data => { if (data) setStatus(data) })
+      .catch(() => {})
+      .finally(() => setStatusLoading(false))
+  }, [])
 
-  useEffect(() => { fetchStatus() }, [])
-
-  // 파일 선택
-  function handleFile(f: File | null) {
-    if (!f) return
-    if (!f.name.endsWith('.xlsx') && !f.name.endsWith('.xls')) {
-      setMessage({ type: 'error', text: '.xlsx 파일만 업로드 가능합니다.' })
-      return
-    }
-    setFile(f); setMessage(null)
-  }
-
-  // 업로드
-  async function handleUpload() {
-    if (!file) return
-    setUploading(true); setMessage(null)
-
-    const formData = new FormData()
-    formData.append('excel', file)
-
-    try {
-      const res = await fetch('/api/admin/homework/upload', { method: 'POST', body: formData })
-      const data = await res.json()
-      if (res.ok) {
-        setMessage({ type: 'success', text: data.message || `✅ 업데이트 완료` })
-        setFile(null)
-        if (fileInputRef.current) fileInputRef.current.value = ''
-        await fetchStatus()
-      } else {
-        setMessage({ type: 'error', text: data.error || '업로드 실패' })
-      }
-    } catch {
-      setMessage({ type: 'error', text: '서버 오류가 발생했습니다.' })
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  // 로그아웃
   async function handleLogout() {
     await fetch('/api/admin/logout', { method: 'POST' })
     router.push('/admin')
   }
 
-  const card: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.04)',
-    border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 16,
-  }
+  const sections = [
+    {
+      key: 'homework',
+      icon: '📋',
+      label: '과제 관리',
+      desc: '엑셀 업로드로 학생 과제 데이터 교체',
+      href: '/admin/homework',
+      accent: '#4d8bf5',
+      accentDim: 'rgba(77,139,245,0.12)',
+      accentBorder: 'rgba(77,139,245,0.25)',
+      badge: statusLoading ? '…' : `${status?.count ?? 0}명`,
+      badgeLabel: '등록 학생',
+      sub: statusLoading ? '불러오는 중…' : (status?.filename ? `${status.filename}` : '업로드 파일 없음'),
+    },
+    {
+      key: 'classes',
+      icon: '📚',
+      label: '수업 관리',
+      desc: '수업 추가·수정·삭제 및 공개 설정',
+      href: '/admin/classes',
+      accent: '#7b58ef',
+      accentDim: 'rgba(123,88,239,0.12)',
+      accentBorder: 'rgba(123,88,239,0.25)',
+      badge: null,
+      badgeLabel: null,
+      sub: '수업 카드 이미지, 금액, 캠퍼스 설정',
+    },
+    {
+      key: 'students',
+      icon: '👥',
+      label: '학생 관리',
+      desc: '캠퍼스별 학생·학부모 연락처, 결제 기록',
+      href: '/admin/students',
+      accent: '#34d17e',
+      accentDim: 'rgba(52,209,126,0.12)',
+      accentBorder: 'rgba(52,209,126,0.25)',
+      badge: null,
+      badgeLabel: null,
+      sub: '준비 중',
+    },
+  ]
 
   return (
     <div style={{ minHeight: '100vh', padding: '0 0 80px' }}>
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '36px 20px 0' }}>
+      <div style={{ maxWidth: 760, margin: '0 auto', padding: '36px 20px 0' }}>
 
         {/* 상단 바 */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 36 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 40 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <img src="/logo.png" alt="logo" style={{ width: 28, height: 28, borderRadius: 8, background: '#000' }} />
             <span style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.5)', letterSpacing: '0.04em' }}>
@@ -110,129 +98,81 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        <h1 style={{ fontSize: 26, fontWeight: 800, color: '#fff', marginBottom: 6 }}>데이터 관리</h1>
-        <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.35)', marginBottom: 28 }}>
-          엑셀 파일을 업로드하면 학생 과제 데이터가 즉시 업데이트됩니다.
+        <h1 style={{ fontSize: 28, fontWeight: 800, color: '#fff', marginBottom: 6 }}>대시보드</h1>
+        <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.35)', marginBottom: 36 }}>
+          관리할 항목을 선택하세요
         </p>
 
-        {/* 스탯 카드 */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-          <div style={{ ...card, padding: '22px 20px' }}>
-            <div style={{ fontSize: 36, fontWeight: 900, fontFamily: "'DM Mono',monospace", color: '#4d8bf5', lineHeight: 1, marginBottom: 6 }}>
-              {statusLoading ? '…' : (status?.count ?? 0)}
-            </div>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)' }}>현재 등록 학생 수</div>
-          </div>
-          <div style={{ ...card, padding: '22px 20px' }}>
-            <div style={{ fontSize: 36, fontWeight: 900, color: '#34d17e', lineHeight: 1, marginBottom: 6 }}>Live</div>
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)' }}>서비스 상태</div>
-          </div>
-        </div>
+        {/* 관리 섹션 카드 3개 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {sections.map(sec => (
+            <div
+              key={sec.key}
+              onClick={() => router.push(sec.href)}
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 18,
+                padding: '24px 28px',
+                cursor: sec.sub === '준비 중' ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 20,
+                transition: 'border-color 0.2s, background 0.2s',
+                opacity: sec.sub === '준비 중' ? 0.5 : 1,
+              }}
+              onMouseEnter={e => {
+                if (sec.sub === '준비 중') return
+                const el = e.currentTarget as HTMLDivElement
+                el.style.borderColor = sec.accentBorder
+                el.style.background = sec.accentDim
+              }}
+              onMouseLeave={e => {
+                const el = e.currentTarget as HTMLDivElement
+                el.style.borderColor = 'rgba(255,255,255,0.08)'
+                el.style.background = 'rgba(255,255,255,0.04)'
+              }}
+            >
+              {/* 아이콘 */}
+              <div style={{
+                width: 52, height: 52, borderRadius: 14, flexShrink: 0,
+                background: sec.accentDim, border: `1px solid ${sec.accentBorder}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 22,
+              }}>{sec.icon}</div>
 
-        {/* 현재 파일 */}
-        <div style={{ ...card, padding: '18px 22px', borderLeft: '3px solid rgba(0,102,255,0.5)', marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#4d8bf5', marginBottom: 10 }}>
-            📁 현재 등록된 파일
-          </div>
-          {statusLoading ? (
-            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)' }}>불러오는 중…</div>
-          ) : status?.filename ? (
-            <>
-              <div style={{ fontSize: 15, fontWeight: 700, color: '#fff', fontFamily: "'DM Mono',monospace", marginBottom: 4, wordBreak: 'break-all' }}>
-                {status.filename}
+              {/* 텍스트 */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                  <span style={{ fontSize: 17, fontWeight: 800, color: '#fff' }}>{sec.label}</span>
+                  {sec.sub === '준비 중' && (
+                    <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.06)', borderRadius: 20, padding: '2px 8px' }}>준비 중</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 6 }}>{sec.desc}</div>
+                {sec.sub !== '준비 중' && (
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {sec.sub}
+                  </div>
+                )}
               </div>
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)' }}>
-                {status.uploaded_at} 업로드 · {status.count}명
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>아직 업로드된 파일이 없습니다.</div>
-          )}
-        </div>
 
-        {/* 업로드 카드 */}
-        <div style={{ ...card, padding: 28, marginBottom: 20 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 700, color: '#fff', marginBottom: 4 }}>📂 엑셀 파일 업로드</h2>
-          <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)', marginBottom: 22 }}>
-            새 엑셀 파일을 업로드하면 기존 데이터를 완전히 교체합니다.
-          </p>
+              {/* 배지 */}
+              {sec.badge !== null && (
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: sec.accent, fontFamily: "'DM Mono',monospace", lineHeight: 1, marginBottom: 4 }}>
+                    {sec.badge}
+                  </div>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)' }}>
+                    {sec.badgeLabel}
+                  </div>
+                </div>
+              )}
 
-          {/* 드롭존 */}
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={e => { e.preventDefault(); setDragging(true) }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={e => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]) }}
-            style={{
-              border: `2px dashed ${dragging ? '#4d8bf5' : 'rgba(255,255,255,0.12)'}`,
-              borderRadius: 12, padding: '36px 20px', textAlign: 'center',
-              cursor: 'pointer', transition: 'border-color 0.2s, background 0.2s',
-              background: dragging ? 'rgba(77,139,245,0.04)' : 'transparent',
-              marginBottom: 14,
-            }}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xls"
-              style={{ display: 'none' }}
-              onChange={e => handleFile(e.target.files?.[0] || null)}
-            />
-            <div style={{ fontSize: 32, marginBottom: 10 }}>📊</div>
-            <div style={{ fontSize: 14, fontWeight: 500, color: 'rgba(255,255,255,0.5)', marginBottom: 4 }}>
-              {file ? file.name : '파일을 여기에 끌어다 놓거나 클릭하여 선택'}
+              {/* 화살표 */}
+              {sec.sub !== '준비 중' && (
+                <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 18, flexShrink: 0 }}>›</div>
+              )}
             </div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)' }}>
-              {file ? `${(file.size / 1024).toFixed(1)} KB` : '.xlsx 파일만 가능합니다'}
-            </div>
-          </div>
-
-          {message && (
-            <div style={{
-              borderRadius: 10, padding: '12px 16px', marginBottom: 14, fontSize: 13,
-              background: message.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)',
-              border: `1px solid ${message.type === 'success' ? 'rgba(52,209,126,0.25)' : 'rgba(239,84,84,0.22)'}`,
-              color: message.type === 'success' ? '#6ef5b0' : '#f08888',
-            }}>{message.text}</div>
-          )}
-
-          <button
-            onClick={handleUpload}
-            disabled={!file || uploading}
-            style={{
-              width: '100%', padding: '14px',
-              background: !file || uploading ? 'rgba(0,102,255,0.25)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
-              border: 'none', borderRadius: 12,
-              color: '#fff', fontSize: 15, fontWeight: 700,
-              cursor: !file || uploading ? 'not-allowed' : 'pointer',
-              boxShadow: !file || uploading ? 'none' : '0 4px 20px rgba(0,102,255,0.3)',
-              transition: 'all 0.2s',
-            }}
-          >
-            {uploading ? '업로드 중…' : '업로드 & 업데이트'}
-          </button>
-        </div>
-
-        {/* 업로드 규칙 */}
-        <div style={{ ...card, background: 'rgba(255,255,255,0.02)', padding: '18px 20px' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
-            업로드 규칙
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            {[
-              'col 0: 학생 이름 / col 1: 학부모 연락처 / col 2: 학생 연락처',
-              'col 3부터 5열씩 과제 블록 반복 (발행일·과제명·제출여부·등급·완성도)',
-              '모의논술의 경우 마지막 열(완성도)은 빈칸으로 비울 것',
-              '과제명에 "모의논술" 포함 시 모의논술, "기초수학" 포함 시 기초수학 테스트로 자동 분류',
-              '14행부터 학생 데이터 시작',
-              '업로드 즉시 조회 페이지에 반영됩니다',
-            ].map((rule, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                <span style={{ color: '#4d8bf5', fontWeight: 900, marginTop: 1 }}>·</span>
-                <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>{rule}</span>
-              </div>
-            ))}
-          </div>
+          ))}
         </div>
 
         <p style={{ textAlign: 'center', marginTop: 48, fontSize: 12, color: 'rgba(255,255,255,0.2)' }}>
