@@ -30,6 +30,13 @@ export default function AdminDashboard() {
     router.push('/admin')
   }
 
+  function downloadFile(file: string, filename: string) {
+    const a = document.createElement('a')
+    a.href = `/api/admin/download?file=${file}`
+    a.download = filename
+    a.click()
+  }
+
   const sections = [
     {
       key: 'homework',
@@ -61,14 +68,14 @@ export default function AdminDashboard() {
       key: 'students',
       icon: '👥',
       label: '학생 관리',
-      desc: '캠퍼스별 학생·학부모 연락처, 결제 기록',
+      desc: '학생별 과제 직접 조회 및 수정',
       href: '/admin/students',
       accent: '#34d17e',
       accentDim: 'rgba(52,209,126,0.12)',
       accentBorder: 'rgba(52,209,126,0.25)',
       badge: null,
       badgeLabel: null,
-      sub: '',
+      sub: '과제 추가·수정·삭제',
     },
   ]
 
@@ -107,13 +114,11 @@ export default function AdminDashboard() {
                 border: '1px solid rgba(255,255,255,0.08)',
                 borderRadius: 18,
                 padding: '24px 28px',
-                cursor: sec.sub === '준비 중' ? 'default' : 'pointer',
+                cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: 20,
                 transition: 'border-color 0.2s, background 0.2s',
-                opacity: sec.sub === '준비 중' ? 0.5 : 1,
               }}
               onMouseEnter={e => {
-                if (sec.sub === '준비 중') return
                 const el = e.currentTarget as HTMLDivElement
                 el.style.borderColor = sec.accentBorder
                 el.style.background = sec.accentDim
@@ -134,18 +139,11 @@ export default function AdminDashboard() {
 
               {/* 텍스트 */}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                  <span style={{ fontSize: 17, fontWeight: 800, color: '#fff' }}>{sec.label}</span>
-                  {sec.sub === '준비 중' && (
-                    <span style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.06)', borderRadius: 20, padding: '2px 8px' }}>준비 중</span>
-                  )}
-                </div>
+                <div style={{ fontSize: 17, fontWeight: 800, color: '#fff', marginBottom: 4 }}>{sec.label}</div>
                 <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 6 }}>{sec.desc}</div>
-                {sec.sub !== '준비 중' && (
-                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {sec.sub}
-                  </div>
-                )}
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', fontFamily: "'DM Mono',monospace", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {sec.sub}
+                </div>
               </div>
 
               {/* 배지 */}
@@ -160,15 +158,47 @@ export default function AdminDashboard() {
                 </div>
               )}
 
-              {/* 화살표 */}
-              {sec.sub !== '준비 중' && (
-                <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 18, flexShrink: 0 }}>›</div>
-              )}
+              <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 18, flexShrink: 0 }}>›</div>
             </div>
           ))}
         </div>
 
-        <p style={{ textAlign: 'center', marginTop: 48, fontSize: 12, color: 'rgba(255,255,255,0.2)' }}>
+        {/* 데이터 다운로드 */}
+        <div style={{
+          marginTop: 28,
+          background: 'rgba(255,255,255,0.03)',
+          border: '1px solid rgba(255,255,255,0.07)',
+          borderRadius: 14,
+          padding: '18px 22px',
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 14 }}>
+            📥 데이터 백업
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {[
+              { file: 'students', label: '학생 데이터', filename: 'students_data.json' },
+              { file: 'classes',  label: '수업 데이터', filename: 'classes.json' },
+              { file: 'meta',     label: '업로드 정보', filename: 'meta.json' },
+            ].map(({ file, label, filename }) => (
+              <button
+                key={file}
+                onClick={e => { e.stopPropagation(); downloadFile(file, filename) }}
+                style={{
+                  padding: '8px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                  background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                  color: 'rgba(255,255,255,0.5)', cursor: 'pointer',
+                  transition: 'background 0.15s, color 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; e.currentTarget.style.color = '#fff' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.06)'; e.currentTarget.style.color = 'rgba(255,255,255,0.5)' }}
+              >
+                ↓ {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <p style={{ textAlign: 'center', marginTop: 40, fontSize: 12, color: 'rgba(255,255,255,0.2)' }}>
           © 2026 박교준 수리논술 · 관리자 전용
         </p>
       </div>
