@@ -938,12 +938,80 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
 // Add missing imports
 import { ShoppingCart, Heart } from "lucide-react"
 
+// 공통 FAQ (모든 수업 동일)
+const COMMON_FAQS: FAQ[] = [
+  {
+    question: "수리논술, 내신 3등급 이하인데 높은 대학 가능할까요?",
+    answer: "가능합니다. 제 학생들은 실제로 내신 3~4등급, 심지어 7등급대인 학생도 연고대, 서성한, 이대 등 상위 10위권 이내 대학들에 합격했습니다. 논술은 수학 실력만 있으면, 내신과 상관없이 충분히 가능합니다."
+  },
+  {
+    question: "정말 최종 수학 2등급만 나오면 90% 합격하나요?",
+    answer: "네. 맞습니다. 지난 17년간 데이터로 확인된 통계입니다. 박교준 선생님이 17년간 가르친 학생 중, 최종 수능 수학 2등급 이상이었던 학생은 매해 90% 이상 합격을 이뤄냈습니다."
+  },
+  {
+    question: "오프라인·온라인 수업 어떤 차이가 있나요?",
+    answer: "집중도와 진행 방식 정도의 차이입니다. 오프라인은 강사와 실시간 호흡, 즉각적 질의응답이 가능하고, 온라인은 시간·장소 제약 없이 수강, 반복 학습이 가능합니다."
+  },
+  {
+    question: "수강하면 정말 지금보다 더 높은 대학 갈 수 있나요?",
+    answer: "'높은 대학' 노리는 학생을 위해 탄생한 수업입니다. 박교준 수리논술을 거쳐, 본인 예상점수보다 훨씬 높은 대학에 합격한 학생이 매년 속출하고 있습니다."
+  },
+]
+
+const COMMON_INSTRUCTOR: InstructorInfo = {
+  name: "박교준",
+  title: "수리논술 전문가",
+  bio: "17년간 수리논술 전문 강사, 국내 최고 합격률 달성",
+  experience: "17년",
+  achievements: [
+    "수능 2등급 이상 학생 90% 합격 달성",
+    "누적 수강생 5,000명 이상",
+    "매년 200% 이상 성장률",
+  ],
+  image: "/images/parkkyojoon.jpeg",
+}
+
+// API 데이터 → ClassDetail 변환
+function apiToClassDetail(cls: any): ClassDetail {
+  const onlinePrice  = cls.modes?.online?.price  ?? 0
+  const offlinePrice = cls.modes?.offline?.price ?? 0
+
+  return {
+    id:            cls.id,
+    category:      cls.category,
+    title:         cls.name,
+    instructor:    "박교준",
+    description:   cls.description,
+    longDescription: cls.description,
+    thumbnail:     cls.image ? `/api/images/${cls.image}` : '/images/suri.jpg',
+    price:         onlinePrice,
+    originalPrice: offlinePrice || onlinePrice,
+    duration:      "1개월 주1회 3시간",
+    level:         "고3, N수생",
+    students:      0,
+    rating:        5.0,
+    features:      cls.keywords ?? [],
+    badge:         cls.badge || undefined,
+    curriculum:    [],
+    reviews:       [],
+    faqs:          COMMON_FAQS,
+    instructorInfo: COMMON_INSTRUCTOR,
+    refundPolicy:  "수강 시작 후 7일 이내 환불 가능, 이후 환불 불가",
+    classType:     cls.modes?.offline?.enabled ? "hybrid" : "vod",
+    totalLectures: 0,
+    totalHours:    0,
+    benefits:      cls.keywords ?? [],
+  }
+}
+
 export default function ClassDetailPage() {
   const params = useParams()
   const router = useRouter()
   const [activeSection, setActiveSection] = useState('overview')
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null)
   const [isMobile, setIsMobile] = useState(false)
+  const [classDetail, setClassDetail] = useState<ClassDetail | null>(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 1024)
@@ -952,7 +1020,24 @@ export default function ClassDetailPage() {
     return () => window.removeEventListener('resize', check)
   }, [])
 
-  const classDetail = getClassDetail(params.id as string)
+  useEffect(() => {
+    const id = params.id as string
+    fetch(`/api/classes/${id}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) setClassDetail(apiToClassDetail(data))
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [params.id])
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ width: 36, height: 36, border: '3px solid rgba(255,255,255,0.1)', borderTop: '3px solid #4d8bf5', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+      </div>
+    )
+  }
 
   if (!classDetail) {
     return (
