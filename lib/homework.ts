@@ -23,6 +23,7 @@
 import fs from 'fs'
 import path from 'path'
 import * as XLSX from 'xlsx'
+import { randomUUID } from 'crypto'
 
 // ── 경로 ────────────────────────────────────────────────────────────
 const DATA_DIR     = process.env.DATA_DIR || '/app/data'
@@ -45,6 +46,7 @@ export interface Assignment {
 }
 
 export interface Student {
+  id: string
   class: string
   name: string
   student_phone: string | null
@@ -56,6 +58,29 @@ export interface Student {
   b_count: number
   c_count: number
   assignments: Assignment[]
+}
+
+// 과제 목록으로 집계 수치 재계산
+export function recalcStats(student: Student): Student {
+  const { assignments } = student
+  const total = assignments.length
+  const submitted = assignments.filter(a => a.submitted === 'O').length
+  let a = 0, b = 0, c = 0
+  for (const a_ of assignments) {
+    if (a_.type === 'mock') continue
+    if (a_.grade === 'A') a++
+    else if (a_.grade === 'B') b++
+    else if (a_.grade === 'C') c++
+  }
+  return {
+    ...student,
+    total_hw: total,
+    submitted_count: submitted,
+    submission_rate: total > 0 ? Math.round(submitted / total * 100) : 0,
+    a_count: a,
+    b_count: b,
+    c_count: c,
+  }
 }
 
 export interface HomeworkMeta {
@@ -213,6 +238,7 @@ export function parseExcel(buffer: Buffer): Student[] {
     }
 
     students.push({
+      id:              randomUUID(),
       class:           className,
       name,
       student_phone:   studentPhone,
