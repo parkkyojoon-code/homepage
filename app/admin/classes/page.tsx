@@ -7,6 +7,7 @@ interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
 interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
   image: string | null
+  duration: string
   modes: { online: ClassMode; offline: ClassMode }
   textbook: { included: boolean; price: number }
   description: string; keywords: [string, string, string]
@@ -18,6 +19,7 @@ const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후
 const EMPTY_CLASS = {
   customId: '', visible: false, name: '', category: '수리논술', badge: '',
   image: null,
+  duration: '',
   modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
   textbook: { included: false, price: 0 },
   description: '', keywords: ['', '', ''] as [string, string, string],
@@ -300,6 +302,16 @@ export default function AdminClassesPage() {
                     onChange={ev => { const kw = [...e.keywords] as [string,string,string]; kw[i] = ev.target.value; upd(['keywords'], kw) }} />
                 ))}
               </div>
+            </div>
+            <div>
+              <label style={lbl}>수업 일정 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>카드에 표시됨</span></label>
+              <input
+                style={inp}
+                value={e.duration}
+                onChange={ev => upd(['duration'], ev.target.value)}
+                placeholder="예: 1개월 주1회 3시간"
+              />
+              <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>수업 카드 하단 시계 아이콘 옆에 표시됩니다</p>
             </div>
           </div>
 

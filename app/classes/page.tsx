@@ -658,7 +658,7 @@ export default function ClassesPage() {
           thumbnail:    cls.image ? `/api/images/${cls.image}` : '/images/suri.jpg',
           price:        cls.modes?.online?.price ?? 0,
           originalPrice: cls.modes?.offline?.price ?? cls.modes?.online?.price ?? 0,
-          duration:     '1개월 주1회 3시간',
+          duration:     cls.duration || '1개월 주1회 3시간',
           level:        '고3, N수생',
           students:     0,
           rating:       5.0,

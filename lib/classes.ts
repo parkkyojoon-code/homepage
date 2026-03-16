@@ -21,6 +21,7 @@ export interface ClassData {
   category: '수리논술' | '수능수학' | string
   badge?: 'BEST' | 'HOT' | 'NEW' | ''
   image: string | null        // 파일명만 저장 (e.g. "operon.jpg")
+  duration: string            // 예: "1개월 주1회 3시간"
   modes: {
     online:  ClassMode
     offline: ClassMode
@@ -44,6 +45,7 @@ const DEFAULT_CLASSES: ClassData[] = [
     category: '수리논술',
     badge: 'BEST',
     image: null,
+    duration: '1개월 주1회 3시간',
     modes: {
       online:  { enabled: true, price: 400000 },
       offline: { enabled: true, price: 840000, campuses: ['인천 송도'] },
@@ -61,6 +63,7 @@ const DEFAULT_CLASSES: ClassData[] = [
     category: '수능수학',
     badge: 'HOT',
     image: null,
+    duration: '1개월 주1회 3시간',
     modes: {
       online:  { enabled: true, price: 280000 },
       offline: { enabled: false, price: 0, campuses: [] },
