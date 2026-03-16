@@ -7,11 +7,12 @@ import { CheckCircle, ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
 
 // 수업 정보
-const courseInfo: { [key: string]: { title: string; category: string; courseType: string; courseTypeOffline?: string } } = {
-  "1": { title: "수리논술 정규반", category: "수리논술", courseType: "surinonseul-online", courseTypeOffline: "surinonseul-offline" },
-  "2": { title: "수능수학 추월반", category: "수능수학", courseType: "sunung-blueprint-online", courseTypeOffline: "sunung-blueprint-offline" },
-  "3": { title: "수능수학 블루프린트", category: "수능수학", courseType: "sunung-blueprint-online", courseTypeOffline: "sunung-blueprint-offline" },
-  "4": { title: "수능수학 노베탈출", category: "수능수학", courseType: "sunung-escape-online", courseTypeOffline: "sunung-escape-offline" }
+const courseTypeMap = (category: string, option: string, campus: string): string => {
+  const isOnline = option !== 'offline'
+  if (category === '수리논술') {
+    return isOnline ? 'surinonseul-online' : `surinonseul-offline`
+  }
+  return isOnline ? 'sunung-blueprint-online' : 'sunung-blueprint-offline'
 }
 
 export default function ApplyPage() {
@@ -20,13 +21,28 @@ export default function ApplyPage() {
   const searchParams = useSearchParams()
   const courseId = params.id as string
   const option = searchParams.get('option') || 'online'
-  const campus = searchParams.get('campus') || (courseId === "1" ? '서울 대치' : '인천 송도')
+  const campus = searchParams.get('campus') || '인천 송도'
 
-  const courseBase = courseInfo[courseId] || { title: "수업", category: "", courseType: "" }
-  const courseType = (option === "offline" && courseBase.courseTypeOffline)
-    ? courseBase.courseTypeOffline
-    : courseBase.courseType
-  const course = { ...courseBase, courseType, campus }
+  const [classData, setClassData] = useState<{ name: string; category: string } | null>(null)
+  const [classLoading, setClassLoading] = useState(true)
+
+  useEffect(() => {
+    fetch(`/api/classes/${courseId}`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data) setClassData({ name: data.name, category: data.category })
+        setClassLoading(false)
+      })
+      .catch(() => setClassLoading(false))
+  }, [courseId])
+
+  const courseType = classData ? courseTypeMap(classData.category, option, campus) : ''
+  const course = {
+    title: classData?.name ?? '수업',
+    category: classData?.category ?? '',
+    courseType: option === 'offline' ? courseType : courseType,
+    campus,
+  }
 
   const [isMobile, setIsMobile] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -51,6 +67,27 @@ export default function ApplyPage() {
     window.addEventListener('resize', checkMobile)
     return () => window.removeEventListener('resize', checkMobile)
   }, [])
+
+  // 로딩 중
+  if (classLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000' }}>
+        <div style={{ width: 36, height: 36, border: '3px solid rgba(255,255,255,0.1)', borderTop: '3px solid #0066FF', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+      </div>
+    )
+  }
+
+  // 클래스 없음
+  if (!classData) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexDirection: 'column', gap: 16 }}>
+        <h1 style={{ fontSize: '1.5rem' }}>클래스를 찾을 수 없습니다</h1>
+        <button onClick={() => router.push('/classes')} style={{ padding: '12px 24px', background: 'linear-gradient(135deg, #0066FF, #4d8bf5)', border: 'none', borderRadius: 8, color: '#fff', cursor: 'pointer' }}>
+          클래스 목록으로 돌아가기
+        </button>
+      </div>
+    )
+  }
 
   const validateForm = () => {
     const newErrors: { [key: string]: string } = {}

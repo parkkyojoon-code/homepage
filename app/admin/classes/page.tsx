@@ -16,7 +16,7 @@ interface ClassData {
 const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성']
 
 const EMPTY_CLASS = {
-  visible: false, name: '', category: '수리논술', badge: '',
+  customId: '', visible: false, name: '', category: '수리논술', badge: '',
   image: null,
   modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
   textbook: { included: false, price: 0 },
@@ -78,10 +78,13 @@ export default function AdminClassesPage() {
     setSaving(true); setMsg(null)
     const method = isNew ? 'POST' : 'PUT'
     const url    = isNew ? '/api/admin/classes' : `/api/admin/classes/${editTarget.id}`
+    const body   = isNew
+      ? { ...editTarget, id: (editTarget as any).customId || undefined }
+      : editTarget
     const res = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editTarget),
+      body: JSON.stringify(body),
     })
     if (res.ok) {
       const saved = await res.json()
@@ -173,6 +176,9 @@ export default function AdminClassesPage() {
                     {cls.modes.online.enabled && cls.modes.offline.enabled ? ' / ' : ''}
                     {cls.modes.offline.enabled ? `오프라인 ${cls.modes.offline.price.toLocaleString()}원` : ''}
                   </div>
+                  <div style={{ fontSize: 10, color: 'rgba(77,139,245,0.6)', fontFamily: "'DM Mono',monospace", marginTop: 3 }}>
+                    /classes/{cls.id} · /apply/{cls.id}
+                  </div>
                 </div>
 
                 {/* 공개 토글 */}
@@ -247,9 +253,22 @@ export default function AdminClassesPage() {
 
           {/* 기본 정보 */}
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div>
-              <label style={lbl}>수업명</label>
-              <input style={inp} value={e.name} onChange={ev => upd(['name'], ev.target.value)} placeholder="예: 수리논술 오페론" />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={lbl}>수업 ID <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>URL에 사용됨</span></label>
+                <input
+                  style={{ ...inp, fontFamily: "'DM Mono',monospace", opacity: !isNew ? 0.5 : 1 }}
+                  value={isNew ? ((e as any).customId ?? '') : (e as any).id ?? ''}
+                  onChange={ev => isNew && upd(['customId'], ev.target.value.replace(/[^a-z0-9-_]/g, '').toLowerCase())}
+                  placeholder="예: operon (영문·숫자·-만 가능)"
+                  readOnly={!isNew}
+                />
+                {isNew && <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비우면 자동 생성됩니다</p>}
+              </div>
+              <div>
+                <label style={lbl}>수업명</label>
+                <input style={inp} value={e.name} onChange={ev => upd(['name'], ev.target.value)} placeholder="예: 수리논술 오페론" />
+              </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
