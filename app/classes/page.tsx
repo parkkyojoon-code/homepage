@@ -457,7 +457,7 @@ const useURLState = () => {
   const getURLParams = useCallback(() => {
     const url = new URL(window.location.href)
     return {
-      type: url.searchParams.get('type') || 'free',
+      type: url.searchParams.get('type') || 'premium',
       category: url.searchParams.get('category') || 'all',
       search: url.searchParams.get('search') || '',
       sort: url.searchParams.get('sort') || 'popular',
@@ -687,7 +687,7 @@ export default function ClassesPage() {
                           cls.description.toLowerCase().includes(searchQuery.toLowerCase())
       return matchCategory && matchSearch
     })
-  }, [selectedCategory, searchQuery])
+  }, [classesData, selectedCategory, searchQuery])
 
   // 메모이제이션된 정렬
   const sortedClasses = useMemo(() => {
