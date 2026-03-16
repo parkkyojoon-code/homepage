@@ -15,12 +15,12 @@ interface ClassData {
 
 const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성']
 
-
+const EMPTY_CLASS = {
   visible: false, name: '', category: '수리논술', badge: '',
   image: null,
-  modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] } },
+  modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
   textbook: { included: false, price: 0 },
-  description: '', keywords: ['', '', ''],
+  description: '', keywords: ['', '', ''] as [string, string, string],
 }
 
 const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }

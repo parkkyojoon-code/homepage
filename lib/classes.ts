@@ -11,7 +11,7 @@ export type Campus = typeof CAMPUSES[number]
 
   enabled: boolean
   price: number
-  campuses?: string[]  // 오프라인 전용
+  campuses: string[]
 }
 
 export interface ClassData {
