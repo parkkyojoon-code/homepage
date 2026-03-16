@@ -15,8 +15,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const now = new Date().toISOString()
 
+  const newId = body.id?.trim() || generateId(body.name || 'class')
+
   const newClass: ClassData = {
-    id:          generateId(body.name || 'class'),
+    id:          newId,
     visible:     body.visible ?? false,
     name:        body.name || '',
     category:    body.category || '수리논술',
@@ -37,6 +39,11 @@ export async function POST(req: NextRequest) {
   }
 
   const classes = loadClasses()
+
+  if (classes.some(c => c.id === newId)) {
+    return NextResponse.json({ error: `이미 사용 중인 ID입니다: "${newId}"` }, { status: 409 })
+  }
+
   classes.push(newClass)
   saveClasses(classes)
 
