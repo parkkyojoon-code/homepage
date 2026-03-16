@@ -8,7 +8,7 @@ const IMAGES_DIR   = path.join(DATA_DIR, 'class-images')
 export const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성'] as const
 export type Campus = typeof CAMPUSES[number]
 
-
+export interface ClassMode {
   enabled: boolean
   price: number
   campuses: string[]
