@@ -578,45 +578,8 @@ interface CategoryOption {
   label: string
 }
 
-// 클래스 데이터
-const classesData: Class[] = [
-  {
-    id: "1",
-    category: "수리논술",
-    title: "수리논술 오페론",
-    instructor: "박교준",
-    description: "최상위 대학 수리논술 완벽 대비 프로그램",
-    thumbnail: "/images/suri.jpg",
-    price: 400000,
-    originalPrice: 800000,
-    duration: "1개월 주1회 3시간",
-    level: "고3, N수생",
-    students: 89,
-    rating: 5.0,
-    features: ["대학별 맞춤", "논술 첨삭", "합격 보장제"],
-    badge: "BEST",
-    popular: true,
-    type: "premium" as "free" | "premium"
-  },
-  {
-    id: "2",
-    category: "수능수학",
-    title: "수능수학 추월반",
-    instructor: "박교준",
-    description: "수능 만점을 목표로 하는 최상위권 수학 완성 프로그램",
-    thumbnail: "/images/suneung.jpg",
-    price: 280000,
-    originalPrice: 400000,
-    duration: "1개월 주1회 3시간",
-    level: "고3, N수생",
-    students: 234,
-    rating: 4.9,
-    features: ["매일 1:1 피드백", "맞춤형 문제", "실전 모의고사"],
-    badge: "HOT",
-    popular: true,
-    type: "premium" as "free" | "premium"
-  }
-]
+// 클래스 데이터 - API에서 로드
+const classesData: Class[] = []
 
 const premiumCategories: CategoryOption[] = [
   { id: "all", label: "전체" },

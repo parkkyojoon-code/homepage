@@ -23,7 +23,7 @@ export default function AdminDashboard() {
   async function fetchStatus() {
     setStatusLoading(true)
     try {
-      const res = await fetch('/api/admin/status', { cache: 'no-store' })
+      const res = await fetch('/api/admin/homework/status', { cache: 'no-store' })
       if (res.status === 401) { router.push('/admin'); return }
       const data = await res.json()
       setStatus(data)
@@ -55,7 +55,7 @@ export default function AdminDashboard() {
     formData.append('excel', file)
 
     try {
-      const res = await fetch('/api/admin/upload', { method: 'POST', body: formData })
+      const res = await fetch('/api/admin/homework/upload', { method: 'POST', body: formData })
       const data = await res.json()
       if (res.ok) {
         setMessage({ type: 'success', text: data.message || `✅ 업데이트 완료` })

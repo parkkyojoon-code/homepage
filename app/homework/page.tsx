@@ -69,7 +69,7 @@ export default function HomeworkPage() {
     setError(''); setLoading(true); setStudents(null)
 
     try {
-      const res = await fetch('/api/homework', {
+      const res = await fetch('/api/lookup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone }),

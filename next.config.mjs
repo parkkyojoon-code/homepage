@@ -1,5 +1,3 @@
-
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   eslint: {
@@ -8,6 +6,8 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-};
+  // xlsx 같은 Node.js 전용 패키지를 서버에서만 사용
+  serverExternalPackages: ['xlsx'],
+}
 
-export default nextConfig;
+export default nextConfig
