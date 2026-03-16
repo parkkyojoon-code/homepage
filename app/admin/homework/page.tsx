@@ -177,34 +177,12 @@ export default function AdminHomeworkPage() {
           </button>
         </div>
 
-        {/* 업로드 규칙 */}
-        <div style={{ ...card, background: 'rgba(255,255,255,0.02)', padding: '18px 20px', marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
-            업로드 규칙
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            {[
-              'col 0: 학생 이름 / col 1: 학부모 연락처 / col 2: 학생 연락처',
-              'col 3부터 5열씩 과제 블록 반복 (발행일·과제명·제출여부·등급·완성도)',
-              '모의논술의 경우 마지막 열(완성도)은 빈칸으로 비울 것',
-              '과제명에 "모의논술" 포함 시 모의논술, "기초수학" 포함 시 기초수학 테스트로 자동 분류',
-              '14행부터 학생 데이터 시작',
-              '업로드 즉시 조회 페이지에 반영됩니다',
-            ].map((rule, i) => (
-              <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                <span style={{ color: '#4d8bf5', fontWeight: 900, marginTop: 1 }}>·</span>
-                <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>{rule}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
         <div style={{ display: 'flex', gap: 10 }}>
-          <a href="/admin/guide" style={{
+          <button onClick={() => router.push('/admin/homework/guide')} style={{
             flex: 1, textAlign: 'center', padding: '12px',
             background: 'rgba(77,139,245,0.08)', border: '1px solid rgba(77,139,245,0.2)',
-            borderRadius: 12, color: '#4d8bf5', fontSize: 13, fontWeight: 600, textDecoration: 'none',
-          }}>📖 상세 입력 가이드 보기</a>
+            borderRadius: 12, color: '#4d8bf5', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+          }}>📖 상세 입력 가이드 보기</button>
         </div>
 
         <p style={{ textAlign: 'center', marginTop: 48, fontSize: 12, color: 'rgba(255,255,255,0.2)' }}>

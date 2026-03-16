@@ -84,18 +84,11 @@ export default function AdminDashboard() {
               박교준 수리논술 · 관리자
             </span>
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <a href="/admin/guide" style={{
-              fontSize: 12, fontWeight: 600, color: '#4d8bf5',
-              border: '1px solid rgba(77,139,245,0.3)', borderRadius: 8,
-              padding: '7px 14px', textDecoration: 'none',
-            }}>📖 입력 가이드</a>
-            <button onClick={handleLogout} style={{
-              fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)',
-              background: 'none', border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 8, padding: '7px 14px', cursor: 'pointer',
-            }}>로그아웃</button>
-          </div>
+          <button onClick={handleLogout} style={{
+            fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.4)',
+            background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 8, padding: '7px 14px', cursor: 'pointer',
+          }}>로그아웃</button>
         </div>
 
         <h1 style={{ fontSize: 28, fontWeight: 800, color: '#fff', marginBottom: 6 }}>대시보드</h1>
