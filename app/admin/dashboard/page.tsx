@@ -68,7 +68,7 @@ export default function AdminDashboard() {
       accentBorder: 'rgba(52,209,126,0.25)',
       badge: null,
       badgeLabel: null,
-      sub: '준비 중',
+      sub: '',
     },
   ]
 
