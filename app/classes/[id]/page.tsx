@@ -413,6 +413,15 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
   const [selectedOption, setSelectedOption] = useState<'online' | 'offline'>(initialOption)
   const router = useRouter()
 
+  const isOfflineEnabled = classDetail.classType === 'hybrid'
+
+  // 오프라인 미지원 강좌에서 offline으로 들어온 경우 강제 online으로
+  useEffect(() => {
+    if (!isOfflineEnabled && selectedOption === 'offline') {
+      setSelectedOption('online')
+    }
+  }, [isOfflineEnabled, selectedOption])
+
   // 수리논술: 온라인 40만, 오프라인 80만 / 수능수학: 온라인 28만, 오프라인 40만
   const onlinePrice = classDetail.price
   const offlinePrice = classDetail.originalPrice
@@ -535,7 +544,7 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
       <div style={{ padding: '20px 24px' }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
+          gridTemplateColumns: isOfflineEnabled ? '1fr 1fr' : '1fr',
           gap: '8px',
           marginBottom: '16px'
         }}>
@@ -570,36 +579,38 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
             </div>
           </motion.button>
 
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            onClick={() => setSelectedOption('offline')}
-            style={{
-              padding: '16px 12px',
-              background: selectedOption === 'offline'
-                ? 'linear-gradient(135deg, rgba(138, 43, 226, 0.8), rgba(147, 51, 234, 0.6))'
-                : 'rgba(255, 255, 255, 0.05)',
-              border: selectedOption === 'offline'
-                ? '2px solid rgba(138, 43, 226, 0.8)'
-                : '1px solid rgba(255, 255, 255, 0.1)',
-              borderRadius: '16px',
-              color: '#FFFFFF',
-              cursor: 'pointer',
-              transition: 'all 0.3s ease',
-              backdropFilter: 'blur(20px)',
-              position: 'relative',
-              overflow: 'hidden'
-            }}
-          >
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '4px' }}>
-                오프라인
+          {isOfflineEnabled && (
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => setSelectedOption('offline')}
+              style={{
+                padding: '16px 12px',
+                background: selectedOption === 'offline'
+                  ? 'linear-gradient(135deg, rgba(138, 43, 226, 0.8), rgba(147, 51, 234, 0.6))'
+                  : 'rgba(255, 255, 255, 0.05)',
+                border: selectedOption === 'offline'
+                  ? '2px solid rgba(138, 43, 226, 0.8)'
+                  : '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: '16px',
+                color: '#FFFFFF',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+                backdropFilter: 'blur(20px)',
+                position: 'relative',
+                overflow: 'hidden'
+              }}
+            >
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: '600', marginBottom: '4px' }}>
+                  오프라인
+                </div>
+                <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>
+                  {Math.floor(offlinePrice / 10000)}만원
+                </div>
               </div>
-              <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>
-                {Math.floor(offlinePrice / 10000)}만원
-              </div>
-            </div>
-          </motion.button>
+            </motion.button>
+          )}
         </div>
 
         {/* 캠퍼스 선택 - 오프라인 선택 시 표시 */}
@@ -973,8 +984,9 @@ const COMMON_INSTRUCTOR: InstructorInfo = {
 
 // API 데이터 → ClassDetail 변환
 function apiToClassDetail(cls: any): ClassDetail {
-  const onlinePrice  = cls.modes?.online?.price  ?? 0
-  const offlinePrice = cls.modes?.offline?.price ?? 0
+  const onlinePrice   = cls.modes?.online?.price  ?? 0
+  const offlineEnabled = cls.modes?.offline?.enabled ?? false
+  const offlinePrice  = offlineEnabled ? (cls.modes?.offline?.price ?? 0) : 0
 
   return {
     id:            cls.id,
@@ -985,8 +997,8 @@ function apiToClassDetail(cls: any): ClassDetail {
     longDescription: cls.description,
     thumbnail:     cls.image ? `/api/images/${cls.image}` : '/images/suri.jpg',
     price:         onlinePrice,
-    originalPrice: offlinePrice || onlinePrice,
-    duration:      "1개월 주1회 3시간",
+    originalPrice: offlinePrice,
+    duration:      cls.duration || "1개월 주1회 3시간",
     level:         "고3, N수생",
     students:      0,
     rating:        5.0,
@@ -997,7 +1009,7 @@ function apiToClassDetail(cls: any): ClassDetail {
     faqs:          COMMON_FAQS,
     instructorInfo: COMMON_INSTRUCTOR,
     refundPolicy:  "수강 시작 후 7일 이내 환불 가능, 이후 환불 불가",
-    classType:     cls.modes?.offline?.enabled ? "hybrid" : "vod",
+    classType:     offlineEnabled ? "hybrid" : "vod",
     totalLectures: 0,
     totalHours:    0,
     benefits:      cls.keywords ?? [],
