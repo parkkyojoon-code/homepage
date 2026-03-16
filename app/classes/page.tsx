@@ -579,8 +579,6 @@ interface CategoryOption {
 }
 
 // 클래스 데이터 - API에서 로드
-const classesData: Class[] = []
-
 const premiumCategories: CategoryOption[] = [
   { id: "all", label: "전체" },
   { id: "수리논술", label: "수리논술" },
@@ -592,6 +590,7 @@ export default function ClassesPage() {
   const { breakpoint, isMobile, isTablet, isMobileOrTablet } = useResponsive()
   const responsiveConfig = getResponsiveConfig(breakpoint)
 
+  const [classesData, setClassesData] = useState<Class[]>([])
   const [classType, setClassType] = useState<ClassType>("premium")
   const [selectedCategory, setSelectedCategory] = useState<string>("all")
   const [sortBy, setSortBy] = useState<SortOption>("popular")
@@ -637,27 +636,45 @@ export default function ClassesPage() {
     setCurrentPage(1)
   }, [selectedCategory, searchQuery, sortBy, classType])
 
-  // Simulate initial data loading with error handling
+  // API에서 수업 데이터 로드
   useEffect(() => {
     const loadInitialData = async () => {
       try {
         setIsInitialLoading(true)
         setError(null)
 
-        // Simulate API call delay
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        const res = await fetch('/api/classes')
+        if (!res.ok) throw new Error('수업 데이터를 불러오는데 실패했습니다.')
+        const data = await res.json()
 
-        // Simulate potential error (uncomment to test error handling)
-        // if (Math.random() > 0.8) {
-        //   throw new Error('클래스 데이터를 불러오는데 실패했습니다.')
-        // }
+        // API 데이터를 Class 인터페이스 형식으로 변환
+        const mapped: Class[] = data.map((cls: any) => ({
+          id:           cls.id,
+          type:         'premium' as const,
+          category:     cls.category,
+          title:        cls.name,
+          instructor:   '박교준',
+          description:  cls.description,
+          thumbnail:    cls.image ? `/api/images/${cls.image}` : '/images/suri.jpg',
+          price:        cls.modes?.online?.price ?? 0,
+          originalPrice: cls.modes?.offline?.price ?? cls.modes?.online?.price ?? 0,
+          duration:     '1개월 주1회 3시간',
+          level:        '고3, N수생',
+          students:     0,
+          rating:       5.0,
+          features:     cls.keywords ?? [],
+          badge:        cls.badge || undefined,
+          popular:      !!cls.badge,
+        }))
 
+        setClassesData(mapped)
         setIsInitialLoading(false)
       } catch (err) {
         setError(err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.')
         setIsInitialLoading(false)
       }
     }
+
 
     loadInitialData()
   }, [])
