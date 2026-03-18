@@ -15,6 +15,8 @@ interface StudentSummary {
   a_count: number
   b_count: number
   c_count: number
+  password_plain: string
+  is_default_password: boolean
 }
 
 export default function AdminStudentsPage() {
@@ -151,6 +153,20 @@ export default function AdminStudentsPage() {
                 {/* 과제수 */}
                 <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', minWidth: 50, textAlign: 'right' }}>
                   {s.submitted_count}/{s.total_hw}
+                </div>
+
+                {/* 비밀번호 */}
+                <div style={{ textAlign: 'right', minWidth: 90 }}>
+                  <div style={{
+                    fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 700,
+                    color: s.is_default_password ? 'rgba(255,255,255,0.25)' : '#f5c842',
+                    marginBottom: 2,
+                  }}>
+                    {s.password_plain}
+                  </div>
+                  <div style={{ fontSize: 10, color: s.is_default_password ? 'rgba(255,255,255,0.15)' : 'rgba(245,200,66,0.6)' }}>
+                    {s.is_default_password ? '초기 비밀번호' : '변경됨'}
+                  </div>
                 </div>
 
                 <div style={{ fontSize: 16, color: 'rgba(255,255,255,0.2)' }}>›</div>
