@@ -31,7 +31,7 @@ const STUDENTS_FILE = path.join(DATA_DIR, 'students_data.json')
 const META_FILE     = path.join(DATA_DIR, 'meta.json')
 const UPLOAD_DIR    = path.join(DATA_DIR, 'uploads')
 
-const DATA_START_ROW       = 2  // 0-indexed (row 3 in Excel = index 2)
+const DATA_START_ROW       = 1  // 0-indexed (row 2 in Excel = index 1, 1행이 헤더)
 const ASSIGNMENT_START_COL = 4
 const BLOCK_SIZE           = 5
 
@@ -178,29 +178,18 @@ export function parseExcel(buffer: Buffer): Student[] {
     if (s.parent_phone)  phoneToExisting.set(s.parent_phone, s)
   }
 
-  // 타입 감지: DATA_START_ROW 이전 모든 헤더 행을 스캔 (1행·2행 위치 무관)
+  // 타입 감지: 1행(index 0)이 헤더 — 블록 시작 열(5,10,15...)의 값으로 타입 결정
   const blockTypes: Record<number, 'homework' | 'basic_math' | 'mock'> = {}
   const blockNames: Record<number, string> = {}
 
-  // 헤더 행 전체 길이 파악
-  const maxHeaderCol = Math.max(...rows.slice(0, DATA_START_ROW).map(r => (r as unknown[]).length))
+  const headerRow = (rows[0] || []) as unknown[]
 
-  for (let col = ASSIGNMENT_START_COL; col < maxHeaderCol; col += BLOCK_SIZE) {
-    let detectedType: 'homework' | 'basic_math' | 'mock' = 'homework'
-    let detectedName = ''
-
-    // 헤더 구간(row 0 ~ DATA_START_ROW-1) 순서대로 스캔, 키워드 찾으면 확정
-    for (let ri = 0; ri < DATA_START_ROW; ri++) {
-      const h = cellStr((rows[ri] as unknown[])[col])
-      if (!h) continue
-      if (h.includes('모의논술')) { detectedType = 'mock'; detectedName = h; break }
-      if (h.includes('기초수학')) { detectedType = 'basic_math'; detectedName = h; break }
-      // 키워드 없어도 텍스트 있으면 블록 이름으로 기억
-      if (!detectedName) detectedName = h
-    }
-
-    blockTypes[col] = detectedType
-    blockNames[col] = detectedName
+  for (let col = ASSIGNMENT_START_COL; col < headerRow.length; col += BLOCK_SIZE) {
+    const h = cellStr(headerRow[col])
+    if (h.includes('모의논술'))      blockTypes[col] = 'mock'
+    else if (h.includes('기초수학')) blockTypes[col] = 'basic_math'
+    else                             blockTypes[col] = 'homework'
+    blockNames[col] = h
   }
 
   const students: Student[] = []
