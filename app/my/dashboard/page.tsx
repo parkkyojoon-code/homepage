@@ -28,7 +28,7 @@ interface Profile {
   c_count: number
 }
 
-type Tab = 'info' | 'homework' | 'password'
+type Tab = 'homework' | 'info'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
 
 const TYPE_COLOR: Record<string, string> = {
@@ -48,7 +48,7 @@ export default function MyDashboard() {
   const [assignments, setAssignments] = useState<Assignment[]>([])
   const [loading, setLoading] = useState(true)
   const [hwLoading, setHwLoading] = useState(false)
-  const [tab, setTab] = useState<Tab>('info')
+  const [tab, setTab] = useState<Tab>('homework')
 
   const [form, setForm] = useState({ student_phone: '', parent_phone: '', address: '', address_detail: '' })
   const [infoSave, setInfoSave] = useState<SaveState>('idle')
@@ -179,7 +179,7 @@ export default function MyDashboard() {
 
         {/* 탭 */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-          {([['info', '내 정보'], ['homework', '과제 목록'], ['password', '비밀번호']] as [Tab, string][]).map(([key, label]) => (
+          {([['homework', '과제 목록'], ['info', '내 정보']] as [Tab, string][]).map(([key, label]) => (
             <button key={key} onClick={() => setTab(key)} style={{
               padding: '8px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600,
               cursor: 'pointer', border: 'none',
@@ -233,6 +233,46 @@ export default function MyDashboard() {
               }}>
                 {infoSave === 'saving' ? '저장 중…' : infoSave === 'saved' ? '✅ 저장 완료' : infoSave === 'error' ? '저장 실패 — 다시 시도' : '저장하기'}
               </button>
+            </div>
+          </div>
+
+          {/* 비밀번호 변경 카드 */}
+          <div style={card}>
+            <div style={{ padding: '18px 22px 0', fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 18 }}>비밀번호 변경</div>
+            <div style={{ padding: '0 22px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {[
+                ['current', '현재 비밀번호', '현재 비밀번호'],
+                ['next', '새 비밀번호', '6자 이상'],
+                ['confirm', '새 비밀번호 확인', '새 비밀번호 다시 입력'],
+              ].map(([key, label, ph]) => (
+                <div key={key}>
+                  <label style={labelStyle}>{label}</label>
+                  <input type="password" value={pwForm[key as keyof typeof pwForm]}
+                    onChange={e => setPwForm(p => ({ ...p, [key]: e.target.value }))}
+                    placeholder={ph} style={inputStyle}
+                    onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                    onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                </div>
+              ))}
+              {pwMsg && (
+                <div style={{
+                  borderRadius: 8, padding: '10px 14px', fontSize: 13,
+                  background: pwMsg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)',
+                  border: `1px solid ${pwMsg.type === 'success' ? 'rgba(52,209,126,0.25)' : 'rgba(239,84,84,0.22)'}`,
+                  color: pwMsg.type === 'success' ? '#6ef5b0' : '#f08888',
+                }}>{pwMsg.text}</div>
+              )}
+              <button onClick={savePassword} disabled={pwSaving} style={{
+                width: '100%', padding: '13px',
+                background: pwSaving ? 'rgba(0,102,255,0.25)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
+                border: 'none', borderRadius: 12, color: '#fff', fontSize: 14, fontWeight: 700,
+                cursor: pwSaving ? 'not-allowed' : 'pointer',
+              }}>
+                {pwSaving ? '변경 중…' : '비밀번호 변경'}
+              </button>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)', textAlign: 'center' }}>
+                초기 비밀번호: <span style={{ fontFamily: "'DM Mono',monospace", color: 'rgba(255,255,255,0.4)' }}>84431621</span>
+              </div>
             </div>
           </div>
         )}
@@ -330,51 +370,6 @@ export default function MyDashboard() {
                 </div>
               </>
             )}
-          </div>
-        )}
-
-        {/* ─── 비밀번호 탭 ─── */}
-        {tab === 'password' && (
-          <div style={card}>
-            <div style={{ padding: '18px 22px 0', fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 18 }}>비밀번호 변경</div>
-            <div style={{ padding: '0 22px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {[
-                ['current', '현재 비밀번호', '현재 비밀번호'],
-                ['next', '새 비밀번호', '6자 이상'],
-                ['confirm', '새 비밀번호 확인', '새 비밀번호 다시 입력'],
-              ].map(([key, label, ph]) => (
-                <div key={key}>
-                  <label style={labelStyle}>{label}</label>
-                  <input type="password" value={pwForm[key as keyof typeof pwForm]}
-                    onChange={e => setPwForm(p => ({ ...p, [key]: e.target.value }))}
-                    placeholder={ph} style={inputStyle}
-                    onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                    onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
-                </div>
-              ))}
-
-              {pwMsg && (
-                <div style={{
-                  borderRadius: 8, padding: '10px 14px', fontSize: 13,
-                  background: pwMsg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)',
-                  border: `1px solid ${pwMsg.type === 'success' ? 'rgba(52,209,126,0.25)' : 'rgba(239,84,84,0.22)'}`,
-                  color: pwMsg.type === 'success' ? '#6ef5b0' : '#f08888',
-                }}>{pwMsg.text}</div>
-              )}
-
-              <button onClick={savePassword} disabled={pwSaving} style={{
-                width: '100%', padding: '13px',
-                background: pwSaving ? 'rgba(0,102,255,0.25)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
-                border: 'none', borderRadius: 12, color: '#fff', fontSize: 14, fontWeight: 700,
-                cursor: pwSaving ? 'not-allowed' : 'pointer',
-              }}>
-                {pwSaving ? '변경 중…' : '비밀번호 변경'}
-              </button>
-
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)', textAlign: 'center' }}>
-                초기 비밀번호: <span style={{ fontFamily: "'DM Mono',monospace", color: 'rgba(255,255,255,0.4)' }}>84431621</span>
-              </div>
-            </div>
           </div>
         )}
 
