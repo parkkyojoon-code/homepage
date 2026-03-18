@@ -18,6 +18,8 @@ interface Student {
   class: string
   student_phone: string | null
   parent_phone: string | null
+  address: string
+  address_detail: string
   total_hw: number
   submitted_count: number
   submission_rate: number
@@ -29,11 +31,6 @@ interface Student {
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
-const TYPE_LABEL: Record<string, string> = {
-  homework: '과제',
-  basic_math: '기초수학',
-  mock: '모의논술',
-}
 const TYPE_COLOR: Record<string, string> = {
   homework: '#34d17e',
   basic_math: '#4d8bf5',
@@ -49,6 +46,7 @@ export default function StudentDetailPage() {
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [addingRow, setAddingRow] = useState(false)
+  const [resetMsg, setResetMsg] = useState<string | null>(null)
   const [newAssignment, setNewAssignment] = useState<Assignment>({
     type: 'homework', date: '', name: '', submitted: 'X', grade: '-', completeness: null,
   })
@@ -61,7 +59,6 @@ export default function StudentDetailPage() {
       .catch(() => setLoading(false))
   }, [id])
 
-  // auto-save: blur 시 호출
   const save = useCallback(async (body: object) => {
     setSaveStatus('saving')
     try {
@@ -98,11 +95,10 @@ export default function StudentDetailPage() {
   }
 
   function handleDeleteAssignment(index: number) {
-    if (!confirm(`과제 "${student?.assignments[index].name || index + 1}번"을 삭제할까요?`)) return
+    if (!confirm(`"${student?.assignments[index].name || `${index + 1}번`}" 과제를 삭제할까요?`)) return
     save({ field: 'assignment_delete', index })
   }
 
-  // 로컬 과제 state 업데이트 (blur 전 반영용)
   function updateLocalAssignment(index: number, patch: Partial<Assignment>) {
     if (!student) return
     const updated = [...student.assignments]
@@ -110,34 +106,33 @@ export default function StudentDetailPage() {
     setStudent({ ...student, assignments: updated })
   }
 
+  async function handleResetPassword() {
+    if (!confirm('비밀번호를 초기값(84431621)으로 초기화할까요?')) return
+    setResetMsg(null)
+    try {
+      const res = await fetch(`/api/admin/students/${id}/reset-password`, { method: 'POST' })
+      if (res.ok) setResetMsg('✅ 초기화 완료')
+      else setResetMsg('초기화 실패')
+    } catch {
+      setResetMsg('서버 오류')
+    }
+    setTimeout(() => setResetMsg(null), 3000)
+  }
+
   const card: React.CSSProperties = {
     background: 'rgba(255,255,255,0.04)',
     border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 16,
-    marginBottom: 20,
-    overflow: 'hidden',
+    borderRadius: 16, marginBottom: 20, overflow: 'hidden',
   }
   const inputStyle: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.06)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 8,
-    color: '#fff',
-    fontSize: 13,
-    padding: '7px 10px',
-    outline: 'none',
-    width: '100%',
-    boxSizing: 'border-box',
+    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 8, color: '#fff', fontSize: 13, padding: '7px 10px',
+    outline: 'none', width: '100%', boxSizing: 'border-box',
   }
   const cellInput: React.CSSProperties = {
-    background: 'transparent',
-    border: '1px solid transparent',
-    borderRadius: 6,
-    color: '#fff',
-    fontSize: 12,
-    padding: '4px 6px',
-    outline: 'none',
-    width: '100%',
-    boxSizing: 'border-box',
+    background: 'transparent', border: '1px solid transparent',
+    borderRadius: 6, color: '#fff', fontSize: 12, padding: '4px 6px',
+    outline: 'none', width: '100%', boxSizing: 'border-box',
     transition: 'border-color 0.15s, background 0.15s',
   }
 
@@ -152,7 +147,6 @@ export default function StudentDetailPage() {
       불러오는 중…
     </div>
   )
-
   if (!student) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.3)' }}>
       학생을 찾을 수 없습니다.
@@ -173,7 +167,6 @@ export default function StudentDetailPage() {
             <h1 style={{ fontSize: 24, fontWeight: 800, color: '#fff', marginBottom: 4 }}>{student.name}</h1>
             <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.35)' }}>{student.class}</span>
           </div>
-          {/* 저장 상태 */}
           <div style={{
             fontSize: 12, fontWeight: 600, padding: '6px 14px', borderRadius: 20,
             background: saveStatus === 'saving' ? 'rgba(77,139,245,0.15)'
@@ -184,15 +177,12 @@ export default function StudentDetailPage() {
               : saveStatus === 'error' ? '#ef5454' : 'rgba(255,255,255,0.2)',
             transition: 'all 0.2s',
           }}>
-            {saveStatus === 'saving' ? '저장 중…'
-              : saveStatus === 'saved' ? '✓ 저장됨'
-              : saveStatus === 'error' ? '저장 실패'
-              : '자동 저장'}
+            {saveStatus === 'saving' ? '저장 중…' : saveStatus === 'saved' ? '✓ 저장됨' : saveStatus === 'error' ? '저장 실패' : '자동 저장'}
           </div>
         </div>
 
-        {/* 집계 수치 */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 20 }}>
+        {/* 집계 */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 20 }}>
           {[
             { label: '제출률', value: `${student.submission_rate}%`, color: rateColor(student.submission_rate) },
             { label: 'A등급', value: student.a_count, color: '#4d8bf5' },
@@ -224,13 +214,46 @@ export default function StudentDetailPage() {
                   defaultValue={val}
                   style={inputStyle}
                   onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                  onBlur={e => {
-                    e.target.style.borderColor = 'rgba(255,255,255,0.1)'
-                    handleInfoBlur(field, e.target.value)
-                  }}
+                  onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; handleInfoBlur(field, e.target.value) }}
                 />
               </div>
             ))}
+          </div>
+
+          {/* 배송지 */}
+          <div style={{ padding: '0 20px 20px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.3)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>배송지</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input
+                defaultValue={student.address ?? ''}
+                placeholder="기본 주소"
+                style={inputStyle}
+                onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; handleInfoBlur('address', e.target.value) }}
+              />
+              <input
+                defaultValue={student.address_detail ?? ''}
+                placeholder="상세 주소"
+                style={inputStyle}
+                onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; handleInfoBlur('address_detail', e.target.value) }}
+              />
+            </div>
+          </div>
+
+          {/* 비밀번호 초기화 */}
+          <div style={{ padding: '12px 20px 16px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button onClick={handleResetPassword} style={{
+              padding: '7px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+              background: 'rgba(239,84,84,0.08)', border: '1px solid rgba(239,84,84,0.2)',
+              color: '#f08888', cursor: 'pointer',
+            }}>
+              🔑 비밀번호 초기화
+            </button>
+            {resetMsg && (
+              <span style={{ fontSize: 12, color: resetMsg.startsWith('✅') ? '#34d17e' : '#f08888' }}>{resetMsg}</span>
+            )}
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>초기값: 84431621</span>
           </div>
         </div>
 
@@ -240,14 +263,11 @@ export default function StudentDetailPage() {
             <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>
               과제 목록 <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>({student.assignments.length}개)</span>
             </div>
-            <button
-              onClick={() => setAddingRow(true)}
-              style={{
-                fontSize: 12, fontWeight: 600, color: '#4d8bf5',
-                background: 'rgba(77,139,245,0.1)', border: '1px solid rgba(77,139,245,0.25)',
-                borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
-              }}
-            >+ 과제 추가</button>
+            <button onClick={() => setAddingRow(true)} style={{
+              fontSize: 12, fontWeight: 600, color: '#4d8bf5',
+              background: 'rgba(77,139,245,0.1)', border: '1px solid rgba(77,139,245,0.25)',
+              borderRadius: 8, padding: '6px 12px', cursor: 'pointer',
+            }}>+ 과제 추가</button>
           </div>
 
           <div style={{ overflowX: 'auto' }}>
@@ -259,8 +279,7 @@ export default function StudentDetailPage() {
                       padding: '10px 12px', fontSize: 10, fontWeight: 700,
                       color: 'rgba(255,255,255,0.3)', textAlign: 'left',
                       letterSpacing: '0.07em', textTransform: 'uppercase',
-                      borderBottom: '1px solid rgba(255,255,255,0.06)',
-                      whiteSpace: 'nowrap',
+                      borderBottom: '1px solid rgba(255,255,255,0.06)', whiteSpace: 'nowrap',
                     }}>{h}</th>
                   ))}
                 </tr>
@@ -271,32 +290,25 @@ export default function StudentDetailPage() {
                     onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.02)')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                   >
-                    {/* # */}
                     <td style={{ padding: '6px 12px', fontSize: 11, color: 'rgba(255,255,255,0.25)', fontFamily: "'DM Mono',monospace", whiteSpace: 'nowrap' }}>{i + 1}</td>
 
-                    {/* 타입 */}
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <select
-                        value={a.type}
+                      <select value={a.type}
                         onChange={e => updateLocalAssignment(i, { type: e.target.value as Assignment['type'] })}
                         onBlur={e => handleAssignmentBlur(i, { ...a, type: e.target.value as Assignment['type'] })}
                         style={{
-                          background: `${TYPE_COLOR[a.type]}18`,
-                          border: `1px solid ${TYPE_COLOR[a.type]}40`,
-                          borderRadius: 6, color: TYPE_COLOR[a.type],
-                          fontSize: 11, fontWeight: 700, padding: '3px 6px', cursor: 'pointer', outline: 'none',
-                        }}
-                      >
+                          background: `${TYPE_COLOR[a.type]}18`, border: `1px solid ${TYPE_COLOR[a.type]}40`,
+                          borderRadius: 6, color: TYPE_COLOR[a.type], fontSize: 11, fontWeight: 700,
+                          padding: '3px 6px', cursor: 'pointer', outline: 'none',
+                        }}>
                         <option value="homework">과제</option>
                         <option value="basic_math">기초수학</option>
                         <option value="mock">모의논술</option>
                       </select>
                     </td>
 
-                    {/* 날짜 */}
                     <td style={{ padding: '6px 8px', minWidth: 100 }}>
-                      <input
-                        value={a.date}
+                      <input value={a.date}
                         onChange={e => updateLocalAssignment(i, { date: e.target.value })}
                         onBlur={e => handleAssignmentBlur(i, { ...a, date: e.target.value })}
                         style={{ ...cellInput, minWidth: 90 }}
@@ -305,10 +317,8 @@ export default function StudentDetailPage() {
                       />
                     </td>
 
-                    {/* 과제명 */}
                     <td style={{ padding: '6px 8px', minWidth: 160 }}>
-                      <input
-                        value={a.name}
+                      <input value={a.name}
                         onChange={e => updateLocalAssignment(i, { name: e.target.value })}
                         onBlur={e => handleAssignmentBlur(i, { ...a, name: e.target.value })}
                         style={{ ...cellInput, minWidth: 150 }}
@@ -317,46 +327,36 @@ export default function StudentDetailPage() {
                       />
                     </td>
 
-                    {/* 제출 O/X */}
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <button
-                        onClick={() => {
-                          const toggled = a.submitted === 'O' ? 'X' : 'O'
-                          updateLocalAssignment(i, { submitted: toggled })
-                          save({ field: 'assignment_update', index: i, assignment: { ...a, submitted: toggled } })
-                        }}
-                        style={{
-                          padding: '4px 12px', borderRadius: 6, fontSize: 13, fontWeight: 800,
-                          cursor: 'pointer', border: 'none',
-                          background: a.submitted === 'O' ? 'rgba(52,209,126,0.15)' : 'rgba(239,84,84,0.1)',
-                          color: a.submitted === 'O' ? '#34d17e' : '#ef5454',
-                        }}
-                      >{a.submitted}</button>
+                      <button onClick={() => {
+                        const toggled = a.submitted === 'O' ? 'X' : 'O'
+                        updateLocalAssignment(i, { submitted: toggled })
+                        save({ field: 'assignment_update', index: i, assignment: { ...a, submitted: toggled } })
+                      }} style={{
+                        padding: '4px 12px', borderRadius: 6, fontSize: 13, fontWeight: 800,
+                        cursor: 'pointer', border: 'none',
+                        background: a.submitted === 'O' ? 'rgba(52,209,126,0.15)' : 'rgba(239,84,84,0.1)',
+                        color: a.submitted === 'O' ? '#34d17e' : '#ef5454',
+                      }}>{a.submitted}</button>
                     </td>
 
-                    {/* 등급 */}
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <select
-                        value={a.grade}
+                      <select value={a.grade}
                         onChange={e => updateLocalAssignment(i, { grade: e.target.value })}
                         onBlur={e => handleAssignmentBlur(i, { ...a, grade: e.target.value })}
                         disabled={a.type === 'mock'}
                         style={{
-                          background: 'rgba(255,255,255,0.06)',
-                          border: '1px solid rgba(255,255,255,0.1)',
+                          background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
                           borderRadius: 6, color: a.type === 'mock' ? 'rgba(255,255,255,0.2)' : '#fff',
-                          fontSize: 12, padding: '3px 6px', cursor: a.type === 'mock' ? 'not-allowed' : 'pointer',
-                          outline: 'none',
-                        }}
-                      >
+                          fontSize: 12, padding: '3px 6px',
+                          cursor: a.type === 'mock' ? 'not-allowed' : 'pointer', outline: 'none',
+                        }}>
                         {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g}>{g}</option>)}
                       </select>
                     </td>
 
-                    {/* 완성도 */}
                     <td style={{ padding: '6px 8px', minWidth: 70 }}>
-                      <input
-                        type="number"
+                      <input type="number"
                         value={a.completeness ?? ''}
                         onChange={e => updateLocalAssignment(i, { completeness: e.target.value ? Number(e.target.value) : null })}
                         onBlur={e => handleAssignmentBlur(i, { ...a, completeness: e.target.value ? Number(e.target.value) : null })}
@@ -367,15 +367,11 @@ export default function StudentDetailPage() {
                       />
                     </td>
 
-                    {/* 삭제 */}
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <button
-                        onClick={() => handleDeleteAssignment(i)}
-                        style={{
-                          background: 'none', border: 'none', cursor: 'pointer',
-                          color: 'rgba(239,84,84,0.4)', fontSize: 14, padding: '4px 6px',
-                          borderRadius: 6, transition: 'color 0.15s',
-                        }}
+                      <button onClick={() => handleDeleteAssignment(i)} style={{
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: 'rgba(239,84,84,0.4)', fontSize: 14, padding: '4px 6px', borderRadius: 6,
+                      }}
                         onMouseEnter={e => (e.currentTarget.style.color = '#ef5454')}
                         onMouseLeave={e => (e.currentTarget.style.color = 'rgba(239,84,84,0.4)')}
                       >✕</button>
@@ -383,22 +379,13 @@ export default function StudentDetailPage() {
                   </tr>
                 ))}
 
-                {/* 새 과제 추가 행 */}
                 {addingRow && (
                   <tr style={{ background: 'rgba(77,139,245,0.04)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                     <td style={{ padding: '8px 12px', fontSize: 11, color: 'rgba(255,255,255,0.25)' }}>new</td>
-
                     <td style={{ padding: '6px 8px' }}>
-                      <select
-                        value={newAssignment.type}
+                      <select value={newAssignment.type}
                         onChange={e => setNewAssignment(p => ({ ...p, type: e.target.value as Assignment['type'] }))}
-                        style={{
-                          background: `${TYPE_COLOR[newAssignment.type]}18`,
-                          border: `1px solid ${TYPE_COLOR[newAssignment.type]}40`,
-                          borderRadius: 6, color: TYPE_COLOR[newAssignment.type],
-                          fontSize: 11, fontWeight: 700, padding: '3px 6px', outline: 'none',
-                        }}
-                      >
+                        style={{ background: `${TYPE_COLOR[newAssignment.type]}18`, border: `1px solid ${TYPE_COLOR[newAssignment.type]}40`, borderRadius: 6, color: TYPE_COLOR[newAssignment.type], fontSize: 11, fontWeight: 700, padding: '3px 6px', outline: 'none' }}>
                         <option value="homework">과제</option>
                         <option value="basic_math">기초수학</option>
                         <option value="mock">모의논술</option>
@@ -413,42 +400,27 @@ export default function StudentDetailPage() {
                         placeholder="과제명" style={{ ...cellInput, minWidth: 150, borderColor: 'rgba(77,139,245,0.3)', background: 'rgba(255,255,255,0.04)' }} />
                     </td>
                     <td style={{ padding: '6px 8px' }}>
-                      <button
-                        onClick={() => setNewAssignment(p => ({ ...p, submitted: p.submitted === 'O' ? 'X' : 'O' }))}
-                        style={{
-                          padding: '4px 12px', borderRadius: 6, fontSize: 13, fontWeight: 800,
-                          cursor: 'pointer', border: 'none',
-                          background: newAssignment.submitted === 'O' ? 'rgba(52,209,126,0.15)' : 'rgba(239,84,84,0.1)',
-                          color: newAssignment.submitted === 'O' ? '#34d17e' : '#ef5454',
-                        }}
-                      >{newAssignment.submitted}</button>
+                      <button onClick={() => setNewAssignment(p => ({ ...p, submitted: p.submitted === 'O' ? 'X' : 'O' }))}
+                        style={{ padding: '4px 12px', borderRadius: 6, fontSize: 13, fontWeight: 800, cursor: 'pointer', border: 'none', background: newAssignment.submitted === 'O' ? 'rgba(52,209,126,0.15)' : 'rgba(239,84,84,0.1)', color: newAssignment.submitted === 'O' ? '#34d17e' : '#ef5454' }}>
+                        {newAssignment.submitted}
+                      </button>
                     </td>
                     <td style={{ padding: '6px 8px' }}>
-                      <select
-                        value={newAssignment.grade}
-                        onChange={e => setNewAssignment(p => ({ ...p, grade: e.target.value }))}
-                        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#fff', fontSize: 12, padding: '3px 6px', outline: 'none' }}
-                      >
+                      <select value={newAssignment.grade} onChange={e => setNewAssignment(p => ({ ...p, grade: e.target.value }))}
+                        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#fff', fontSize: 12, padding: '3px 6px', outline: 'none' }}>
                         {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g}>{g}</option>)}
                       </select>
                     </td>
                     <td style={{ padding: '6px 8px' }}>
                       <input type="number" value={newAssignment.completeness ?? ''}
                         onChange={e => setNewAssignment(p => ({ ...p, completeness: e.target.value ? Number(e.target.value) : null }))}
-                        placeholder="—"
-                        style={{ ...cellInput, minWidth: 60, borderColor: 'rgba(77,139,245,0.3)', background: 'rgba(255,255,255,0.04)' }} />
+                        placeholder="—" style={{ ...cellInput, minWidth: 60, borderColor: 'rgba(77,139,245,0.3)', background: 'rgba(255,255,255,0.04)' }} />
                     </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap', display: 'flex', gap: 6 }}>
-                      <button onClick={handleAddAssignment} style={{
-                        background: 'rgba(52,209,126,0.15)', border: '1px solid rgba(52,209,126,0.3)',
-                        borderRadius: 6, color: '#34d17e', fontSize: 12, fontWeight: 700,
-                        padding: '4px 10px', cursor: 'pointer',
-                      }}>추가</button>
-                      <button onClick={() => setAddingRow(false)} style={{
-                        background: 'none', border: '1px solid rgba(255,255,255,0.1)',
-                        borderRadius: 6, color: 'rgba(255,255,255,0.3)', fontSize: 12,
-                        padding: '4px 8px', cursor: 'pointer',
-                      }}>✕</button>
+                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button onClick={handleAddAssignment} style={{ background: 'rgba(52,209,126,0.15)', border: '1px solid rgba(52,209,126,0.3)', borderRadius: 6, color: '#34d17e', fontSize: 12, fontWeight: 700, padding: '4px 10px', cursor: 'pointer' }}>추가</button>
+                        <button onClick={() => setAddingRow(false)} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.3)', fontSize: 12, padding: '4px 8px', cursor: 'pointer' }}>✕</button>
+                      </div>
                     </td>
                   </tr>
                 )}

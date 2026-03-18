@@ -77,6 +77,19 @@ export default function AdminDashboard() {
       badgeLabel: null,
       sub: '과제 추가·수정·삭제',
     },
+    {
+      key: 'addresses',
+      icon: '📦',
+      label: '배송지 관리',
+      desc: '학생별 배송지 일괄 조회 및 엑셀 다운로드',
+      href: '/admin/addresses',
+      accent: '#f5a623',
+      accentDim: 'rgba(245,166,35,0.12)',
+      accentBorder: 'rgba(245,166,35,0.25)',
+      badge: null,
+      badgeLabel: null,
+      sub: '이름·번호·주소 검색 · 반별 필터',
+    },
   ]
 
   return (

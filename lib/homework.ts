@@ -23,10 +23,10 @@
 import fs from 'fs'
 import path from 'path'
 import * as XLSX from 'xlsx'
-import { randomUUID } from 'crypto'
+import { randomUUID, createHash } from 'crypto'
 
 // ── 경로 ────────────────────────────────────────────────────────────
-const DATA_DIR     = process.env.DATA_DIR || '/app/data'
+const DATA_DIR      = process.env.DATA_DIR || '/app/data'
 const STUDENTS_FILE = path.join(DATA_DIR, 'students_data.json')
 const META_FILE     = path.join(DATA_DIR, 'meta.json')
 const UPLOAD_DIR    = path.join(DATA_DIR, 'uploads')
@@ -34,6 +34,13 @@ const UPLOAD_DIR    = path.join(DATA_DIR, 'uploads')
 const DATA_START_ROW       = 2  // 0-indexed (row 3 in Excel = index 2)
 const ASSIGNMENT_START_COL = 4
 const BLOCK_SIZE           = 5
+
+// 초기 비밀번호 해시 (84431621)
+export const INITIAL_PASSWORD_HASH = '8c666cfec12f51780ab882860a24289ad405c505ee66d6767e69db850221a42d'
+
+export function hashPassword(pw: string): string {
+  return createHash('sha256').update(pw).digest('hex')
+}
 
 // ── 타입 ────────────────────────────────────────────────────────────
 export interface Assignment {
@@ -51,6 +58,9 @@ export interface Student {
   name: string
   student_phone: string | null
   parent_phone: string | null
+  password: string        // SHA-256 해시, 초기값 84431621
+  address: string         // 기본 주소
+  address_detail: string  // 상세 주소
   total_hw: number
   submitted_count: number
   submission_rate: number
@@ -58,29 +68,6 @@ export interface Student {
   b_count: number
   c_count: number
   assignments: Assignment[]
-}
-
-// 과제 목록으로 집계 수치 재계산
-export function recalcStats(student: Student): Student {
-  const { assignments } = student
-  const total = assignments.length
-  const submitted = assignments.filter(a => a.submitted === 'O').length
-  let a = 0, b = 0, c = 0
-  for (const a_ of assignments) {
-    if (a_.type === 'mock') continue
-    if (a_.grade === 'A') a++
-    else if (a_.grade === 'B') b++
-    else if (a_.grade === 'C') c++
-  }
-  return {
-    ...student,
-    total_hw: total,
-    submitted_count: submitted,
-    submission_rate: total > 0 ? Math.round(submitted / total * 100) : 0,
-    a_count: a,
-    b_count: b,
-    c_count: c,
-  }
 }
 
 export interface HomeworkMeta {
@@ -98,7 +85,6 @@ function ensureDirs() {
 function normalizePhone(val: unknown): string | null {
   if (val == null) return null
   const digits = String(val).replace(/\D/g, '')
-  // 10자리 숫자이고 "10"으로 시작하면 앞에 "0" 추가 (010 → 010)
   const normalized = digits.length === 10 && digits.startsWith('10')
     ? '0' + digits
     : digits
@@ -153,6 +139,29 @@ export function lookupByPhone(phone: string): Student[] {
   )
 }
 
+// ── 집계 재계산 ─────────────────────────────────────────────────────
+export function recalcStats(student: Student): Student {
+  const { assignments } = student
+  const total = assignments.length
+  const submitted = assignments.filter(a => a.submitted === 'O').length
+  let a = 0, b = 0, c = 0
+  for (const a_ of assignments) {
+    if (a_.type === 'mock') continue
+    if (a_.grade === 'A') a++
+    else if (a_.grade === 'B') b++
+    else if (a_.grade === 'C') c++
+  }
+  return {
+    ...student,
+    total_hw: total,
+    submitted_count: submitted,
+    submission_rate: total > 0 ? Math.round(submitted / total * 100) : 0,
+    a_count: a,
+    b_count: b,
+    c_count: c,
+  }
+}
+
 // ── 엑셀 파싱 ───────────────────────────────────────────────────────
 export function parseExcel(buffer: Buffer): Student[] {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
@@ -161,14 +170,21 @@ export function parseExcel(buffer: Buffer): Student[] {
 
   if (rows.length < 3) return []
 
-  // row 2 (index 1) 헤더에서 블록 타입 미리 파악
+  // 기존 학생 로드 → 비밀번호/배송지 보존을 위해
+  const existingStudents = loadStudents()
+  const phoneToExisting = new Map<string, Student>()
+  for (const s of existingStudents) {
+    if (s.student_phone) phoneToExisting.set(s.student_phone, s)
+    if (s.parent_phone)  phoneToExisting.set(s.parent_phone, s)
+  }
+
   const headerRow = (rows[1] || []) as unknown[]
   const blockTypes: Record<number, 'homework' | 'basic_math' | 'mock'> = {}
   const blockNames: Record<number, string> = {}
 
   for (let col = ASSIGNMENT_START_COL; col < headerRow.length; col += BLOCK_SIZE) {
     const h = cellStr(headerRow[col])
-    if (h.includes('모의논술'))   blockTypes[col] = 'mock'
+    if (h.includes('모의논술'))      blockTypes[col] = 'mock'
     else if (h.includes('기초수학')) blockTypes[col] = 'basic_math'
     else                             blockTypes[col] = 'homework'
     blockNames[col] = h
@@ -176,7 +192,6 @@ export function parseExcel(buffer: Buffer): Student[] {
 
   const students: Student[] = []
 
-  // row 3+ (index 2+) 학생 데이터
   for (let ri = DATA_START_ROW; ri < rows.length; ri++) {
     const row = rows[ri] as unknown[]
     if (!row || row.length < 4) continue
@@ -192,16 +207,21 @@ export function parseExcel(buffer: Buffer): Student[] {
     const parentPhone  = normalizePhone(parentRaw)
     if (!studentPhone && !parentPhone) continue
 
+    // 기존 학생에서 비밀번호/배송지 보존
+    const existing = (studentPhone && phoneToExisting.get(studentPhone))
+      || (parentPhone && phoneToExisting.get(parentPhone))
+      || null
+
     const assignments: Assignment[] = []
     let totalCount  = 0
     let submitCount = 0
     let aCount = 0, bCount = 0, cCount = 0
 
     for (let col = ASSIGNMENT_START_COL; col + BLOCK_SIZE <= row.length; col += BLOCK_SIZE) {
-      const dateVal     = row[col]
-      const content     = row[col + 1]
-      const submittedYn = row[col + 2]
-      const gradeVal    = row[col + 3]
+      const dateVal      = row[col]
+      const content      = row[col + 1]
+      const submittedYn  = row[col + 2]
+      const gradeVal     = row[col + 3]
       const completeness = row[col + 4]
 
       if (dateVal == null && content == null) continue
@@ -211,18 +231,15 @@ export function parseExcel(buffer: Buffer): Student[] {
       const gradeStr     = cellStr(gradeVal) || '-'
       const compVal      = typeof completeness === 'number' ? completeness : null
 
-      // 제출 카운트 (전 타입)
       totalCount++
       if (submittedStr === 'O') submitCount++
 
-      // A/B/C 카운트 (과제 + 기초수학)
       if (blockType !== 'mock') {
         if (gradeStr === 'A') aCount++
         else if (gradeStr === 'B') bCount++
         else if (gradeStr === 'C') cCount++
       }
 
-      // 모의논술은 row2 헤더 이름 사용
       const displayName = blockType === 'mock'
         ? (blockNames[col] || '모의논술')
         : cellStr(content)
@@ -231,18 +248,21 @@ export function parseExcel(buffer: Buffer): Student[] {
         type:         blockType,
         date:         cellStr(dateVal),
         name:         displayName,
-        submitted:    submittedStr,
+        submitted:    submittedStr as 'O' | 'X',
         grade:        gradeStr,
         completeness: compVal,
       })
     }
 
     students.push({
-      id:              randomUUID(),
+      id:              existing?.id ?? randomUUID(),
       class:           className,
       name,
       student_phone:   studentPhone,
       parent_phone:    parentPhone,
+      password:        existing?.password ?? INITIAL_PASSWORD_HASH,
+      address:         existing?.address ?? '',
+      address_detail:  existing?.address_detail ?? '',
       total_hw:        totalCount,
       submitted_count: submitCount,
       submission_rate: totalCount > 0 ? Math.round(submitCount / totalCount * 100) : 0,

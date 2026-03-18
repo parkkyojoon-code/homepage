@@ -252,12 +252,12 @@ export default function InstructorIntro2() {
           >
             {/* Education Section */}
             <p style={{
-              fontSize: '1.5rem',
-              fontWeight: '700',
+              fontSize: '0.75rem',
               color: '#FFFFFF',
               marginBottom: '0.5rem',
               marginTop: '1rem',
-              letterSpacing: '0.05em'
+              textTransform: 'uppercase',
+              letterSpacing: '0.1em'
             }}>
               학력
             </p>
@@ -364,12 +364,12 @@ export default function InstructorIntro2() {
 
             {/* Career Section */}
             <p style={{
-              fontSize: '1.5rem',
-              fontWeight: '700',
+              fontSize: '0.75rem',
               color: '#FFFFFF',
               marginBottom: '0.5rem',
               marginTop: '2rem',
-              letterSpacing: '0.05em'
+              textTransform: 'uppercase',
+              letterSpacing: '0.1em'
             }}>
               경력
             </p>

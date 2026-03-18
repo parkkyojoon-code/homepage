@@ -1,16 +1,11 @@
 import { NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
+import { isAdminAuthed } from '@/lib/admin-auth'
 import { loadStudents, saveStudents, recalcStats } from '@/lib/homework'
 import type { Assignment } from '@/lib/homework'
 
-function isAuthed() {
-  const cookieStore = cookies()
-  return cookieStore.get('admin_session')?.value === process.env.ADMIN_SECRET
-}
-
 // GET /api/admin/students/[id] — 학생 전체 상세
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
-  if (!isAuthed()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!await isAdminAuthed()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const students = loadStudents()
   const student = students.find(s => s.id === params.id)
   if (!student) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -26,7 +21,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 //   { field: 'assignment_add', assignment: { ...Assignment } }
 //   { field: 'assignment_delete', index: 2 }
 export async function PATCH(req: Request, { params }: { params: { id: string } }) {
-  if (!isAuthed()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!await isAdminAuthed()) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const students = loadStudents()
   const idx = students.findIndex(s => s.id === params.id)
@@ -37,7 +32,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   const { field } = body
 
-  if (field === 'name' || field === 'class' || field === 'student_phone' || field === 'parent_phone') {
+  if (field === 'name' || field === 'class' || field === 'student_phone' || field === 'parent_phone' || field === 'address' || field === 'address_detail') {
     student = { ...student, [field]: body.value ?? null }
 
   } else if (field === 'assignment_update') {

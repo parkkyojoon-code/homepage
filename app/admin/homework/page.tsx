@@ -178,7 +178,7 @@ export default function AdminHomeworkPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => router.push('/admin/homework/guide')} style={{
+          <button onClick={() => window.location.href = '/admin/guide'} style={{
             flex: 1, textAlign: 'center', padding: '12px',
             background: 'rgba(77,139,245,0.08)', border: '1px solid rgba(77,139,245,0.2)',
             borderRadius: 12, color: '#4d8bf5', fontSize: 13, fontWeight: 600, cursor: 'pointer',
