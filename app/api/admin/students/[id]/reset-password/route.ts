@@ -10,6 +10,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
   if (idx === -1) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   students[idx].password = INITIAL_PASSWORD_HASH
+  students[idx].password_plain = '84431621'
   saveStudents(students)
 
   return NextResponse.json({ ok: true })

@@ -24,6 +24,7 @@ export async function PATCH(req: NextRequest) {
   if (idx === -1) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   students[idx].password = hashPassword(String(new_password))
+  students[idx].password_plain = String(new_password)
   saveStudents(students)
 
   return NextResponse.json({ ok: true })

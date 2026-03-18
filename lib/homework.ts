@@ -59,6 +59,7 @@ export interface Student {
   student_phone: string | null
   parent_phone: string | null
   password: string        // SHA-256 해시, 초기값 84431621
+  password_plain: string  // 평문 (어드민 확인용), 초기값 84431621
   address: string         // 기본 주소
   address_detail: string  // 상세 주소
   total_hw: number
@@ -263,6 +264,7 @@ export function parseExcel(buffer: Buffer): Student[] {
       student_phone:   studentPhone,
       parent_phone:    parentPhone,
       password:        existing?.password ?? INITIAL_PASSWORD_HASH,
+      password_plain:  existing?.password_plain ?? '84431621',
       address:         existing?.address ?? '',
       address_detail:  existing?.address_detail ?? '',
       total_hw:        totalCount,

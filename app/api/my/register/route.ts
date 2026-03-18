@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
     student_phone:   studentPhone,
     parent_phone:    parentPhone,
     password:        hashPassword(String(password)),
+    password_plain:  String(password),
     address:         '',
     address_detail:  '',
     total_hw:        0,

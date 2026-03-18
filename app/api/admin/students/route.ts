@@ -12,6 +12,8 @@ export async function GET() {
     class: s.class,
     student_phone: s.student_phone,
     parent_phone: s.parent_phone,
+    password_plain: s.password_plain ?? '84431621',
+    is_default_password: !s.password_plain || s.password_plain === '84431621',
     total_hw: s.total_hw,
     submitted_count: s.submitted_count,
     submission_rate: s.submission_rate,
