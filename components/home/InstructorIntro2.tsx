@@ -252,7 +252,7 @@ export default function InstructorIntro2() {
           >
             {/* Education Section */}
             <p style={{
-              fontSize: '1.3rem',
+              fontSize: '1.5rem',
               fontWeight: '700',
               color: '#FFFFFF',
               marginBottom: '0.5rem',
@@ -364,7 +364,7 @@ export default function InstructorIntro2() {
 
             {/* Career Section */}
             <p style={{
-              fontSize: '1.3rem',
+              fontSize: '1.5rem',
               fontWeight: '700',
               color: '#FFFFFF',
               marginBottom: '0.5rem',
