@@ -32,7 +32,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
   const { field } = body
 
-  if (field === 'name' || field === 'class' || field === 'student_phone' || field === 'parent_phone' || field === 'address' || field === 'address_detail') {
+  if (field === 'name' || field === 'class' || field === 'student_phone' || field === 'parent_phone' || field === 'address' || field === 'address_detail' || field === 'zipcode') {
     student = { ...student, [field]: body.value ?? null }
 
   } else if (field === 'assignment_update') {

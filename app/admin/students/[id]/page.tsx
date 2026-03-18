@@ -20,6 +20,7 @@ interface Student {
   parent_phone: string | null
   address: string
   address_detail: string
+  zipcode: string
   total_hw: number
   submitted_count: number
   submission_rate: number
@@ -224,13 +225,22 @@ export default function StudentDetailPage() {
           <div style={{ padding: '0 20px 20px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.3)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.06em' }}>배송지</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <input
-                defaultValue={student.address ?? ''}
-                placeholder="기본 주소"
-                style={inputStyle}
-                onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; handleInfoBlur('address', e.target.value) }}
-              />
+              <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 8 }}>
+                <input
+                  defaultValue={student.zipcode ?? ''}
+                  placeholder="우편번호"
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                  onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; handleInfoBlur('zipcode', e.target.value) }}
+                />
+                <input
+                  defaultValue={student.address ?? ''}
+                  placeholder="기본 주소"
+                  style={inputStyle}
+                  onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                  onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.1)'; handleInfoBlur('address', e.target.value) }}
+                />
+              </div>
               <input
                 defaultValue={student.address_detail ?? ''}
                 placeholder="상세 주소"

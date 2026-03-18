@@ -50,14 +50,13 @@ export default function MyDashboard() {
   const [hwLoading, setHwLoading] = useState(false)
   const [tab, setTab] = useState<Tab>('homework')
 
-  const [form, setForm] = useState({ student_phone: '', parent_phone: '', address: '', address_detail: '' })
+  const [form, setForm] = useState({ student_phone: '', parent_phone: '', zipcode: '', address: '', address_detail: '' })
   const [infoSave, setInfoSave] = useState<SaveState>('idle')
 
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
   const [pwMsg, setPwMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [pwSaving, setPwSaving] = useState(false)
 
-  // 과제 필터
   const [typeFilter, setTypeFilter] = useState<string>('전체')
   const [submitFilter, setSubmitFilter] = useState<string>('전체')
 
@@ -67,7 +66,7 @@ export default function MyDashboard() {
       .then(data => {
         if (!data) return
         setProfile(data)
-        setForm({ student_phone: data.student_phone ?? '', parent_phone: data.parent_phone ?? '', address: data.address ?? '', address_detail: data.address_detail ?? '' })
+        setForm({ student_phone: data.student_phone ?? '', parent_phone: data.parent_phone ?? '', zipcode: data.zipcode ?? '', address: data.address ?? '', address_detail: data.address_detail ?? '' })
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -191,87 +190,99 @@ export default function MyDashboard() {
 
         {/* ─── 내 정보 탭 ─── */}
         {tab === 'info' && (
-          <div style={card}>
-            <div style={{ padding: '18px 22px 0', fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 18 }}>연락처 · 배송지</div>
-            <div style={{ padding: '0 22px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            {/* 연락처·배송지 카드 */}
+            <div style={card}>
+              <div style={{ padding: '18px 22px 0', fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 18 }}>연락처 · 배송지</div>
+              <div style={{ padding: '0 22px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div>
+                    <label style={labelStyle}>학생 번호</label>
+                    <input value={form.student_phone} onChange={e => setForm(p => ({ ...p, student_phone: e.target.value }))}
+                      placeholder="010-0000-0000" style={inputStyle}
+                      onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>결제 안내 번호 (학부모님)</label>
+                    <input value={form.parent_phone} onChange={e => setForm(p => ({ ...p, parent_phone: e.target.value }))}
+                      placeholder="010-0000-0000" style={inputStyle}
+                      onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', gap: 8 }}>
+                  <div>
+                    <label style={labelStyle}>우편번호</label>
+                    <input value={form.zipcode ?? ''} onChange={e => setForm(p => ({ ...p, zipcode: e.target.value }))}
+                      placeholder="예) 03000" style={inputStyle}
+                      onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>기본 주소</label>
+                    <input value={form.address} onChange={e => setForm(p => ({ ...p, address: e.target.value }))}
+                      placeholder="도로명 주소를 입력하세요" style={inputStyle}
+                      onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                  </div>
+                </div>
                 <div>
-                  <label style={labelStyle}>학생 번호</label>
-                  <input value={form.student_phone} onChange={e => setForm(p => ({ ...p, student_phone: e.target.value }))}
-                    placeholder="010-0000-0000" style={inputStyle}
+                  <label style={labelStyle}>상세 주소</label>
+                  <input value={form.address_detail} onChange={e => setForm(p => ({ ...p, address_detail: e.target.value }))}
+                    placeholder="동/호수, 건물명 등" style={inputStyle}
                     onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
                     onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
                 </div>
-                <div>
-                  <label style={labelStyle}>학부모 번호</label>
-                  <input value={form.parent_phone} onChange={e => setForm(p => ({ ...p, parent_phone: e.target.value }))}
-                    placeholder="010-0000-0000" style={inputStyle}
-                    onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                    onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
-                </div>
+                <button onClick={saveInfo} disabled={infoSave === 'saving'} style={{
+                  width: '100%', padding: '13px',
+                  background: infoSave === 'saved' ? 'rgba(52,209,126,0.2)' : infoSave === 'error' ? 'rgba(239,84,84,0.2)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
+                  border: infoSave === 'saved' ? '1px solid rgba(52,209,126,0.4)' : infoSave === 'error' ? '1px solid rgba(239,84,84,0.4)' : 'none',
+                  borderRadius: 12, color: '#fff', fontSize: 14, fontWeight: 700,
+                  cursor: infoSave === 'saving' ? 'not-allowed' : 'pointer',
+                }}>
+                  {infoSave === 'saving' ? '저장 중…' : infoSave === 'saved' ? '✅ 저장 완료' : infoSave === 'error' ? '저장 실패 — 다시 시도' : '저장하기'}
+                </button>
               </div>
-              <div>
-                <label style={labelStyle}>기본 주소</label>
-                <input value={form.address} onChange={e => setForm(p => ({ ...p, address: e.target.value }))}
-                  placeholder="도로명 주소를 입력하세요" style={inputStyle}
-                  onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                  onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
-              </div>
-              <div>
-                <label style={labelStyle}>상세 주소</label>
-                <input value={form.address_detail} onChange={e => setForm(p => ({ ...p, address_detail: e.target.value }))}
-                  placeholder="동/호수, 건물명 등" style={inputStyle}
-                  onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                  onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
-              </div>
-              <button onClick={saveInfo} disabled={infoSave === 'saving'} style={{
-                width: '100%', padding: '13px',
-                background: infoSave === 'saved' ? 'rgba(52,209,126,0.2)' : infoSave === 'error' ? 'rgba(239,84,84,0.2)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
-                border: infoSave === 'saved' ? '1px solid rgba(52,209,126,0.4)' : infoSave === 'error' ? '1px solid rgba(239,84,84,0.4)' : 'none',
-                borderRadius: 12, color: '#fff', fontSize: 14, fontWeight: 700,
-                cursor: infoSave === 'saving' ? 'not-allowed' : 'pointer',
-              }}>
-                {infoSave === 'saving' ? '저장 중…' : infoSave === 'saved' ? '✅ 저장 완료' : infoSave === 'error' ? '저장 실패 — 다시 시도' : '저장하기'}
-              </button>
             </div>
-          </div>
 
-          {/* 비밀번호 변경 카드 */}
-          <div style={card}>
-            <div style={{ padding: '18px 22px 0', fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 18 }}>비밀번호 변경</div>
-            <div style={{ padding: '0 22px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {[
-                ['current', '현재 비밀번호', '현재 비밀번호'],
-                ['next', '새 비밀번호', '6자 이상'],
-                ['confirm', '새 비밀번호 확인', '새 비밀번호 다시 입력'],
-              ].map(([key, label, ph]) => (
-                <div key={key}>
-                  <label style={labelStyle}>{label}</label>
-                  <input type="password" value={pwForm[key as keyof typeof pwForm]}
-                    onChange={e => setPwForm(p => ({ ...p, [key]: e.target.value }))}
-                    placeholder={ph} style={inputStyle}
-                    onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                    onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+            {/* 비밀번호 변경 카드 */}
+            <div style={card}>
+              <div style={{ padding: '18px 22px 0', fontSize: 14, fontWeight: 700, color: '#fff', marginBottom: 18 }}>비밀번호 변경</div>
+              <div style={{ padding: '0 22px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {([
+                  ['current', '현재 비밀번호', '현재 비밀번호'],
+                  ['next', '새 비밀번호', '6자 이상'],
+                  ['confirm', '새 비밀번호 확인', '새 비밀번호 다시 입력'],
+                ] as [string, string, string][]).map(([key, label, ph]) => (
+                  <div key={key}>
+                    <label style={labelStyle}>{label}</label>
+                    <input type="password" value={pwForm[key as keyof typeof pwForm]}
+                      onChange={e => setPwForm(p => ({ ...p, [key]: e.target.value }))}
+                      placeholder={ph} style={inputStyle}
+                      onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                  </div>
+                ))}
+                {pwMsg && (
+                  <div style={{
+                    borderRadius: 8, padding: '10px 14px', fontSize: 13,
+                    background: pwMsg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)',
+                    border: `1px solid ${pwMsg.type === 'success' ? 'rgba(52,209,126,0.25)' : 'rgba(239,84,84,0.22)'}`,
+                    color: pwMsg.type === 'success' ? '#6ef5b0' : '#f08888',
+                  }}>{pwMsg.text}</div>
+                )}
+                <button onClick={savePassword} disabled={pwSaving} style={{
+                  width: '100%', padding: '13px',
+                  background: pwSaving ? 'rgba(0,102,255,0.25)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
+                  border: 'none', borderRadius: 12, color: '#fff', fontSize: 14, fontWeight: 700,
+                  cursor: pwSaving ? 'not-allowed' : 'pointer',
+                }}>
+                  {pwSaving ? '변경 중…' : '비밀번호 변경'}
+                </button>
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)', textAlign: 'center' }}>
+                  초기 비밀번호: <span style={{ fontFamily: "'DM Mono',monospace", color: 'rgba(255,255,255,0.4)' }}>84431621</span>
                 </div>
-              ))}
-              {pwMsg && (
-                <div style={{
-                  borderRadius: 8, padding: '10px 14px', fontSize: 13,
-                  background: pwMsg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)',
-                  border: `1px solid ${pwMsg.type === 'success' ? 'rgba(52,209,126,0.25)' : 'rgba(239,84,84,0.22)'}`,
-                  color: pwMsg.type === 'success' ? '#6ef5b0' : '#f08888',
-                }}>{pwMsg.text}</div>
-              )}
-              <button onClick={savePassword} disabled={pwSaving} style={{
-                width: '100%', padding: '13px',
-                background: pwSaving ? 'rgba(0,102,255,0.25)' : 'linear-gradient(135deg, #0066FF, #4d8bf5)',
-                border: 'none', borderRadius: 12, color: '#fff', fontSize: 14, fontWeight: 700,
-                cursor: pwSaving ? 'not-allowed' : 'pointer',
-              }}>
-                {pwSaving ? '변경 중…' : '비밀번호 변경'}
-              </button>
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)', textAlign: 'center' }}>
-                초기 비밀번호: <span style={{ fontFamily: "'DM Mono',monospace", color: 'rgba(255,255,255,0.4)' }}>84431621</span>
               </div>
             </div>
           </div>
@@ -314,14 +325,12 @@ export default function MyDashboard() {
                   {filteredAssignments.length}개
                 </div>
 
-                {/* 과제 카드 목록 */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {filteredAssignments.map((a, i) => (
                     <div key={i} style={{
                       ...card, marginBottom: 0, padding: '14px 18px',
                       display: 'flex', alignItems: 'center', gap: 14,
                     }}>
-                      {/* 제출 여부 */}
                       <div style={{
                         width: 32, height: 32, borderRadius: 8, flexShrink: 0,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -330,7 +339,6 @@ export default function MyDashboard() {
                         color: a.submitted === 'O' ? '#34d17e' : '#ef5454',
                       }}>{a.submitted}</div>
 
-                      {/* 내용 */}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600, color: '#fff', marginBottom: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {a.name || '—'}
@@ -340,7 +348,6 @@ export default function MyDashboard() {
                         </div>
                       </div>
 
-                      {/* 타입 뱃지 */}
                       <div style={{
                         padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700, flexShrink: 0,
                         background: `${TYPE_COLOR[a.type]}18`,
@@ -348,7 +355,6 @@ export default function MyDashboard() {
                         color: TYPE_COLOR[a.type],
                       }}>{TYPE_LABEL[a.type]}</div>
 
-                      {/* 등급 */}
                       {a.type !== 'mock' && a.grade && a.grade !== '-' && (
                         <div style={{
                           width: 28, height: 28, borderRadius: 6, flexShrink: 0,
@@ -359,7 +365,6 @@ export default function MyDashboard() {
                         }}>{a.grade}</div>
                       )}
 
-                      {/* 완성도 */}
                       {a.completeness != null && (
                         <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>
                           {a.completeness}%

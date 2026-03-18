@@ -18,7 +18,7 @@ export async function PATCH(req: NextRequest) {
   if (!student) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json()
-  const allowed = ['student_phone', 'parent_phone', 'address', 'address_detail'] as const
+  const allowed = ['student_phone', 'parent_phone', 'address', 'address_detail', 'zipcode'] as const
 
   const students = loadStudents()
   const idx = students.findIndex(s => s.id === student.id)

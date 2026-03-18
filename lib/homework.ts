@@ -62,6 +62,7 @@ export interface Student {
   password_plain: string  // 평문 (어드민 확인용), 초기값 84431621
   address: string         // 기본 주소
   address_detail: string  // 상세 주소
+  zipcode: string          // 우편번호
   total_hw: number
   submitted_count: number
   submission_rate: number
@@ -267,6 +268,7 @@ export function parseExcel(buffer: Buffer): Student[] {
       password_plain:  existing?.password_plain ?? '84431621',
       address:         existing?.address ?? '',
       address_detail:  existing?.address_detail ?? '',
+      zipcode:         existing?.zipcode ?? '',
       total_hw:        totalCount,
       submitted_count: submitCount,
       submission_rate: totalCount > 0 ? Math.round(submitCount / totalCount * 100) : 0,
