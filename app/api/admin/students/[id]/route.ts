@@ -5,7 +5,7 @@ import type { Assignment } from '@/lib/homework'
 
 function isAuthed() {
   const cookieStore = cookies()
-  return cookieStore.get('admin_token')?.value === process.env.ADMIN_SECRET
+  return cookieStore.get('admin_session')?.value === process.env.ADMIN_SECRET
 }
 
 // GET /api/admin/students/[id] — 학생 전체 상세
