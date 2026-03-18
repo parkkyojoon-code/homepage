@@ -23,6 +23,7 @@ const EMPTY_CLASS = {
   modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
   textbook: { included: false, price: 0 },
   description: '', keywords: ['', '', ''] as [string, string, string],
+  apply_label_online: '', apply_label_offline: '',
 }
 
 const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }
@@ -312,6 +313,26 @@ export default function AdminClassesPage() {
                 placeholder="예: 1개월 주1회 3시간"
               />
               <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>수업 카드 하단 시계 아이콘 옆에 표시됩니다</p>
+            </div>
+            <div>
+              <label style={lbl}>수강신청 라벨 — 온라인 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>구글 시트에 기록됨</span></label>
+              <input
+                style={inp}
+                value={(e as any).apply_label_online ?? ''}
+                onChange={ev => upd(['apply_label_online'], ev.target.value)}
+                placeholder="예: 【수리논술 온라인】 오페론 수열과 규칙성 신청"
+              />
+              <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비워두면 기존 자동 생성 방식 유지</p>
+            </div>
+            <div>
+              <label style={lbl}>수강신청 라벨 — 현강 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>구글 시트에 기록됨</span></label>
+              <input
+                style={inp}
+                value={(e as any).apply_label_offline ?? ''}
+                onChange={ev => upd(['apply_label_offline'], ev.target.value)}
+                placeholder="예: 【수리논술 현강】 오페론 수열과 규칙성 신청"
+              />
+              <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비워두면 기존 자동 생성 방식 유지</p>
             </div>
           </div>
 

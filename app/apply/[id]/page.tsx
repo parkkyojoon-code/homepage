@@ -136,6 +136,7 @@ export default function ApplyPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...formData,
+          courseId,
           courseType: course.courseType,
           campus: course.campus,
           timestamp: new Date().toISOString()

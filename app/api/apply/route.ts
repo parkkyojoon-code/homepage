@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
+import { getClassById } from '@/lib/classes'
 
 // 환경변수에서 설정 로드
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g'
@@ -29,6 +30,7 @@ export async function POST(request: NextRequest) {
       parentPhone,
       studentPhone,
       birthYear,
+      courseId,
       courseType,
       campus,
       confirmPayment,
@@ -60,12 +62,29 @@ export async function POST(request: NextRequest) {
       second: '2-digit'
     })
 
+    // 수업 데이터에서 커스텀 라벨 조회 (courseId 기반)
+    let customLabel: string | null = null
+    try {
+      if (courseId) {
+        const classData = getClassById(courseId)
+        if (classData) {
+          const isOnline = !courseType.includes('offline')
+          customLabel = isOnline
+            ? (classData.apply_label_online || null)
+            : (classData.apply_label_offline || null)
+        }
+      }
+    } catch { /* 조회 실패 시 기존 switch 사용 */ }
+
     let surinonseulRegular = ''
     let surinonseulTrial = ''
     let sunungSelect = ''
     let sunungRegular = ''
 
-    switch (courseType) {
+    // 커스텀 라벨이 있으면 switch 건너뜀
+    if (customLabel) {
+      surinonseulRegular = customLabel
+    } else switch (courseType) {
       case 'surinonseul-online':
         surinonseulRegular = '【수리논술 온라인】 정규 수업 신청'
         break

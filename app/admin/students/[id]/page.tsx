@@ -301,9 +301,9 @@ export default function StudentDetailPage() {
                           borderRadius: 6, color: TYPE_COLOR[a.type], fontSize: 11, fontWeight: 700,
                           padding: '3px 6px', cursor: 'pointer', outline: 'none',
                         }}>
-                        <option value="homework">과제</option>
-                        <option value="basic_math">기초수학</option>
-                        <option value="mock">모의논술</option>
+                        <option value="homework" style={{ background: '#1e1e2e', color: '#fff' }}>과제</option>
+                        <option value="basic_math" style={{ background: '#1e1e2e', color: '#fff' }}>기초수학</option>
+                        <option value="mock" style={{ background: '#1e1e2e', color: '#fff' }}>모의논술</option>
                       </select>
                     </td>
 
@@ -351,7 +351,7 @@ export default function StudentDetailPage() {
                           fontSize: 12, padding: '3px 6px',
                           cursor: a.type === 'mock' ? 'not-allowed' : 'pointer', outline: 'none',
                         }}>
-                        {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g}>{g}</option>)}
+                        {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>)}
                       </select>
                     </td>
 
@@ -386,9 +386,9 @@ export default function StudentDetailPage() {
                       <select value={newAssignment.type}
                         onChange={e => setNewAssignment(p => ({ ...p, type: e.target.value as Assignment['type'] }))}
                         style={{ background: `${TYPE_COLOR[newAssignment.type]}18`, border: `1px solid ${TYPE_COLOR[newAssignment.type]}40`, borderRadius: 6, color: TYPE_COLOR[newAssignment.type], fontSize: 11, fontWeight: 700, padding: '3px 6px', outline: 'none' }}>
-                        <option value="homework">과제</option>
-                        <option value="basic_math">기초수학</option>
-                        <option value="mock">모의논술</option>
+                        <option value="homework" style={{ background: '#1e1e2e', color: '#fff' }}>과제</option>
+                        <option value="basic_math" style={{ background: '#1e1e2e', color: '#fff' }}>기초수학</option>
+                        <option value="mock" style={{ background: '#1e1e2e', color: '#fff' }}>모의논술</option>
                       </select>
                     </td>
                     <td style={{ padding: '6px 8px' }}>
@@ -408,7 +408,7 @@ export default function StudentDetailPage() {
                     <td style={{ padding: '6px 8px' }}>
                       <select value={newAssignment.grade} onChange={e => setNewAssignment(p => ({ ...p, grade: e.target.value }))}
                         style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#fff', fontSize: 12, padding: '3px 6px', outline: 'none' }}>
-                        {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g}>{g}</option>)}
+                        {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>)}
                       </select>
                     </td>
                     <td style={{ padding: '6px 8px' }}>

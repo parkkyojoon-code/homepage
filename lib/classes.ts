@@ -34,6 +34,8 @@ export interface ClassData {
   keywords: [string, string, string]
   createdAt: string
   updatedAt: string
+  apply_label_online?: string   // 구글 시트 온라인 신청 라벨
+  apply_label_offline?: string  // 구글 시트 현강 신청 라벨
 }
 
 // 초기 데이터 (Volume에 파일 없을 때 사용)
