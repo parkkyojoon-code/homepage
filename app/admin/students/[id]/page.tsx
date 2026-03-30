@@ -351,30 +351,48 @@ export default function StudentDetailPage() {
                     </td>
 
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <select value={a.grade}
-                        onChange={e => updateLocalAssignment(i, { grade: e.target.value })}
-                        onBlur={e => handleAssignmentBlur(i, { ...a, grade: e.target.value })}
-                        disabled={a.type === 'mock'}
-                        style={{
-                          background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                          borderRadius: 6, color: a.type === 'mock' ? 'rgba(255,255,255,0.2)' : '#fff',
-                          fontSize: 12, padding: '3px 6px',
-                          cursor: a.type === 'mock' ? 'not-allowed' : 'pointer', outline: 'none',
-                        }}>
-                        {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>)}
-                      </select>
+                      {a.type === 'mock' ? (
+                        <select value={a.grade}
+                          onChange={e => { updateLocalAssignment(i, { grade: e.target.value }); handleAssignmentBlur(i, { ...a, grade: e.target.value }) }}
+                          style={{
+                            background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.35)',
+                            borderRadius: 6, color: '#f5a623', fontSize: 11, fontWeight: 700,
+                            padding: '3px 6px', cursor: 'pointer', outline: 'none', minWidth: 100,
+                          }}>
+                          {['-', '상위 10%', '상위 20%', '상위 30%', '상위 40%', '상위 50%'].map(g => (
+                            <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <select value={a.grade}
+                          onChange={e => { updateLocalAssignment(i, { grade: e.target.value }); handleAssignmentBlur(i, { ...a, grade: e.target.value }) }}
+                          style={{
+                            background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                            borderRadius: 6, color: '#fff', fontSize: 12,
+                            padding: '3px 6px', cursor: 'pointer', outline: 'none',
+                          }}>
+                          {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>)}
+                        </select>
+                      )}
                     </td>
 
-                    <td style={{ padding: '6px 8px', minWidth: 70 }}>
-                      <input type="number"
-                        value={a.completeness ?? ''}
-                        onChange={e => updateLocalAssignment(i, { completeness: e.target.value ? Number(e.target.value) : null })}
-                        onBlur={e => handleAssignmentBlur(i, { ...a, completeness: e.target.value ? Number(e.target.value) : null })}
-                        placeholder="—"
-                        style={{ ...cellInput, minWidth: 60 }}
-                        onFocus={e => { e.target.style.borderColor = 'rgba(77,139,245,0.4)'; e.target.style.background = 'rgba(255,255,255,0.05)' }}
-                        onBlurCapture={e => { e.target.style.borderColor = 'transparent'; e.target.style.background = 'transparent' }}
-                      />
+                    <td style={{ padding: '6px 8px', minWidth: 110 }}>
+                      {a.type === 'mock' ? (
+                        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', padding: '3px 6px' }}>—</span>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <input type="range" min={0} max={100} step={10}
+                            value={a.completeness != null ? Math.round(a.completeness * 100) : 0}
+                            onChange={e => updateLocalAssignment(i, { completeness: Number(e.target.value) / 100 })}
+                            onMouseUp={e => handleAssignmentBlur(i, { ...a, completeness: Number((e.target as HTMLInputElement).value) / 100 })}
+                            onTouchEnd={e => handleAssignmentBlur(i, { ...a, completeness: Number((e.target as HTMLInputElement).value) / 100 })}
+                            style={{ width: 60, accentColor: TYPE_COLOR[a.type] }}
+                          />
+                          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', fontFamily: "'DM Mono',monospace", minWidth: 28 }}>
+                            {a.completeness != null ? `${Math.round(a.completeness * 100)}%` : '—'}
+                          </span>
+                        </div>
+                      )}
                     </td>
 
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
@@ -416,15 +434,35 @@ export default function StudentDetailPage() {
                       </button>
                     </td>
                     <td style={{ padding: '6px 8px' }}>
-                      <select value={newAssignment.grade} onChange={e => setNewAssignment(p => ({ ...p, grade: e.target.value }))}
-                        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#fff', fontSize: 12, padding: '3px 6px', outline: 'none' }}>
-                        {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>)}
-                      </select>
+                      {newAssignment.type === 'mock' ? (
+                        <select value={newAssignment.grade} onChange={e => setNewAssignment(p => ({ ...p, grade: e.target.value }))}
+                          style={{ background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.35)', borderRadius: 6, color: '#f5a623', fontSize: 11, fontWeight: 700, padding: '3px 6px', outline: 'none', minWidth: 100 }}>
+                          {['-', '상위 10%', '상위 20%', '상위 30%', '상위 40%', '상위 50%'].map(g => (
+                            <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <select value={newAssignment.grade} onChange={e => setNewAssignment(p => ({ ...p, grade: e.target.value }))}
+                          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#fff', fontSize: 12, padding: '3px 6px', outline: 'none' }}>
+                          {['-', 'A', 'B', 'C'].map(g => <option key={g} value={g} style={{ background: '#1e1e2e', color: '#fff' }}>{g}</option>)}
+                        </select>
+                      )}
                     </td>
                     <td style={{ padding: '6px 8px' }}>
-                      <input type="number" value={newAssignment.completeness ?? ''}
-                        onChange={e => setNewAssignment(p => ({ ...p, completeness: e.target.value ? Number(e.target.value) : null }))}
-                        placeholder="—" style={{ ...cellInput, minWidth: 60, borderColor: 'rgba(77,139,245,0.3)', background: 'rgba(255,255,255,0.04)' }} />
+                      {newAssignment.type === 'mock' ? (
+                        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', padding: '3px 6px' }}>—</span>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <input type="range" min={0} max={100} step={10}
+                            value={newAssignment.completeness != null ? Math.round(newAssignment.completeness * 100) : 0}
+                            onChange={e => setNewAssignment(p => ({ ...p, completeness: Number(e.target.value) / 100 }))}
+                            style={{ width: 60, accentColor: TYPE_COLOR[newAssignment.type] }}
+                          />
+                          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', fontFamily: "'DM Mono',monospace", minWidth: 28 }}>
+                            {newAssignment.completeness != null ? `${Math.round(newAssignment.completeness * 100)}%` : '0%'}
+                          </span>
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
                       <div style={{ display: 'flex', gap: 6 }}>

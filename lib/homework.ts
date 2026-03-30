@@ -100,6 +100,14 @@ function cellStr(val: unknown): string {
   return String(val).trim()
 }
 
+// 모의논술 grade 정규화: "상위 10%이내", "상위 10% 이내" → "상위 10%"
+function normalizeMockGrade(raw: string): string {
+  if (!raw || raw === '-') return '-'
+  const m = raw.match(/상위\s*(\d+)\s*%/)
+  if (m) return `상위 ${m[1]}%`
+  return raw
+}
+
 // ── 데이터 로드/저장 ────────────────────────────────────────────────
 export function loadStudents(): Student[] {
   ensureDirs()
@@ -232,8 +240,19 @@ export function parseExcel(buffer: Buffer): Student[] {
 
       const blockType    = blockTypes[col] ?? 'homework'
       const submittedStr = cellStr(submittedYn) === 'O' ? 'O' : 'X'
-      const gradeStr     = cellStr(gradeVal) || '-'
-      const compVal      = typeof completeness === 'number' ? completeness : null
+      const rawGrade     = cellStr(gradeVal) || '-'
+      const gradeStr     = blockType === 'mock' ? normalizeMockGrade(rawGrade) : rawGrade
+
+      // 완성도: 숫자(0~1 소수 또는 정수 1)로 정규화, 모의논술은 null
+      let compVal: number | null = null
+      if (blockType !== 'mock') {
+        if (typeof completeness === 'number') {
+          // 엑셀 값이 1이면 100%, 0.9이면 90% 등
+          compVal = completeness <= 1 ? completeness : completeness / 100
+        } else if (completeness === 'O') {
+          compVal = 1
+        }
+      }
 
       totalCount++
       if (submittedStr === 'O') submitCount++

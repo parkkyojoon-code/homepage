@@ -365,9 +365,17 @@ export default function MyDashboard() {
                         }}>{a.grade}</div>
                       )}
 
-                      {a.completeness != null && (
+                      {a.type === 'mock' && a.grade && a.grade !== '-' && (
+                        <div style={{
+                          padding: '3px 8px', borderRadius: 6, fontSize: 11, fontWeight: 700, flexShrink: 0,
+                          background: 'rgba(245,166,35,0.12)', border: '1px solid rgba(245,166,35,0.35)',
+                          color: '#f5a623',
+                        }}>{a.grade}</div>
+                      )}
+
+                      {a.type !== 'mock' && a.completeness != null && (
                         <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)', fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>
-                          {a.completeness}%
+                          {Math.round(a.completeness * 100)}%
                         </div>
                       )}
                     </div>
