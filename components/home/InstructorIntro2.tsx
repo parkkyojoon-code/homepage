@@ -276,7 +276,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 인천과학고 수석 졸업
               </span>
@@ -296,7 +297,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 서울대학교 자연대학 생명과학 수석 졸업
               </span>
@@ -316,7 +318,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 서울대학원 공과대학 기술경영 박사 수료
               </span>
@@ -336,7 +339,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 수능 수학 만점 · 수능 전국 300등
               </span>
@@ -356,7 +360,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 천문학 올림피아드 금상
               </span>
@@ -388,7 +393,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 대치 하이퍼논술 수리논술 전임강사
               </span>
@@ -408,7 +414,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 이투스NEO 최상위권 전담 수학강사
               </span>
@@ -428,7 +435,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 청솔학원 최상위권 미적분 강사
               </span>
@@ -448,7 +456,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 포엠학원 의치대반 수능·수리논술 전임강사
               </span>
@@ -468,7 +477,8 @@ export default function InstructorIntro2() {
               }} />
               <span style={{
                 color: '#FFFFFF',
-                fontSize: '0.95rem'
+                fontSize: isMobile ? '2rem' : '2.5rem',
+                fontWeight: '700'
               }}>
                 대치 현상훈 수학학원 수리논술 전임강사
               </span>
