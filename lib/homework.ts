@@ -70,6 +70,7 @@ export interface Student {
   b_count: number
   c_count: number
   assignments: Assignment[]
+  lectureIds: string[]
 }
 
 export interface HomeworkMeta {
@@ -295,6 +296,7 @@ export function parseExcel(buffer: Buffer): Student[] {
       b_count:         bCount,
       c_count:         cCount,
       assignments,
+      lectureIds: existing?.lectureIds ?? [],
     })
   }
 

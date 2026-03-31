@@ -12,6 +12,12 @@ interface Assignment {
   completeness: number | null
 }
 
+interface Lecture {
+  id: string
+  name: string
+  description: string
+}
+
 interface Student {
   id: string
   name: string
@@ -28,6 +34,7 @@ interface Student {
   b_count: number
   c_count: number
   assignments: Assignment[]
+  lectureIds: string[]
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
@@ -46,6 +53,7 @@ export default function StudentDetailPage() {
   const [student, setStudent] = useState<Student | null>(null)
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [allLectures, setAllLectures] = useState<Lecture[]>([])
   const [addingRow, setAddingRow] = useState(false)
   const [resetMsg, setResetMsg] = useState<string | null>(null)
   const [newAssignment, setNewAssignment] = useState<Assignment>({
@@ -58,6 +66,7 @@ export default function StudentDetailPage() {
       .then(r => { if (r.status === 401) router.push('/admin'); return r.json() })
       .then(data => { setStudent(data); setLoading(false) })
       .catch(() => setLoading(false))
+    fetch('/api/admin/lectures').then(r => r.json()).then(setAllLectures).catch(() => {})
   }, [id])
 
   const save = useCallback(async (body: object) => {
@@ -264,6 +273,37 @@ export default function StudentDetailPage() {
               <span style={{ fontSize: 12, color: resetMsg.startsWith('✅') ? '#34d17e' : '#f08888' }}>{resetMsg}</span>
             )}
             <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>초기값: 84431621</span>
+          </div>
+        </div>
+
+        {/* 수강 강의 배정 */}
+        <div style={card}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#fff', padding: '16px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            수강 강의 배정
+          </div>
+          <div style={{ padding: '16px 20px', display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            {allLectures.length === 0 && (
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.25)' }}>등록된 강의가 없습니다. 강의 관리에서 먼저 추가하세요.</span>
+            )}
+            {allLectures.map(lec => {
+              const enrolled = (student.lectureIds ?? []).includes(lec.id)
+              return (
+                <button key={lec.id} onClick={() => {
+                  const current = student.lectureIds ?? []
+                  const next = enrolled ? current.filter(lid => lid !== lec.id) : [...current, lec.id]
+                  save({ field: 'lectureIds', value: next })
+                  setStudent(s => s ? { ...s, lectureIds: next } : s)
+                }} style={{
+                  padding: '7px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                  cursor: 'pointer',
+                  border: enrolled ? '1px solid rgba(77,139,245,0.5)' : '1px solid rgba(255,255,255,0.12)',
+                  background: enrolled ? 'rgba(77,139,245,0.15)' : 'rgba(255,255,255,0.05)',
+                  color: enrolled ? '#4d8bf5' : 'rgba(255,255,255,0.5)',
+                }}>
+                  {enrolled ? '✓ ' : ''}{lec.name}
+                </button>
+              )
+            })}
           </div>
         </div>
 
