@@ -35,6 +35,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   if (field === 'name' || field === 'class' || field === 'student_phone' || field === 'parent_phone' || field === 'address' || field === 'address_detail' || field === 'zipcode') {
     student = { ...student, [field]: body.value ?? null }
 
+  } else if (field === 'lectureIds') {
+    student = { ...student, lectureIds: Array.isArray(body.value) ? body.value : [] }
+
   } else if (field === 'assignment_update') {
     const { index, assignment } = body as { index: number; assignment: Assignment }
     if (index < 0 || index >= student.assignments.length) {

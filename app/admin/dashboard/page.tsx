@@ -90,6 +90,32 @@ export default function AdminDashboard() {
       badgeLabel: null,
       sub: '이름·번호·주소 검색 · 반별 필터',
     },
+    {
+      key: 'lectures',
+      icon: '🎬',
+      label: '강의 관리',
+      desc: '강의 영상·공지·과제 관리',
+      href: '/admin/lectures',
+      accent: '#4d8bf5',
+      accentDim: 'rgba(77,139,245,0.12)',
+      accentBorder: 'rgba(77,139,245,0.25)',
+      badge: null,
+      badgeLabel: null,
+      sub: '유튜브 영상 · 공지사항 · 주차별 과제',
+    },
+    {
+      key: 'submissions',
+      icon: '📥',
+      label: '제출 파일',
+      desc: '학생 과제 제출 파일 확인',
+      href: '/admin/submissions',
+      accent: '#34d17e',
+      accentDim: 'rgba(52,209,126,0.12)',
+      accentBorder: 'rgba(52,209,126,0.25)',
+      badge: null,
+      badgeLabel: null,
+      sub: '제출 파일 열기 · 강의/학생별 필터',
+    },
   ]
 
   return (
