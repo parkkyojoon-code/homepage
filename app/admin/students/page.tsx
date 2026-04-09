@@ -261,10 +261,13 @@ export default function AdminStudentsPage() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div>
                       <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.4)', marginBottom: 7, textTransform: 'uppercase', letterSpacing: '0.07em' }}>반</label>
-                      <input value={form.class} onChange={e => setForm(p => ({ ...p, class: e.target.value }))}
-                        placeholder="예: 수리논술 온라인" style={INPUT}
-                        onFocus={e => (e.target.style.borderColor = 'rgba(77,139,245,0.5)')}
-                        onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.1)')} />
+                      <select value={form.class} onChange={e => setForm(p => ({ ...p, class: e.target.value }))}
+                        style={{ ...INPUT, cursor: 'pointer', colorScheme: 'dark' }}>
+                        <option value="">-- 선택 --</option>
+                        {classes.filter(c => c !== '전체').map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
                     </div>
                     <div>
                       <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.4)', marginBottom: 7, textTransform: 'uppercase', letterSpacing: '0.07em' }}>등록일</label>
