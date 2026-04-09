@@ -263,9 +263,9 @@ export default function AdminStudentsPage() {
                       <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.4)', marginBottom: 7, textTransform: 'uppercase', letterSpacing: '0.07em' }}>반</label>
                       <select value={form.class} onChange={e => setForm(p => ({ ...p, class: e.target.value }))}
                         style={{ ...INPUT, cursor: 'pointer', colorScheme: 'dark' }}>
-                        <option value="">-- 선택 --</option>
+                        <option value="" style={{ color: '#000' }}>-- 선택 --</option>
                         {classes.filter(c => c !== '전체').map(c => (
-                          <option key={c} value={c}>{c}</option>
+                          <option key={c} value={c} style={{ color: '#000' }}>{c}</option>
                         ))}
                       </select>
                     </div>
