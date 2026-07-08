@@ -38,6 +38,8 @@ interface ClassDetail {
   totalLectures: number
   totalHours: number
   benefits: string[]
+  textbookIncluded: boolean
+  textbookPrice: number
 }
 
 interface CurriculumItem {
@@ -425,7 +427,8 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
   // 수리논술: 온라인 40만, 오프라인 80만 / 수능수학: 온라인 28만, 오프라인 40만
   const onlinePrice = classDetail.price
   const offlinePrice = classDetail.originalPrice
-  const textbookPrice = 38000
+  const textbookIncluded = classDetail.textbookIncluded
+  const textbookPrice = classDetail.textbookPrice
   
   // 수리논술은 교재 필수
   const isSuriNonsul = classDetail.category === "수리논술"
@@ -438,8 +441,8 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
 
   const calculateTotal = () => {
     const packagePrice = selectedOption === 'online' ? onlinePrice : offlinePrice
-    // 수리논술은 교재 필수 포함
-    if (isSuriNonsul) {
+    // 관리자 설정에서 교재비가 포함된 수업이면 총액에 더함
+    if (textbookIncluded) {
       return packagePrice + textbookPrice
     }
     return packagePrice
@@ -659,8 +662,8 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
           </div>
         )}
 
-        {/* Textbook - 수리논술은 필수 포함 */}
-        {isSuriNonsul ? (
+        {/* Textbook - 관리자 설정에서 교재비 포함으로 지정된 수업만 표시 */}
+        {textbookIncluded ? (
         <div style={{
           padding: '20px',
           background: 'rgba(0, 122, 255, 0.1)',
@@ -790,7 +793,7 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
                 }
               </span>
             </div>
-            {isSuriNonsul && (
+            {textbookIncluded && (
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
@@ -800,7 +803,7 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
                 오페론 자체 교재 (필수)
               </span>
               <span style={{ fontSize: '0.85rem', color: 'rgba(255, 255, 255, 0.7)' }}>
-                38,000원
+                {textbookPrice.toLocaleString()}원
               </span>
             </div>
             )}
@@ -1013,6 +1016,8 @@ function apiToClassDetail(cls: any): ClassDetail {
     totalLectures: 0,
     totalHours:    0,
     benefits:      cls.keywords ?? [],
+    textbookIncluded: cls.textbook?.included ?? false,
+    textbookPrice:    cls.textbook?.price ?? 0,
   }
 }
 
