@@ -7,6 +7,7 @@ import { ArrowLeft, MessageCircle } from "lucide-react"
 
 export default function CurriculumPage() {
   const [selectedTab, setSelectedTab] = useState<"suri" | "suneung">("suri")
+  const [suriType, setSuriType] = useState<"offline" | "online">("offline")
 
   return (
     <div style={{
@@ -120,9 +121,63 @@ export default function CurriculumPage() {
           </div>
         </div>
 
+        {/* Sub Tab Selector (offline/online) - only for 수리논술 */}
+        {selectedTab === "suri" && (
+          <div style={{
+            display: 'flex',
+            justifyContent: 'center',
+            marginBottom: '2rem'
+          }}>
+            <div style={{
+              display: 'inline-flex',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '12px',
+              padding: '4px'
+            }}>
+              <button
+                onClick={() => setSuriType("offline")}
+                style={{
+                  padding: '0.6rem 1.75rem',
+                  borderRadius: '9px',
+                  fontWeight: '600',
+                  fontSize: '0.9rem',
+                  transition: 'all 0.3s',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: suriType === "offline"
+                    ? 'linear-gradient(135deg, #0066FF 0%, #0099FF 100%)'
+                    : 'transparent',
+                  color: suriType === "offline" ? '#FFFFFF' : '#808080'
+                }}
+              >
+                오프라인
+              </button>
+              <button
+                onClick={() => setSuriType("online")}
+                style={{
+                  padding: '0.6rem 1.75rem',
+                  borderRadius: '9px',
+                  fontWeight: '600',
+                  fontSize: '0.9rem',
+                  transition: 'all 0.3s',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: suriType === "online"
+                    ? 'linear-gradient(135deg, #0066FF 0%, #0099FF 100%)'
+                    : 'transparent',
+                  color: suriType === "online" ? '#FFFFFF' : '#808080'
+                }}
+              >
+                온라인
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Curriculum Image */}
         <motion.div
-          key={selectedTab}
+          key={selectedTab === "suri" ? `suri-${suriType}` : selectedTab}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
@@ -140,8 +195,16 @@ export default function CurriculumPage() {
             padding: '2rem'
           }}>
             <img
-              src={selectedTab === "suri" ? "/images/suricuri.png" : "/images/suengcuri.jpg"}
-              alt={selectedTab === "suri" ? "수리논술 커리큘럼" : "수능수학 커리큘럼"}
+              src={
+                selectedTab === "suri"
+                  ? (suriType === "offline" ? "/images/suricuri_offline.jpg" : "/images/suricuri_online.jpg")
+                  : "/images/suengcuri.jpg"
+              }
+              alt={
+                selectedTab === "suri"
+                  ? `수리논술 커리큘럼 (${suriType === "offline" ? "오프라인" : "온라인"})`
+                  : "수능수학 커리큘럼"
+              }
               style={{
                 width: '100%',
                 height: 'auto',
