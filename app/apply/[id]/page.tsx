@@ -23,14 +23,25 @@ export default function ApplyPage() {
   const option = searchParams.get('option') || 'online'
   const campus = searchParams.get('campus') || '인천 송도'
 
-  const [classData, setClassData] = useState<{ name: string; category: string } | null>(null)
+  const [classData, setClassData] = useState<{
+    name: string; category: string
+    onlinePrice: number; offlinePrice: number
+    textbookIncluded: boolean; textbookPrice: number
+  } | null>(null)
   const [classLoading, setClassLoading] = useState(true)
 
   useEffect(() => {
     fetch(`/api/classes/${courseId}`)
       .then(res => res.ok ? res.json() : null)
       .then(data => {
-        if (data) setClassData({ name: data.name, category: data.category })
+        if (data) setClassData({
+          name: data.name,
+          category: data.category,
+          onlinePrice: data.modes?.online?.price ?? 0,
+          offlinePrice: data.modes?.offline?.price ?? 0,
+          textbookIncluded: data.textbook?.included ?? false,
+          textbookPrice: data.textbook?.price ?? 0,
+        })
         setClassLoading(false)
       })
       .catch(() => setClassLoading(false))
@@ -43,6 +54,10 @@ export default function ApplyPage() {
     courseType: option === 'offline' ? courseType : courseType,
     campus,
   }
+
+  const modePrice = classData ? (option === 'offline' ? classData.offlinePrice : classData.onlinePrice) : 0
+  const textbookAmount = classData?.textbookIncluded ? classData.textbookPrice : 0
+  const totalAmount = modePrice + textbookAmount
 
   const [isMobile, setIsMobile] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -139,6 +154,9 @@ export default function ApplyPage() {
           courseId,
           courseType: course.courseType,
           campus: course.campus,
+          modePrice,
+          textbookAmount,
+          totalAmount,
           timestamp: new Date().toISOString()
         })
       })
@@ -314,6 +332,40 @@ export default function ApplyPage() {
             수강 신청서
           </p>
         </motion.div>
+
+        {/* 결제 예정 금액 */}
+        {classData && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.05 }}
+            style={{
+              background: 'rgba(0, 102, 255, 0.08)',
+              border: '1px solid rgba(0, 102, 255, 0.25)',
+              borderRadius: '16px',
+              padding: '1.25rem 1.5rem',
+              marginBottom: '1.5rem'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: textbookAmount > 0 ? '4px' : 0 }}>
+              <span style={{ fontSize: '0.9rem', color: '#B0B0B0' }}>
+                {option === 'offline' ? '오프라인 수업' : '온라인 수업'}{course.campus && option === 'offline' ? ` (${course.campus})` : ''}
+              </span>
+              <span style={{ fontSize: '0.9rem', color: '#B0B0B0' }}>{modePrice.toLocaleString()}원</span>
+            </div>
+            {textbookAmount > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
+                <span style={{ fontSize: '0.9rem', color: '#B0B0B0' }}>교재비 (필수 포함)</span>
+                <span style={{ fontSize: '0.9rem', color: '#B0B0B0' }}>{textbookAmount.toLocaleString()}원</span>
+              </div>
+            )}
+            <div style={{ height: '1px', background: 'rgba(255,255,255,0.1)', margin: '10px 0' }} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '1rem', fontWeight: '700', color: '#FFFFFF' }}>총 결제 예정 금액</span>
+              <span style={{ fontSize: '1.3rem', fontWeight: '800', color: '#0099FF' }}>{totalAmount.toLocaleString()}원</span>
+            </div>
+          </motion.div>
+        )}
 
         {/* 폼 */}
         <motion.form
