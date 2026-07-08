@@ -1,16 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAdminAuthed } from '@/lib/admin-auth'
-import { loadClasses, saveClasses, saveClassImage, deleteImage } from '@/lib/classes'
+import { saveClassImage, deleteImage } from '@/lib/classes'
 
-// POST: 갤러리 사진 추가 (기존 사진은 유지, 여러 장 누적 가능)
+// POST: 사진 1장 업로드 → 파일만 저장하고 파일명을 돌려줌
+// (media 배열의 순서/구성은 클라이언트에서 관리 후 수업 저장(PUT) 시 함께 저장됨)
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
   const { id } = await params
-  const classes = loadClasses()
-  const idx = classes.findIndex(c => c.id === id)
-  if (idx === -1) return NextResponse.json({ error: 'not_found' }, { status: 404 })
-
   const formData = await req.formData()
   const file = formData.get('image') as File | null
   if (!file) return NextResponse.json({ error: 'no_file' }, { status: 400 })
@@ -21,36 +18,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: '이미지 파일만 업로드 가능합니다.' }, { status: 400 })
   }
 
-  const filename = `${id}-gallery-${Date.now()}.${ext}`
+  const filename = `${id}-media-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`
   const buffer = Buffer.from(await file.arrayBuffer())
   saveClassImage(filename, buffer)
 
-  const gallery = classes[idx].gallery ?? []
-  gallery.push(filename)
-  classes[idx].gallery = gallery
-  classes[idx].updatedAt = new Date().toISOString()
-  saveClasses(classes)
-
-  return NextResponse.json({ ok: true, filename, gallery })
+  return NextResponse.json({ ok: true, filename, url: `/api/images/${filename}` })
 }
 
-// DELETE: 갤러리 사진 한 장 삭제  (body: { filename: string })
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// DELETE: 사진 파일 삭제 (best-effort, media 배열에서 빼는 건 클라이언트가 처리 후 저장)
+export async function DELETE(req: NextRequest) {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  const { id } = await params
   const { filename } = await req.json()
   if (!filename) return NextResponse.json({ error: 'no_filename' }, { status: 400 })
 
-  const classes = loadClasses()
-  const idx = classes.findIndex(c => c.id === id)
-  if (idx === -1) return NextResponse.json({ error: 'not_found' }, { status: 404 })
-
-  const gallery = (classes[idx].gallery ?? []).filter(f => f !== filename)
-  classes[idx].gallery = gallery
-  classes[idx].updatedAt = new Date().toISOString()
-  saveClasses(classes)
   deleteImage(filename)
-
-  return NextResponse.json({ ok: true, gallery })
+  return NextResponse.json({ ok: true })
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
+interface MediaItem { type: 'image' | 'youtube'; value: string }
 interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
 interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
@@ -12,8 +13,7 @@ interface ClassData {
   textbook: { included: boolean; price: number }
   description: string; keywords: [string, string, string]
   createdAt: string; updatedAt: string
-  gallery?: string[]
-  youtubeUrl?: string
+  media?: MediaItem[]
 }
 
 const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성']
@@ -26,7 +26,7 @@ const EMPTY_CLASS = {
   textbook: { included: false, price: 0 },
   description: '', keywords: ['', '', ''] as [string, string, string],
   apply_label_online: '', apply_label_offline: '',
-  gallery: [] as string[], youtubeUrl: '',
+  media: [] as MediaItem[],
 }
 
 const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }
@@ -42,6 +42,7 @@ export default function AdminClassesPage() {
   const imgRef = useRef<HTMLInputElement>(null)
   const [galleryUploading, setGalleryUploading] = useState(false)
   const galleryRef = useRef<HTMLInputElement>(null)
+  const [newYoutubeUrl, setNewYoutubeUrl] = useState('')
   const router = useRouter()
 
   async function load() {
@@ -136,35 +137,52 @@ export default function AdminClassesPage() {
     setImgUploading(false)
   }
 
-  async function uploadGalleryImage(file: File) {
+  async function uploadMediaImage(file: File) {
     if (!editTarget || isNew) { setMsg({ type: 'error', text: '먼저 기본 정보를 저장하세요.' }); return }
     setGalleryUploading(true)
     const fd = new FormData(); fd.append('image', file)
     const res = await fetch(`/api/admin/classes/${editTarget.id}/gallery`, { method: 'POST', body: fd })
     const data = await res.json()
     if (res.ok) {
-      setEditTarget(p => p ? { ...p, gallery: data.gallery } : p)
-      load()
+      // 목록 맨 뒤에 추가 — 순서는 "저장" 눌러야 실제 반영됨
+      setEditTarget(p => p ? { ...p, media: [...(p.media ?? []), { type: 'image', value: data.filename }] } : p)
     } else {
       setMsg({ type: 'error', text: data.error || '사진 업로드 실패' })
     }
     setGalleryUploading(false)
   }
 
-  async function deleteGalleryImage(filename: string) {
-    if (!editTarget) return
-    const res = await fetch(`/api/admin/classes/${editTarget.id}/gallery`, {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename }),
+  function addYoutubeMedia() {
+    const url = newYoutubeUrl.trim()
+    if (!url) return
+    setEditTarget(p => p ? { ...p, media: [...(p.media ?? []), { type: 'youtube', value: url }] } : p)
+    setNewYoutubeUrl('')
+  }
+
+  function removeMediaItem(index: number) {
+    setEditTarget(p => {
+      if (!p) return p
+      const media = [...(p.media ?? [])]
+      const [removed] = media.splice(index, 1)
+      if (removed?.type === 'image') {
+        fetch(`/api/admin/classes/${p.id}/gallery`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: removed.value }),
+        }).catch(() => {})
+      }
+      return { ...p, media }
     })
-    const data = await res.json()
-    if (res.ok) {
-      setEditTarget(p => p ? { ...p, gallery: data.gallery } : p)
-      load()
-    } else {
-      setMsg({ type: 'error', text: data.error || '사진 삭제 실패' })
-    }
+  }
+
+  function moveMediaItem(index: number, dir: -1 | 1) {
+    setEditTarget(p => {
+      if (!p) return p
+      const media = [...(p.media ?? [])]
+      const target = index + dir
+      if (target < 0 || target >= media.length) return p
+      ;[media[index], media[target]] = [media[target], media[index]]
+      return { ...p, media }
+    })
   }
 
   function upd(path: string[], value: unknown) {
@@ -331,42 +349,74 @@ export default function AdminClassesPage() {
             </div>
           </div>
 
-          {/* 상세페이지 추가 사진 + 유튜브 */}
+          {/* 상세페이지 사진 + 유튜브 (순서대로 표시됨) */}
           <div style={{ ...card, padding: 20 }}>
-            <label style={lbl}>상세페이지 추가 사진 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>여러 장 등록 가능</span></label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
-              {(e.gallery ?? []).map(filename => (
-                <div key={filename} style={{ position: 'relative', width: 90, height: 66, borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
-                  <img src={`/api/images/${filename}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  <button
-                    onClick={() => deleteGalleryImage(filename)}
-                    title="삭제"
-                    style={{
-                      position: 'absolute', top: 3, right: 3, width: 20, height: 20, borderRadius: '50%',
-                      background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff',
-                      fontSize: 11, lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >✕</button>
+            <label style={lbl}>상세페이지 사진 · 유튜브 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>여기 나열된 순서 그대로 상세페이지에 표시됩니다</span></label>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+              {(e.media ?? []).length === 0 && (
+                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.25)', padding: '8px 0' }}>등록된 사진/영상이 없습니다.</div>
+              )}
+              {(e.media ?? []).map((item, index) => (
+                <div key={index} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+                  background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8,
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <button onClick={() => moveMediaItem(index, -1)} disabled={index === 0} style={{
+                      width: 22, height: 18, fontSize: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: 5, color: index === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.6)', cursor: index === 0 ? 'not-allowed' : 'pointer',
+                    }}>▲</button>
+                    <button onClick={() => moveMediaItem(index, 1)} disabled={index === (e.media ?? []).length - 1} style={{
+                      width: 22, height: 18, fontSize: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: 5, color: index === (e.media ?? []).length - 1 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.6)',
+                      cursor: index === (e.media ?? []).length - 1 ? 'not-allowed' : 'pointer',
+                    }}>▼</button>
+                  </div>
+
+                  {item.type === 'image' ? (
+                    <div style={{ width: 64, height: 46, borderRadius: 6, overflow: 'hidden', flexShrink: 0, background: 'rgba(255,255,255,0.06)' }}>
+                      <img src={`/api/images/${item.value}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    </div>
+                  ) : (
+                    <div style={{ width: 64, height: 46, borderRadius: 6, flexShrink: 0, background: 'rgba(239,68,68,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>▶</div>
+                  )}
+
+                  <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: 'rgba(255,255,255,0.5)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.type === 'image' ? '사진' : item.value}
+                  </div>
+
+                  <button onClick={() => removeMediaItem(index)} title="삭제" style={{
+                    width: 24, height: 24, borderRadius: '50%', background: 'rgba(239,84,84,0.1)', border: '1px solid rgba(239,84,84,0.2)',
+                    color: '#ef5454', fontSize: 12, cursor: 'pointer', flexShrink: 0,
+                  }}>✕</button>
                 </div>
               ))}
             </div>
-            <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={ev => { const f = ev.target.files?.[0]; if (f) uploadGalleryImage(f); ev.target.value = '' }} />
-            <button onClick={() => galleryRef.current?.click()} disabled={galleryUploading || isNew} style={{
-              padding: '8px 16px', background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.25)',
-              borderRadius: 8, color: '#4d8bf5', fontSize: 12, fontWeight: 700, cursor: isNew ? 'not-allowed' : 'pointer', opacity: isNew ? 0.5 : 1,
-            }}>{galleryUploading ? '업로드 중…' : '+ 사진 추가'}</button>
-            {isNew && <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 6 }}>기본 정보 저장 후 사진 업로드 가능</p>}
 
-            <div style={{ marginTop: 18 }}>
-              <label style={lbl}>유튜브 영상 URL <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>상세페이지 클래스 소개에 표시</span></label>
-              <input
-                style={inp}
-                value={e.youtubeUrl ?? ''}
-                onChange={ev => upd(['youtubeUrl'], ev.target.value)}
-                placeholder="예: https://www.youtube.com/watch?v=xxxxxxxxxxx"
-              />
-              <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비워두면 표시되지 않습니다</p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={ev => { const f = ev.target.files?.[0]; if (f) uploadMediaImage(f); ev.target.value = '' }} />
+              <button onClick={() => galleryRef.current?.click()} disabled={galleryUploading || isNew} style={{
+                padding: '8px 16px', background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.25)',
+                borderRadius: 8, color: '#4d8bf5', fontSize: 12, fontWeight: 700, cursor: isNew ? 'not-allowed' : 'pointer', opacity: isNew ? 0.5 : 1,
+              }}>{galleryUploading ? '업로드 중…' : '+ 사진 추가'}</button>
             </div>
+            {isNew && <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 6 }}>기본 정보 저장 후 사진/영상 추가 가능</p>}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <input
+                style={{ ...inp, flex: 1 }}
+                value={newYoutubeUrl}
+                onChange={ev => setNewYoutubeUrl(ev.target.value)}
+                placeholder="유튜브 URL 붙여넣기 (예: https://www.youtube.com/watch?v=xxxxxxxxxxx)"
+              />
+              <button onClick={addYoutubeMedia} disabled={!newYoutubeUrl.trim() || isNew} style={{
+                padding: '8px 16px', background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.25)',
+                borderRadius: 8, color: '#4d8bf5', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+                cursor: (!newYoutubeUrl.trim() || isNew) ? 'not-allowed' : 'pointer', opacity: (!newYoutubeUrl.trim() || isNew) ? 0.5 : 1,
+              }}>+ 영상 추가</button>
+            </div>
+            <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 8 }}>▲▼ 버튼으로 순서를 바꾼 뒤, 반드시 화면 위쪽 "저장" 버튼을 눌러야 순서가 반영됩니다.</p>
           </div>
 
           {/* 기본 정보 */}

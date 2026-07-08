@@ -36,8 +36,12 @@ export interface ClassData {
   updatedAt: string
   apply_label_online?: string   // 구글 시트 온라인 신청 라벨
   apply_label_offline?: string  // 구글 시트 현강 신청 라벨
-  gallery?: string[]            // 상세페이지에 표시할 추가 사진 파일명 목록
-  youtubeUrl?: string           // 상세페이지에 표시할 유튜브 영상 URL
+  media?: MediaItem[]           // 상세페이지에 순서대로 표시할 사진/유튜브 목록
+}
+
+export interface MediaItem {
+  type: 'image' | 'youtube'
+  value: string   // image면 파일명, youtube면 URL
 }
 
 // 초기 데이터 (Volume에 파일 없을 때 사용)

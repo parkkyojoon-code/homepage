@@ -40,8 +40,7 @@ interface ClassDetail {
   benefits: string[]
   textbookIncluded: boolean
   textbookPrice: number
-  gallery: string[]
-  youtubeUrl?: string
+  media: { type: 'image' | 'youtube'; value: string }[]
 }
 
 interface CurriculumItem {
@@ -1020,12 +1019,28 @@ function apiToClassDetail(cls: any): ClassDetail {
     benefits:      cls.keywords ?? [],
     textbookIncluded: cls.textbook?.included ?? false,
     textbookPrice:    cls.textbook?.price ?? 0,
-    gallery:          cls.gallery ?? [],
-    youtubeUrl:       cls.youtubeUrl || undefined,
+    media:            Array.isArray(cls.media) ? cls.media : [],
   }
 }
 
-// 유튜브 URL(다양한 형식) → embed URL로 변환. 유효하지 않으면 null
+// 연속된 사진들은 그리드로 묶고, 유튜브는 그 위치 그대로 독립 블록으로 유지
+type MediaBlock =
+  | { kind: 'images'; items: string[] }
+  | { kind: 'youtube'; url: string }
+
+function groupMediaItems(media: { type: 'image' | 'youtube'; value: string }[]): MediaBlock[] {
+  const blocks: MediaBlock[] = []
+  for (const item of media) {
+    if (item.type === 'image') {
+      const last = blocks[blocks.length - 1]
+      if (last && last.kind === 'images') last.items.push(item.value)
+      else blocks.push({ kind: 'images', items: [item.value] })
+    } else {
+      blocks.push({ kind: 'youtube', url: item.value })
+    }
+  }
+  return blocks
+}
 function getYoutubeEmbedUrl(url?: string): string | null {
   if (!url) return null
   const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{6,})/)
@@ -1347,62 +1362,65 @@ export default function ClassDetailPage() {
 
                 {/* Flowing Stats - 제거됨 */}
 
-                {/* 추가 사진 */}
-                {classDetail.gallery.length > 0 && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.3 }}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)',
-                      gap: '16px',
-                      marginBottom: '60px'
-                    }}
-                  >
-                    {classDetail.gallery.map((filename, idx) => (
-                      <div key={idx} style={{
-                        borderRadius: '16px',
-                        overflow: 'hidden',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
-                        aspectRatio: '4 / 3',
-                        background: 'rgba(255,255,255,0.03)'
-                      }}>
-                        <img
-                          src={`/api/images/${filename}`}
-                          alt={`${classDetail.title} 소개 이미지 ${idx + 1}`}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                {/* 사진 · 유튜브 (관리자에서 지정한 순서대로) */}
+                {groupMediaItems(classDetail.media).map((block, blockIdx) => (
+                  block.kind === 'images' ? (
+                    <motion.div
+                      key={blockIdx}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.3 }}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: isMobile ? '1fr' : 'repeat(2, 1fr)',
+                        gap: '16px',
+                        marginBottom: '60px'
+                      }}
+                    >
+                      {block.items.map((filename, idx) => (
+                        <div key={idx} style={{
+                          borderRadius: '16px',
+                          overflow: 'hidden',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          aspectRatio: '4 / 3',
+                          background: 'rgba(255,255,255,0.03)'
+                        }}>
+                          <img
+                            src={`/api/images/${filename}`}
+                            alt={`${classDetail.title} 소개 이미지`}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                          />
+                        </div>
+                      ))}
+                    </motion.div>
+                  ) : (
+                    getYoutubeEmbedUrl(block.url) && (
+                      <motion.div
+                        key={blockIdx}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.4 }}
+                        style={{
+                          position: 'relative',
+                          width: '100%',
+                          paddingTop: '56.25%', // 16:9
+                          borderRadius: '16px',
+                          overflow: 'hidden',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          marginBottom: '60px'
+                        }}
+                      >
+                        <iframe
+                          src={getYoutubeEmbedUrl(block.url)!}
+                          title={`${classDetail.title} 소개 영상`}
+                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 'none' }}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
                         />
-                      </div>
-                    ))}
-                  </motion.div>
-                )}
-
-                {/* 유튜브 영상 */}
-                {getYoutubeEmbedUrl(classDetail.youtubeUrl) && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.4 }}
-                    style={{
-                      position: 'relative',
-                      width: '100%',
-                      paddingTop: '56.25%', // 16:9
-                      borderRadius: '16px',
-                      overflow: 'hidden',
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      marginBottom: '60px'
-                    }}
-                  >
-                    <iframe
-                      src={getYoutubeEmbedUrl(classDetail.youtubeUrl)!}
-                      title={`${classDetail.title} 소개 영상`}
-                      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 'none' }}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
-                  </motion.div>
-                )}
+                      </motion.div>
+                    )
+                  )
+                ))}
               </motion.div>
             )}
 
