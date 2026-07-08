@@ -127,3 +127,26 @@ export function generateId(name: string): string {
   const base = name.replace(/[^a-zA-Z0-9가-힣]/g, '').slice(0, 20)
   return base + '-' + Date.now().toString(36)
 }
+
+// orderedIds에 명시된 순서대로 classes 배열을 재정렬해 저장
+// (orderedIds에 없는 항목은 기존 상대 순서를 유지한 채 맨 뒤로 붙음)
+export function reorderClasses(orderedIds: string[]): ClassData[] {
+  const classes = loadClasses()
+  const byId = new Map(classes.map(c => [c.id, c]))
+  const reordered: ClassData[] = []
+
+  for (const id of orderedIds) {
+    const cls = byId.get(id)
+    if (cls) {
+      reordered.push(cls)
+      byId.delete(id)
+    }
+  }
+  // orderedIds에 포함되지 않은 나머지는 원래 순서 그대로 뒤에 붙임
+  for (const cls of classes) {
+    if (byId.has(cls.id)) reordered.push(cls)
+  }
+
+  saveClasses(reordered)
+  return reordered
+}

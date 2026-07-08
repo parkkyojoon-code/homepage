@@ -64,6 +64,21 @@ export default function AdminClassesPage() {
     load()
   }
 
+  async function moveClass(index: number, dir: -1 | 1) {
+    const target = index + dir
+    if (target < 0 || target >= classes.length) return
+    const next = [...classes]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    setClasses(next) // 낙관적 업데이트로 바로 순서 반영
+
+    const res = await fetch('/api/admin/classes/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: next.map(c => c.id) }),
+    })
+    if (!res.ok) load() // 실패하면 서버 상태로 되돌림
+  }
+
   function openNew() {
     setEditTarget(JSON.parse(JSON.stringify(EMPTY_CLASS)))
     setIsNew(true)
@@ -158,8 +173,34 @@ export default function AdminClassesPage() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {classes.map(cls => (
+            {classes.map((cls, index) => (
               <div key={cls.id} style={{ ...card, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16 }}>
+                {/* 순서 이동 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
+                  <button
+                    onClick={() => moveClass(index, -1)}
+                    disabled={index === 0}
+                    title="위로 이동"
+                    style={{
+                      width: 26, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
+                      color: index === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.6)',
+                      cursor: index === 0 ? 'not-allowed' : 'pointer', fontSize: 11, lineHeight: 1,
+                    }}
+                  >▲</button>
+                  <button
+                    onClick={() => moveClass(index, 1)}
+                    disabled={index === classes.length - 1}
+                    title="아래로 이동"
+                    style={{
+                      width: 26, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
+                      color: index === classes.length - 1 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.6)',
+                      cursor: index === classes.length - 1 ? 'not-allowed' : 'pointer', fontSize: 11, lineHeight: 1,
+                    }}
+                  >▼</button>
+                </div>
+
                 {/* 이미지 */}
                 <div style={{ width: 64, height: 48, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', flexShrink: 0 }}>
                   {cls.image
