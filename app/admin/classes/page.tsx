@@ -12,6 +12,8 @@ interface ClassData {
   textbook: { included: boolean; price: number }
   description: string; keywords: [string, string, string]
   createdAt: string; updatedAt: string
+  gallery?: string[]
+  youtubeUrl?: string
 }
 
 const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성']
@@ -24,6 +26,7 @@ const EMPTY_CLASS = {
   textbook: { included: false, price: 0 },
   description: '', keywords: ['', '', ''] as [string, string, string],
   apply_label_online: '', apply_label_offline: '',
+  gallery: [] as string[], youtubeUrl: '',
 }
 
 const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }
@@ -37,6 +40,8 @@ export default function AdminClassesPage() {
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [imgUploading, setImgUploading] = useState(false)
   const imgRef = useRef<HTMLInputElement>(null)
+  const [galleryUploading, setGalleryUploading] = useState(false)
+  const galleryRef = useRef<HTMLInputElement>(null)
   const router = useRouter()
 
   async function load() {
@@ -129,6 +134,37 @@ export default function AdminClassesPage() {
       setMsg({ type: 'error', text: data.error || '이미지 업로드 실패' })
     }
     setImgUploading(false)
+  }
+
+  async function uploadGalleryImage(file: File) {
+    if (!editTarget || isNew) { setMsg({ type: 'error', text: '먼저 기본 정보를 저장하세요.' }); return }
+    setGalleryUploading(true)
+    const fd = new FormData(); fd.append('image', file)
+    const res = await fetch(`/api/admin/classes/${editTarget.id}/gallery`, { method: 'POST', body: fd })
+    const data = await res.json()
+    if (res.ok) {
+      setEditTarget(p => p ? { ...p, gallery: data.gallery } : p)
+      load()
+    } else {
+      setMsg({ type: 'error', text: data.error || '사진 업로드 실패' })
+    }
+    setGalleryUploading(false)
+  }
+
+  async function deleteGalleryImage(filename: string) {
+    if (!editTarget) return
+    const res = await fetch(`/api/admin/classes/${editTarget.id}/gallery`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setEditTarget(p => p ? { ...p, gallery: data.gallery } : p)
+      load()
+    } else {
+      setMsg({ type: 'error', text: data.error || '사진 삭제 실패' })
+    }
   }
 
   function upd(path: string[], value: unknown) {
@@ -292,6 +328,44 @@ export default function AdminClassesPage() {
                 }}>{imgUploading ? '업로드 중…' : '이미지 선택'}</button>
                 {isNew && <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 6 }}>기본 정보 저장 후 이미지 업로드 가능</p>}
               </div>
+            </div>
+          </div>
+
+          {/* 상세페이지 추가 사진 + 유튜브 */}
+          <div style={{ ...card, padding: 20 }}>
+            <label style={lbl}>상세페이지 추가 사진 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>여러 장 등록 가능</span></label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+              {(e.gallery ?? []).map(filename => (
+                <div key={filename} style={{ position: 'relative', width: 90, height: 66, borderRadius: 8, overflow: 'hidden', flexShrink: 0 }}>
+                  <img src={`/api/images/${filename}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <button
+                    onClick={() => deleteGalleryImage(filename)}
+                    title="삭제"
+                    style={{
+                      position: 'absolute', top: 3, right: 3, width: 20, height: 20, borderRadius: '50%',
+                      background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff',
+                      fontSize: 11, lineHeight: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >✕</button>
+                </div>
+              ))}
+            </div>
+            <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={ev => { const f = ev.target.files?.[0]; if (f) uploadGalleryImage(f); ev.target.value = '' }} />
+            <button onClick={() => galleryRef.current?.click()} disabled={galleryUploading || isNew} style={{
+              padding: '8px 16px', background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.25)',
+              borderRadius: 8, color: '#4d8bf5', fontSize: 12, fontWeight: 700, cursor: isNew ? 'not-allowed' : 'pointer', opacity: isNew ? 0.5 : 1,
+            }}>{galleryUploading ? '업로드 중…' : '+ 사진 추가'}</button>
+            {isNew && <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 6 }}>기본 정보 저장 후 사진 업로드 가능</p>}
+
+            <div style={{ marginTop: 18 }}>
+              <label style={lbl}>유튜브 영상 URL <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>상세페이지 클래스 소개에 표시</span></label>
+              <input
+                style={inp}
+                value={e.youtubeUrl ?? ''}
+                onChange={ev => upd(['youtubeUrl'], ev.target.value)}
+                placeholder="예: https://www.youtube.com/watch?v=xxxxxxxxxxx"
+              />
+              <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비워두면 표시되지 않습니다</p>
             </div>
           </div>
 
