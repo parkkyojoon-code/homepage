@@ -5,10 +5,14 @@ import { useParams, useRouter, useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
 import { CheckCircle, ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
+import { calcSubjectSelectionPrice, type SubjectSelection } from "@/lib/subjectPricing"
 
 // 수업 정보
-const courseTypeMap = (category: string, option: string, campus: string): string => {
+const courseTypeMap = (category: string, option: string, campus: string, hasSubjectSelection: boolean): string => {
   const isOnline = option !== 'offline'
+  if (hasSubjectSelection) {
+    return isOnline ? 'sunung-subject-select-online' : 'sunung-subject-select-offline'
+  }
   if (category === '수리논술') {
     return isOnline ? 'surinonseul-online' : `surinonseul-offline`
   }
@@ -27,8 +31,11 @@ export default function ApplyPage() {
     name: string; category: string
     onlinePrice: number; offlinePrice: number
     textbookIncluded: boolean; textbookPrice: number
+    subjectSelection: SubjectSelection | null
   } | null>(null)
   const [classLoading, setClassLoading] = useState(true)
+  // 과목 개수 선택형 신청(예: 수능수학 추월반)에서 학생이 선택한 과목들
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([])
 
   useEffect(() => {
     fetch(`/api/classes/${courseId}`)
@@ -41,13 +48,15 @@ export default function ApplyPage() {
           offlinePrice: data.modes?.offline?.price ?? 0,
           textbookIncluded: data.textbook?.included ?? false,
           textbookPrice: data.textbook?.price ?? 0,
+          subjectSelection: data.subjectSelection ?? null,
         })
         setClassLoading(false)
       })
       .catch(() => setClassLoading(false))
   }, [courseId])
 
-  const courseType = classData ? courseTypeMap(classData.category, option, campus) : ''
+  const hasSubjectSelection = !!classData?.subjectSelection
+  const courseType = classData ? courseTypeMap(classData.category, option, campus, hasSubjectSelection) : ''
   const course = {
     title: classData?.name ?? '수업',
     category: classData?.category ?? '',
@@ -55,9 +64,19 @@ export default function ApplyPage() {
     campus,
   }
 
-  const modePrice = classData ? (option === 'offline' ? classData.offlinePrice : classData.onlinePrice) : 0
+  const modePrice = classData
+    ? (hasSubjectSelection
+        ? calcSubjectSelectionPrice(classData.subjectSelection, selectedSubjects.length)
+        : (option === 'offline' ? classData.offlinePrice : classData.onlinePrice))
+    : 0
   const textbookAmount = classData?.textbookIncluded ? classData.textbookPrice : 0
   const totalAmount = modePrice + textbookAmount
+
+  const toggleSubject = (subject: string) => {
+    setSelectedSubjects(prev =>
+      prev.includes(subject) ? prev.filter(s => s !== subject) : [...prev, subject]
+    )
+  }
 
   const [isMobile, setIsMobile] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -107,6 +126,9 @@ export default function ApplyPage() {
   const validateForm = () => {
     const newErrors: { [key: string]: string } = {}
 
+    if (hasSubjectSelection && selectedSubjects.length === 0) {
+      newErrors.selectedSubjects = "신청할 과목을 1개 이상 선택해주세요"
+    }
     if (!formData.userType) {
       newErrors.userType = "신청자 유형을 선택해주세요"
     }
@@ -157,6 +179,7 @@ export default function ApplyPage() {
           modePrice,
           textbookAmount,
           totalAmount,
+          selectedSubjects: hasSubjectSelection ? selectedSubjects : undefined,
           timestamp: new Date().toISOString()
         })
       })
@@ -333,6 +356,55 @@ export default function ApplyPage() {
           </p>
         </motion.div>
 
+        {/* 과목 개수 선택 (예: 수능수학 추월반 — 수1/수2/미적 원하는 만큼 선택) */}
+        {classData?.subjectSelection && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.03 }}
+            style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '16px',
+              padding: '1.25rem 1.5rem',
+              marginBottom: '1.5rem'
+            }}
+          >
+            <p style={{ fontSize: '0.9rem', fontWeight: 600, color: '#FFFFFF', marginBottom: '0.75rem' }}>
+              신청할 과목을 선택해주세요 <span style={{ color: '#FF4444' }}>*</span>
+              <span style={{ fontWeight: 400, color: '#808080', fontSize: '0.8rem' }}> (원하는 만큼 선택 가능)</span>
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
+              {classData.subjectSelection.subjects.map(subject => {
+                const selected = selectedSubjects.includes(subject)
+                return (
+                  <button
+                    type="button"
+                    key={subject}
+                    onClick={() => toggleSubject(subject)}
+                    style={{
+                      padding: '0.6rem 1.1rem',
+                      borderRadius: '10px',
+                      cursor: 'pointer',
+                      fontSize: '0.95rem',
+                      fontWeight: 600,
+                      background: selected ? 'rgba(0, 102, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                      border: selected ? '1px solid rgba(0, 102, 255, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
+                      color: selected ? '#FFFFFF' : '#B0B0B0',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    {selected ? '✓ ' : ''}{subject}
+                  </button>
+                )
+              })}
+            </div>
+            {errors.selectedSubjects && (
+              <p style={{ color: '#FF4444', fontSize: '0.8rem', marginTop: '0.75rem' }}>{errors.selectedSubjects}</p>
+            )}
+          </motion.div>
+        )}
+
         {/* 결제 예정 금액 */}
         {classData && (
           <motion.div
@@ -349,7 +421,10 @@ export default function ApplyPage() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: textbookAmount > 0 ? '4px' : 0 }}>
               <span style={{ fontSize: '0.9rem', color: '#B0B0B0' }}>
-                {option === 'offline' ? '오프라인 수업' : '온라인 수업'}{course.campus && option === 'offline' ? ` (${course.campus})` : ''}
+                {hasSubjectSelection
+                  ? (selectedSubjects.length > 0 ? `선택 과목 (${selectedSubjects.join(', ')})` : '선택 과목 (미선택)')
+                  : `${option === 'offline' ? '오프라인 수업' : '온라인 수업'}${course.campus && option === 'offline' ? ` (${course.campus})` : ''}`
+                }
               </span>
               <span style={{ fontSize: '0.9rem', color: '#B0B0B0' }}>{modePrice.toLocaleString()}원</span>
             </div>

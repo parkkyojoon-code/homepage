@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import type { SubjectSelection } from './subjectPricing'
 
 const DATA_DIR   = process.env.DATA_DIR || '/app/data'
 const CLASSES_FILE = path.join(DATA_DIR, 'classes.json')
@@ -37,6 +38,9 @@ export interface ClassData {
   apply_label_online?: string   // 구글 시트 온라인 신청 라벨
   apply_label_offline?: string  // 구글 시트 현강 신청 라벨
   media?: MediaItem[]           // 상세페이지에 순서대로 표시할 사진/유튜브 목록
+  // 과목 개수 선택형 신청 (예: 수능수학 추월반 — 수1/수2/미적 중 원하는 만큼 선택, 개수별 가격 적용)
+  // 설정되어 있으면 신청 페이지가 modes.online/offline 가격 대신 이 가격표를 사용한다.
+  subjectSelection?: SubjectSelection
 }
 
 export interface MediaItem {
@@ -81,6 +85,14 @@ const DEFAULT_CLASSES: ClassData[] = [
     keywords: ['매일 1:1 피드백', '맞춤형 문제', '실전 모의고사'],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    subjectSelection: {
+      subjects: ['수1', '수2', '미적'],
+      tiers: [
+        { count: 1, price: 280000 },
+        { count: 2, price: 500000 },
+        { count: 3, price: 700000 },
+      ],
+    },
   },
 ]
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { getClassById } from '@/lib/classes'
+import { calcSubjectSelectionPrice, subjectSelectionLabel } from '@/lib/subjectPricing'
 
 // 환경변수에서 설정 로드
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g'
@@ -43,12 +44,23 @@ export async function POST(request: NextRequest) {
       addressDetail,
       // 결제 금액 (클라이언트 표시값 — 서버에서 관리자 설정 기준으로 재검증/재계산함)
       totalAmount: clientTotalAmount,
+      // 과목 개수 선택형 신청 (예: 수능수학 추월반) — 선택한 과목명 배열
+      selectedSubjects,
     } = body
 
     // 유효성 검사
     if (!studentName || !parentPhone || !studentPhone || !courseType) {
       return NextResponse.json(
         { success: false, error: '필수 항목을 모두 입력해주세요' },
+        { status: 400 }
+      )
+    }
+
+    // 과목 선택형 수업인데 과목을 하나도 선택하지 않은 경우
+    const classDataForValidation = courseId ? getClassById(courseId) : null
+    if (classDataForValidation?.subjectSelection && (!Array.isArray(selectedSubjects) || selectedSubjects.length === 0)) {
+      return NextResponse.json(
+        { success: false, error: '신청할 과목을 1개 이상 선택해주세요' },
         { status: 400 }
       )
     }
@@ -72,18 +84,28 @@ export async function POST(request: NextRequest) {
     let resolvedModePrice: number | null = null
     let resolvedTextbookAmount = 0
     let resolvedTotalAmount: number | null = null
+    // 과목 개수 선택형 신청인 경우, 청구서/시트에 남길 "신청 과목명" (예: "수1, 수2")
+    let subjectsLabel = ''
+    let resolvedClassName = ''
     try {
       if (courseId) {
         const classData = getClassById(courseId)
         if (classData) {
+          resolvedClassName = classData.name
           const isOnline = !courseType.includes('offline')
           customLabel = isOnline
             ? (classData.apply_label_online || null)
             : (classData.apply_label_offline || null)
 
-          resolvedModePrice = isOnline
-            ? (classData.modes?.online?.price ?? 0)
-            : (classData.modes?.offline?.price ?? 0)
+          if (classData.subjectSelection && Array.isArray(selectedSubjects)) {
+            // 과목 개수 선택형: 관리자가 설정한 개수별 가격표로 계산
+            subjectsLabel = subjectSelectionLabel(classData.subjectSelection, selectedSubjects)
+            resolvedModePrice = calcSubjectSelectionPrice(classData.subjectSelection, selectedSubjects.length)
+          } else {
+            resolvedModePrice = isOnline
+              ? (classData.modes?.online?.price ?? 0)
+              : (classData.modes?.offline?.price ?? 0)
+          }
           resolvedTextbookAmount = classData.textbook?.included ? (classData.textbook?.price ?? 0) : 0
           resolvedTotalAmount = resolvedModePrice + resolvedTextbookAmount
         }
@@ -100,7 +122,13 @@ export async function POST(request: NextRequest) {
     // 커스텀 라벨이 있으면 switch 건너뜀
     // (단, 커스텀 라벨은 관리자가 미리 써둔 고정 텍스트라 학생이 실제 고른 캠퍼스를 담고 있지 않으므로,
     //  오프라인 신청인 경우 라벨 뒤에 실제 선택 캠퍼스를 항상 붙여준다 — 안 그러면 어느 지점인지 시트에서 사라짐)
-    if (customLabel) {
+    if (subjectsLabel) {
+      // 과목 개수 선택형 신청 → 청구서/시트에 "신청한 과목명"이 그대로 남도록 라벨을 조합한다.
+      // (예: 【수능수학 추월반】ㅣ수1, 수2)
+      const base = customLabel || `【${resolvedClassName || '수능수학 추월반'}】`
+      surinonseulRegular = `${base}ㅣ${subjectsLabel}` + (isOfflineChoice && campus ? `ㅣ${campus}` : '')
+      sunungSelect = subjectsLabel
+    } else if (customLabel) {
       surinonseulRegular = isOfflineChoice && campus
         ? `${customLabel}ㅣ${campus}`
         : customLabel

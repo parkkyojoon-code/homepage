@@ -63,10 +63,10 @@ export default function Footer() {
               lineHeight: 1.8,
               letterSpacing: '-0.01em'
             }}>
-              <p style={{ marginBottom: '0.5rem' }}>상호명: 박교준 입시연구소</p>
-              <p style={{ marginBottom: '0.5rem' }}>사업자번호: 255-97-01477</p>
+              <p style={{ marginBottom: '0.5rem' }}>상호명: 박교준입시연구소원격학원</p>
+              <p style={{ marginBottom: '0.5rem' }}>사업자번호: 777-96-02004</p>
               <p style={{ marginBottom: '0.5rem' }}>대표자명: 박교준</p>
-              <p style={{ marginBottom: '0.5rem' }}>주소: 인천광역시 연수구 해돋이로 120번길 23, 6층 608호 (송도동, 아크리아 빌딩2)</p>
+              <p style={{ marginBottom: '0.5rem' }}>주소: 인천광역시 연수구 테크노파크로111번길 5, 8층 801-14호(송도동, 스타빌딩)</p>
               <p>이메일: parkkyojoon@gmail.com</p>
             </div>
             <div style={{

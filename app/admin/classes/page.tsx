@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 
 interface MediaItem { type: 'image' | 'youtube'; value: string }
 interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
+interface SubjectPricingTier { count: number; price: number }
+interface SubjectSelection { subjects: string[]; tiers: SubjectPricingTier[] }
 interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
   image: string | null
@@ -14,6 +16,7 @@ interface ClassData {
   description: string; keywords: [string, string, string]
   createdAt: string; updatedAt: string
   media?: MediaItem[]
+  subjectSelection?: SubjectSelection
 }
 
 const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성']
@@ -27,6 +30,7 @@ const EMPTY_CLASS = {
   description: '', keywords: ['', '', ''] as [string, string, string],
   apply_label_online: '', apply_label_offline: '',
   media: [] as MediaItem[],
+  subjectSelection: null as SubjectSelection | null,
 }
 
 const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 16 }
@@ -194,6 +198,42 @@ export default function AdminClassesPage() {
       obj[path[path.length - 1]] = value
       return next
     })
+  }
+
+  const DEFAULT_SUBJECT_SELECTION: SubjectSelection = {
+    subjects: ['수1', '수2', '미적'],
+    tiers: [{ count: 1, price: 280000 }, { count: 2, price: 500000 }, { count: 3, price: 700000 }],
+  }
+
+  function toggleSubjectSelection(enabled: boolean) {
+    upd(['subjectSelection'], enabled ? (editTarget?.subjectSelection ?? DEFAULT_SUBJECT_SELECTION) : null)
+  }
+  function updSubject(i: number, value: string) {
+    const cur = editTarget?.subjectSelection; if (!cur) return
+    const subjects = [...cur.subjects]; subjects[i] = value
+    upd(['subjectSelection', 'subjects'], subjects)
+  }
+  function addSubject() {
+    const cur = editTarget?.subjectSelection; if (!cur) return
+    upd(['subjectSelection', 'subjects'], [...cur.subjects, ''])
+  }
+  function removeSubject(i: number) {
+    const cur = editTarget?.subjectSelection; if (!cur) return
+    upd(['subjectSelection', 'subjects'], cur.subjects.filter((_, idx) => idx !== i))
+  }
+  function updTier(i: number, field: 'count' | 'price', value: number) {
+    const cur = editTarget?.subjectSelection; if (!cur) return
+    const tiers = cur.tiers.map((t, idx) => idx === i ? { ...t, [field]: value } : t)
+    upd(['subjectSelection', 'tiers'], tiers)
+  }
+  function addTier() {
+    const cur = editTarget?.subjectSelection; if (!cur) return
+    const nextCount = (cur.tiers[cur.tiers.length - 1]?.count ?? 0) + 1
+    upd(['subjectSelection', 'tiers'], [...cur.tiers, { count: nextCount, price: 0 }])
+  }
+  function removeTier(i: number) {
+    const cur = editTarget?.subjectSelection; if (!cur) return
+    upd(['subjectSelection', 'tiers'], cur.tiers.filter((_, idx) => idx !== i))
   }
 
   const inp: React.CSSProperties = {
@@ -568,6 +608,54 @@ export default function AdminClassesPage() {
                 <label style={lbl}>교재비 (원)</label>
                 <input type="number" style={inp} value={e.textbook.price} onChange={ev => upd(['textbook','price'], Number(ev.target.value))} />
               </div>
+            )}
+          </div>
+
+          {/* 과목 개수 선택형 가격 (예: 수능수학 추월반 — 수1/수2/미적 중 원하는 만큼 선택) */}
+          <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input type="checkbox" checked={!!e.subjectSelection} onChange={ev => toggleSubjectSelection(ev.target.checked)} id="subj-cb" />
+              <label htmlFor="subj-cb" style={{ fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer' }}>과목 개수 선택형 신청 사용</label>
+            </div>
+            <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: -8 }}>
+              켜면 신청 페이지에서 위 &ldquo;운영 방식 &amp; 금액&rdquo;의 금액 대신, 학생이 과목을 원하는 만큼 선택하고 선택한 개수에 따라 아래 가격표대로 청구됩니다.
+            </p>
+
+            {e.subjectSelection && (
+              <>
+                <div>
+                  <label style={lbl}>선택 가능한 과목</label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {e.subjectSelection.subjects.map((subj, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8 }}>
+                        <input style={inp} value={subj} placeholder="예: 수1" onChange={ev => updSubject(i, ev.target.value)} />
+                        <button onClick={() => removeSubject(i)} style={{ padding: '0 14px', background: 'rgba(239,84,84,0.1)', border: '1px solid rgba(239,84,84,0.2)', borderRadius: 10, color: '#f08888', fontSize: 12, cursor: 'pointer' }}>삭제</button>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={addSubject} style={{ marginTop: 8, padding: '8px 14px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'rgba(255,255,255,0.6)', fontSize: 12, cursor: 'pointer' }}>+ 과목 추가</button>
+                </div>
+
+                <div>
+                  <label style={lbl}>개수별 가격표 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>과목을 추가해도 이 표에 개수를 추가해두면 계속 확장 가능</span></label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {e.subjectSelection.tiers
+                      .map((tier, i) => ({ tier, i }))
+                      .sort((a, b) => a.tier.count - b.tier.count)
+                      .map(({ tier, i }) => (
+                        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <div style={{ width: 90 }}>
+                            <input type="number" min={1} style={inp} value={tier.count} onChange={ev => updTier(i, 'count', Number(ev.target.value))} />
+                          </div>
+                          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>과목 →</span>
+                          <input type="number" style={inp} value={tier.price} onChange={ev => updTier(i, 'price', Number(ev.target.value))} placeholder="가격 (원)" />
+                          <button onClick={() => removeTier(i)} style={{ padding: '0 14px', background: 'rgba(239,84,84,0.1)', border: '1px solid rgba(239,84,84,0.2)', borderRadius: 10, color: '#f08888', fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>삭제</button>
+                        </div>
+                      ))}
+                  </div>
+                  <button onClick={addTier} style={{ marginTop: 8, padding: '8px 14px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'rgba(255,255,255,0.6)', fontSize: 12, cursor: 'pointer' }}>+ 가격 구간 추가</button>
+                </div>
+              </>
             )}
           </div>
 
