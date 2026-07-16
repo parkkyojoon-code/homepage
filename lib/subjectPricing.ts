@@ -48,5 +48,11 @@ export function calcSubjectSelectionPrice(
 }
 
 export function subjectSelectionLabel(selection: SubjectSelection, selectedSubjects: string[]): string {
-  return selectedSubjects.filter(s => selection.subjects.includes(s)).join(', ')
+  // 관리자가 등록한 과목 순서(subjects) 기준으로 정렬해서 표시 — 학생이 클릭한 순서가 아니라
+  // 항상 "수1·수2·미적" 같은 일관된 순서로 나오게 함.
+  // 구분자로 가운뎃점(·)을 쓰는 이유: 청구서 발송 스크립트(apply_checker.py)가 이 값이 담기는
+  // 시트 열(G/J)을 콤마(,) 기준으로 "여러 개의 별개 신청 건"인지 판단하기 때문에, 과목을
+  // 콤마로 나열하면 하나의 신청이 여러 건으로 잘못 쪼개져 청구서가 중복 발송된다.
+  // 가운뎃점은 그 로직과 절대 충돌하지 않으면서도 자연스러운 한국어 나열 표기라 안전하다.
+  return selection.subjects.filter(s => selectedSubjects.includes(s)).join('·')
 }

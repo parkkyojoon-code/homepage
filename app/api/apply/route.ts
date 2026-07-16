@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
     let resolvedModePrice: number | null = null
     let resolvedTextbookAmount = 0
     let resolvedTotalAmount: number | null = null
-    // 과목 개수 선택형 신청인 경우, 청구서/시트에 남길 "신청 과목명" (예: "수1, 수2")
+    // 과목 개수 선택형 신청인 경우, 청구서/시트에 남길 "신청 과목명" (예: "수1·수2·미적")
     let subjectsLabel = ''
     let resolvedClassName = ''
     try {
@@ -124,8 +124,9 @@ export async function POST(request: NextRequest) {
     //  오프라인 신청인 경우 라벨 뒤에 실제 선택 캠퍼스를 항상 붙여준다 — 안 그러면 어느 지점인지 시트에서 사라짐)
     if (subjectsLabel) {
       // 과목 개수 선택형 신청 → 청구서/시트에 "신청한 과목명"이 그대로 남도록 라벨을 조합한다.
-      // (예: 【수능수학 추월반】ㅣ수1, 수2)
-      const base = customLabel || `【${resolvedClassName || '수능수학 추월반'}】`
+      // (예: 【온라인 | 수능수학 추월반】ㅣ수1·수2·미적)
+      const modeLabel = isOfflineChoice ? '현강' : '온라인'
+      const base = customLabel || `【${modeLabel} | ${resolvedClassName || '수능수학 추월반'}】`
       surinonseulRegular = `${base}ㅣ${subjectsLabel}` + (isOfflineChoice && campus ? `ㅣ${campus}` : '')
       sunungSelect = subjectsLabel
     } else if (customLabel) {
