@@ -16,6 +16,7 @@ on:
       - 'workers/lectures/**'
       - 'tests/test_lecture_worker.py'
       - 'tests/lecture-migrations.test.mjs'
+      - 'tests/lecture-backup.test.mjs'
       - '.env.lectures.example'
       - 'package*.json'
       - 'tsconfig*.json'
@@ -54,6 +55,12 @@ jobs:
       - run: npm run test:lectures
       - run: npm run test:lectures:integration
       - run: npm run test:lectures:migrations
+      - name: Install matching PostgreSQL backup tools
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
+      - run: npm run test:lectures:backup
+        env:
+          LECTURES_TEST_POSTGRES_URL: postgresql://lecture_ci:ci-test-only@127.0.0.1:5432/lecture_ci
+          LECTURES_PG_BIN: /usr/lib/postgresql/16/bin
       - run: npm run db:lectures:status
       - run: npm run db:lectures:migrate -- --database lecture_ci
       - run: npm run db:lectures:check

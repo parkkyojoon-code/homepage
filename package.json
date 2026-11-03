@@ -13,7 +13,10 @@
     "db:lectures:check": "node scripts/lecture-db.cjs check",
     "db:lectures:migrate": "node scripts/lecture-db.cjs migrate",
     "db:lectures:bootstrap-admin": "node scripts/bootstrap-lecture-admin.cjs",
-    "test:lectures:migrations": "node --test tests/lecture-migrations.test.mjs"
+    "test:lectures:migrations": "node --test tests/lecture-migrations.test.mjs",
+    "db:lectures:backup": "node scripts/lecture-backup.cjs backup",
+    "db:lectures:restore-rehearsal": "node scripts/lecture-backup.cjs restore-rehearsal",
+    "test:lectures:backup": "node --test tests/lecture-backup.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

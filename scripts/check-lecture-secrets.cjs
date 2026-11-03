@@ -15,7 +15,7 @@ const rules=[
 ]
 const failures=[]
 for(const file of files){
- if((/(^|\/)\.env(?:\.|$)/.test(file)&&!file.endsWith('.example'))||/\.(?:pem|p12|pfx|key|zip)$/i.test(file)||/(?:service[-_]account|credentials)\.json$/i.test(file))failures.push(`${file}: sensitive file type`)
+ if((/(^|\/)\.env(?:\.|$)/.test(file)&&!file.endsWith('.example'))||/\.(?:pem|p12|pfx|key|zip|dump)$/i.test(file)||/(?:service[-_]account|credentials)\.json$/i.test(file))failures.push(`${file}: sensitive file type`)
  const bytes=staged?git(['show',`:${file}`]):readFileSync(resolve(root,file))
  if(bytes.includes(0))continue
  const text=bytes.toString('utf8')

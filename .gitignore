@@ -45,3 +45,7 @@ next-env.d.ts
 # Python worker caches
 __pycache__/
 *.pyc
+
+# Private database exports (never commit account/session/order backups)
+/backups/
+*.dump
