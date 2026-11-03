@@ -1,0 +1,70 @@
+name: Lecture service checks
+on:
+  push:
+    branches: ['codex/lecture-service']
+  pull_request:
+    paths:
+      - 'app/lectures/**'
+      - 'app/admin/lectures/**'
+      - 'app/api/lectures/**'
+      - 'lib/lectures/**'
+      - 'tests/lectures.test.ts'
+      - 'tests/lecture-service-flow.integration.mjs'
+      - 'tests/lecture-postgres-*.mjs'
+      - 'db/lectures/**'
+      - 'scripts/**'
+      - 'workers/lectures/**'
+      - 'tests/test_lecture_worker.py'
+      - 'tests/lecture-migrations.test.mjs'
+      - '.env.lectures.example'
+      - 'package*.json'
+      - 'tsconfig*.json'
+      - '.github/workflows/lecture-service.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: lecture_ci
+          POSTGRES_USER: lecture_ci
+          POSTGRES_PASSWORD: ci-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lecture_ci -d lecture_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LECTURES_DATABASE_URL: postgresql://lecture_ci:ci-test-only@127.0.0.1:5432/lecture_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: node scripts/check-lecture-secrets.cjs
+      - run: npm ci
+      - run: npx tsc --project tsconfig.lectures.json
+      - run: npm run test:lectures
+      - run: npm run test:lectures:integration
+      - run: npm run test:lectures:migrations
+      - run: npm run db:lectures:status
+      - run: npm run db:lectures:migrate -- --database lecture_ci
+      - run: npm run db:lectures:check
+      - run: npm run db:lectures:migrate -- --database lecture_ci
+      - run: node --test tests/lecture-service-flow.integration.mjs
+        env:
+          LECTURES_TEST_POSTGRES_URL: postgresql://lecture_ci:ci-test-only@127.0.0.1:5432/lecture_ci
+      - run: node --test tests/lecture-postgres-concurrency.mjs
+        env:
+          LECTURES_TEST_POSTGRES_URL: postgresql://lecture_ci:ci-test-only@127.0.0.1:5432/lecture_ci
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -p test_lecture_worker.py

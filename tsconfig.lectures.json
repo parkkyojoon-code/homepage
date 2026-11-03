@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["lib/lectures/**/*.ts", "app/api/lectures/**/*.ts", "app/lectures/**/*.tsx", "app/admin/lectures/**/*.tsx", "tests/lectures.test.ts"],
+  "exclude": ["node_modules"]
+}

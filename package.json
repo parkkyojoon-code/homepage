@@ -6,7 +6,14 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:lectures": "tsc -p tsconfig.lectures-tests.json && node --test .test-build/tests/lectures.test.js",
+    "test:lectures:integration": "tsc -p tsconfig.lectures-tests.json && node --test tests/lecture-service-flow.integration.mjs",
+    "db:lectures:status": "node scripts/lecture-db.cjs status",
+    "db:lectures:check": "node scripts/lecture-db.cjs check",
+    "db:lectures:migrate": "node scripts/lecture-db.cjs migrate",
+    "db:lectures:bootstrap-admin": "node scripts/bootstrap-lecture-admin.cjs",
+    "test:lectures:migrations": "node --test tests/lecture-migrations.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -15,6 +22,7 @@
     "googleapis": "^144.0.0",
     "lucide-react": "^0.545.0",
     "next": "15.5.9",
+    "pg": "^8.23.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-hook-form": "^7.64.0",
@@ -24,9 +32,11 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.14",
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

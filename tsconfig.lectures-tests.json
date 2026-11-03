@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2020", "module": "CommonJS", "moduleResolution": "node",
+    "strict": true, "esModuleInterop": true, "skipLibCheck": true,
+    "outDir": ".test-build", "rootDir": "."
+  },
+  "include": ["tests/lectures.test.ts", "lib/lectures/security.ts", "lib/lectures/admin-access.ts", "lib/lectures/admin-billing.ts", "lib/lectures/catalog-admin.ts", "lib/lectures/buyer-order-query.ts", "lib/lectures/admin-accounts.ts", "lib/lectures/buyer-recovery.ts", "lib/lectures/billing-queue.ts", "lib/lectures/worker-auth.ts", "lib/lectures/input.ts", "lib/lectures/manual-revocation.ts", "lib/lectures/orders.ts", "lib/lectures/manual-payment.ts", "lib/lectures/classroom.ts"]
+}
