@@ -127,9 +127,9 @@ GET /api/lectures/orders?page=1은 {orders,total,page,pageSize}로 변경했다.
 
 ## 아직 필요한 구현과 운영 검증
 
-- 실제 PostgreSQL 다중 연결/claim 잠금·worker 두 개 동시 실행 검증
+- worker 프로세스 두 개 동시 실행과 외부 호출을 포함한 검증(실제 PostgreSQL 다중 연결의 claim 잠금 검사는 로컬 통과)
 - 실제 HTTP 로그인 성공·세션 만료/역할 변경·브라우저 전체 주문 흐름
-- Railway DB/worker 설정·실제 공급자 검수, 기존 홈페이지 회귀와 전체 빌드
+- Railway DB/worker 설정·실제 공급자 검수와 기존 홈페이지 브라우저 회귀(로컬 전체 빌드는 통과)
 - 백업 복원·배포·되돌리기·고객 안내 확인
 
 설문·분류·추천은 요구사항 수신 후 별도 범위다. 기존 데이터 전체 DB 통합은 이번 신규 출시와 분리한다. 실제 환불 API는 이번 범위에 없다. 코드 연결과 실제 운영 활성화를 구분한다.
@@ -149,6 +149,6 @@ GET /api/lectures/orders?page=1은 {orders,total,page,pageSize}로 변경했다.
 
 PGlite 검사는 실제 업무 함수를 사용하지만 별도 PostgreSQL 연결들의 동시성·Railway·실제 외부 API·브라우저 검증을 대체하지 않는다. 기존 원본 프로젝트는 전체 타입/린트 검사를 빌드에서 무시하므로 새 기능의 검사 통과와 전체 운영 검증을 구분한다.
 
-GitHub Actions는 임시 PostgreSQL 16 서비스에 migrate → check → migrate(변경 없음)를 실행하도록 구성했다. 임시 DB의 CI 전용 계정은 운영 계정과 무관하다. 이 workflow는 아직 업로드/실행하지 않았으므로 실제 PostgreSQL 검증이 완료됐다고 표시하지 않는다.
+GitHub Actions는 임시 PostgreSQL 16 서비스에 migrate → check → migrate(변경 없음)를 실행하도록 구성했다. 임시 DB의 CI 전용 계정은 운영 계정과 무관하다. 2026-11-04 개발 브랜치 업로드 후 이 workflow가 실행된다. 실행 결과는 GitHub Actions에서 해당 커밋 기준으로 확인하며, 로컬 검사 결과와 구분한다.
 
 실제 PostgreSQL 업무 흐름: LECTURES_TEST_POSTGRES_URL을 전용 테스트 DB로 설정한 뒤 npm run test:lectures:integration. 실제 동시성: node --test tests/lecture-postgres-concurrency.mjs. PostgreSQL 대상 없이 기본 실행하면 업무 흐름은 PGlite를 사용하며 동시성 검사는 skip한다.
