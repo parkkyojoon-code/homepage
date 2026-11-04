@@ -24,7 +24,7 @@ export default function OrderDetail() {
   }, [id])
   useEffect(() => { void refresh(); return () => active.current?.abort() }, [refresh])
   const status = order ? orderStatus(order.status) : null
-  return <main style={{ maxWidth: 760, margin: 'auto', padding: '48px 24px', color: '#f8fafc' }}>
+  return <main className="lecture-page lecture-page--detail">
     <Link href="/lectures">← 강의 목록 / 내 주문</Link><h1>주문 상세</h1>
     <p role="status">{busy ? '최신 상태를 확인하고 있습니다.' : message}</p>
     {!busy && order && <><h2>{status?.label}</h2><p>{status?.detail}</p>

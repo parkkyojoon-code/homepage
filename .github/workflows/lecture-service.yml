@@ -8,6 +8,7 @@ on:
       - 'app/admin/lectures/**'
       - 'app/api/lectures/**'
       - 'lib/lectures/**'
+      - 'components/lectures/**'
       - 'tests/lectures.test.ts'
       - 'tests/lecture-service-flow.integration.mjs'
       - 'tests/lecture-postgres-*.mjs'
