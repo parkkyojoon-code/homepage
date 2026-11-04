@@ -8,7 +8,7 @@
 2. env.example에 있는 항목을 새 서비스 환경변수에 설정한다. 기존 결제선생의 PAYSSAM_API_KEY/MEMBER/MERCHANT는 worker에만 설정한다. 실제 값을 Git/채팅/로그에 넣지 않는다.
 3. LECTURES_WEB_ORIGIN은 홈페이지 HTTPS Origin이다. 내부 API는 LECTURES_WORKER_TOKEN으로 인증한다. 홈페이지 서비스에도 동일한 토큰과 LECTURES_WORKER_ENABLED=true가 필요하다. 토큰은 충분히 긴 무작위 값(최소 32자)을 사용한다.
 4. 처음에는 LECTURES_WORKER_SEND_ENABLED=false로 두고 서비스와 API 연결부터 확인한다. LECTURES_WORKER_ENABLED가 true가 아니면 worker는 요청 없이 종료한다.
-5. 실제 발송은 운영 환경과 지정한 검수 대상을 확인한 뒤 SEND_ENABLED=true로 활성화한다. 이번 코드 작성에서는 실제 발송/조회·서비스 생성·환경변수 설정을 수행하지 않았다.
+5. 실제 발송은 운영 환경과 지정한 검수 대상을 확인한 뒤 SEND_ENABLED=true로 활성화한다. 신규 환경은 기본 비활성으로 시작한다. 2026-11-04 별도 Railway 검증 환경에서 사용자 승인에 따른 1,200원 단건 발송·실결제·자동 강의 오픈을 확인했다. 이후 SEND_ENABLED=false로 되돌리고 조회 전용으로 실행 중이다. 검증 성공을 운영 홈페이지 전체 발송 승인으로 해석하지 않는다.
 
 로컬 실행 명령: `python workers/lectures/worker.py --once`. 기본 비활성 상태에서는 네트워크 요청을 하지 않는다. 실제 변수는 OS 환경변수를 읽으며 env.example 파일을 자동으로 읽지 않는다.
 

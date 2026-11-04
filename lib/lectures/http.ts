@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { ZodError } from 'zod'
+import { acceptsLectureOrigin } from './origin-policy'
 
 export class HttpError extends Error {
   constructor(public status: number, message: string, public code?: string) { super(message) }
@@ -14,7 +15,8 @@ export function failure(error: unknown) {
 export function sameOrigin(request: Request) {
   // Next's internal request URL can use localhost even when the browser used 127.0.0.1.
   // Host is browser-controlled for browser requests; do not trust arbitrary forwarded headers.
-  const url = new URL(request.url)
-  const expected = process.env.LECTURES_APP_ORIGIN || `${url.protocol}//${request.headers.get('host') || url.host}`
-  if (request.headers.get('origin') !== expected) throw new HttpError(403, '허용되지 않은 요청입니다.')
+  if (!acceptsLectureOrigin(request, {
+    primary: process.env.LECTURES_APP_ORIGIN,
+    additional: process.env.LECTURES_ADDITIONAL_ORIGINS,
+  })) throw new HttpError(403, '허용되지 않은 요청입니다.')
 }

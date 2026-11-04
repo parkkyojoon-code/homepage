@@ -8,6 +8,29 @@ import { hasLectureAccess, playableVideo, type AccessEvidence } from '../lib/lec
 import { payssamClient, PaySsamError, type PaySsamConfig, type VerifiedReceipt } from '../lib/lectures/payssam'
 import { paymentTransition } from '../lib/lectures/payment-policy'
 import { manualConfirmation, mayManuallyConfirm, manualRevocation, mayRevokeManualConfirmation } from '../lib/lectures/manual-input'
+import { acceptsLectureOrigin } from '../lib/lectures/origin-policy'
+
+test('lecture mutations accept only explicitly configured site origins, regardless of proxy headers', () => {
+  const request = (origin?: string) => new Request('http://localhost:8080/api/lectures/orders', {
+    headers: { host: 'attacker.example', 'x-forwarded-host': 'www.pkjmath.com', ...(origin === undefined ? {} : {origin}) },
+  })
+  const primary = {primary:'https://pkjmath.com'}
+  const aliases = {...primary,additional:'https://www.pkjmath.com'}
+  assert.equal(acceptsLectureOrigin(request('https://pkjmath.com'), primary), true)
+  assert.equal(acceptsLectureOrigin(request('https://pkjmath.com'), {...primary,additional:''}), true)
+  assert.equal(acceptsLectureOrigin(request('https://www.pkjmath.com'), primary), false)
+  assert.equal(acceptsLectureOrigin(request('https://www.pkjmath.com'), aliases), true)
+  for (const origin of [undefined, 'null', 'https://attacker.example', 'https://pkjmath.com.attacker.example', 'http://pkjmath.com', 'https://www.pkjmath.com:8443', 'https://pkjmath.com/path', 'https://user@pkjmath.com']) {
+    assert.equal(acceptsLectureOrigin(request(origin), aliases), false)
+  }
+  for (const additional of ['*', 'https://www.pkjmath.com/', 'https://www.pkjmath.com/path', 'https://www.pkjmath.com,', 'https://www.pkjmath.com?x=1']) {
+    assert.equal(acceptsLectureOrigin(request('https://pkjmath.com'), {...primary,additional}), false)
+  }
+  assert.equal(acceptsLectureOrigin(request('https://www.pkjmath.com'), {additional:aliases.additional}), false)
+  const local = new Request('http://localhost:3100/api/lectures/orders', {headers:{host:'127.0.0.1:3100',origin:'http://127.0.0.1:3100'}})
+  assert.equal(acceptsLectureOrigin(local, {}), true)
+  assert.equal(acceptsLectureOrigin(local, primary), false)
+})
 
 test('approval corrections require an explicit correction flag and a manual paid source', () => {
   const input = { expectedTotalWon: 1000, operatorName: '관리자', note: '잘못된 승인 정정', confirmed: true, correctionOnly: true }
