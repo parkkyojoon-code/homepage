@@ -7,6 +7,12 @@ on:
       - 'app/lectures/**'
       - 'app/admin/lectures/**'
       - 'app/api/lectures/**'
+      - 'app/api/my/**'
+      - 'app/api/admin/**'
+      - 'lib/my-auth.ts'
+      - 'lib/admin-auth.ts'
+      - 'lib/homework.ts'
+      - 'tests/legacy-auth-http.integration.mjs'
       - 'lib/lectures/**'
       - 'components/lectures/**'
       - 'tests/lectures.test.ts'
@@ -26,6 +32,16 @@ on:
 permissions:
   contents: read
 jobs:
+  legacy-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:legacy-auth
   check:
     runs-on: ubuntu-latest
     services:

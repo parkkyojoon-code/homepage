@@ -7,7 +7,7 @@ export async function GET() {
   const student = await getMyStudent()
   if (!student) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { password: _pw, assignments: _as, ...profile } = student
+  const { password: _pw, password_plain: _plain, assignments: _as, ...profile } = student
   return NextResponse.json(profile)
 }
 
@@ -33,6 +33,6 @@ export async function PATCH(req: NextRequest) {
 
   saveStudents(students)
 
-  const { password: _pw, assignments: _as, ...profile } = students[idx]
+  const { password: _pw, password_plain: _plain, assignments: _as, ...profile } = students[idx]
   return NextResponse.json(profile)
 }

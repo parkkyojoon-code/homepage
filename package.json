@@ -7,6 +7,7 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
+    "test:legacy-auth": "npm run build && node --test tests/legacy-auth-http.integration.mjs",
     "test:lectures": "tsc -p tsconfig.lectures-tests.json && node --test .test-build/tests/lectures.test.js",
     "test:lectures:integration": "tsc -p tsconfig.lectures-tests.json && node --test tests/lecture-service-flow.integration.mjs",
     "db:lectures:status": "node scripts/lecture-db.cjs status",

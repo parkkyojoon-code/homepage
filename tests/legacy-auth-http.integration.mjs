@@ -1,0 +1,96 @@
+// Real HTTP regression checks against a disposable loopback-only Next server.
+// Never uses an existing server, real student files, lecture DB, or provider keys.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {createHash,randomBytes} from 'node:crypto';
+import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import {createServer} from 'node:net';
+import {once} from 'node:events';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+const root=fileURLToPath(new URL('../',import.meta.url));
+test('legacy and lecture authentication remain isolated over HTTP',{timeout:120000},async t=>{
+ await readFile(path.join(root,'.next','BUILD_ID')); // Run npm run test:legacy-auth to build first.
+ const temp=await mkdtemp(path.join(tmpdir(),'pkjmath-legacy-auth-'));
+ const password=randomBytes(24).toString('hex');
+ const adminPassword=randomBytes(24).toString('hex');
+ const student={id:'isolated-student',name:'회귀검수 학생',class:'검수반',student_phone:'01000000001',parent_phone:'01000000002',
+  password:createHash('sha256').update(password).digest('hex'),password_plain:password,
+  address:'',address_detail:'',zipcode:'',total_hw:0,submitted_count:0,submission_rate:0,a_count:0,b_count:0,c_count:0,assignments:[],lectureIds:[]};
+ const studentFile=path.join(temp,'students_data.json');
+ let child;
+ try{
+  await writeFile(studentFile,JSON.stringify([student]));
+  const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');
+  const port=reservation.address().port;await new Promise((resolve,reject)=>reservation.close(e=>e?reject(e):resolve()));
+  const origin=`http://127.0.0.1:${port}`;
+  const env={...process.env,NODE_ENV:'production',DATA_DIR:temp,ADMIN_PASSWORD:adminPassword,ADMIN_SECRET:randomBytes(32).toString('hex'),
+   LECTURES_DATABASE_URL:'',LECTURES_APP_ORIGIN:origin,LECTURES_ADDITIONAL_ORIGINS:'',LECTURES_WORKER_ENABLED:'false',LECTURES_WORKER_TOKEN:'',
+   GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:'',PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',SOLAPI_API_KEY:'',SOLAPI_API_SECRET:'',
+   LECTURES_BOOTSTRAP_USERNAME:'',LECTURES_BOOTSTRAP_NAME:'',LECTURES_BOOTSTRAP_PASSWORD:''};
+  child=spawn(process.execPath,[path.join(root,'node_modules','next','dist','bin','next'),'start','--hostname','127.0.0.1','--port',String(port)],{cwd:root,env,stdio:'ignore',windowsHide:true});
+  let startError;child.on('error',e=>{startError=e});
+  const request=(route,{method='GET',cookie,body,timeout=30000}={})=>fetch(origin+route,{method,redirect:'manual',signal:AbortSignal.timeout(timeout),
+   headers:{Origin:origin,...(cookie?{Cookie:cookie}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},
+   ...(body!==undefined?{body:JSON.stringify(body)}:{})});
+  let ready=false;
+  const readinessDeadline=Date.now()+30000;
+  for(let attempt=0;attempt<80&&Date.now()<readinessDeadline;attempt++){
+   if(startError)throw startError;
+   if(child.exitCode!==null)throw Error('Disposable Next server stopped before readiness');
+   try{const r=await request('/api/my/profile',{timeout:1000});await r.arrayBuffer();if(r.status===401){ready=true;break}}catch{}
+   await new Promise(resolve=>setTimeout(resolve,250));
+  }
+  assert.ok(ready,'Disposable loopback server must be ready');
+  let studentCookie,adminCookie;
+  const loginStudent=phone=>request('/api/my/login',{method:'POST',body:{phone,password}});
+  const cookieOf=(r,name)=>{const found=r.headers.getSetCookie().find(s=>s.startsWith(name+'='));assert.ok(found,`Expected ${name} cookie`);return found.split(';')[0]};
+  const initialLogin=await loginStudent(student.student_phone);assert.equal(initialLogin.status,200);studentCookie=cookieOf(initialLogin,'my_session');
+  const assertPrivateProfile=async r=>{assert.equal(r.status,200);const d=await r.json();assert.equal(d.id,student.id);assert.ok(!('password' in d),'Password hash must not be returned');assert.ok(!('password_plain' in d),'Plaintext password must not be returned');return d};
+  await t.test('existing student login and profile omit both password fields',async()=>{
+   const bad=await request('/api/my/login',{method:'POST',body:{phone:student.student_phone,password:'incorrect'}});assert.equal(bad.status,401);
+   const r=await loginStudent(student.student_phone);assert.equal(r.status,200);studentCookie=cookieOf(r,'my_session');
+   assert.equal(r.headers.getSetCookie().length,1);await assertPrivateProfile(await request('/api/my/profile',{cookie:studentCookie}));
+  });
+  await t.test('existing parent phone still signs in to the same student',async()=>{
+   const r=await loginStudent(student.parent_phone);assert.equal(r.status,200);const d=await (await request('/api/my/profile',{cookie:cookieOf(r,'my_session')})).json();assert.equal(d.id,student.id);
+  });
+  await t.test('existing admin login still reads only the disposable student list',async()=>{
+   assert.equal((await request('/api/admin/login',{method:'POST',body:{password:'incorrect'}})).status,401);
+   const r=await request('/api/admin/login',{method:'POST',body:{password:adminPassword}});assert.equal(r.status,200);adminCookie=cookieOf(r,'admin_session');
+   const list=await request('/api/admin/students',{cookie:adminCookie});assert.equal(list.status,200);assert.deepEqual((await list.json()).map(s=>s.id),[student.id]);
+  });
+  await t.test('existing student and admin cookies grant no lecture access',async()=>{
+   for(const route of ['/api/lectures/me','/api/lectures/orders','/api/lectures/admin/orders','/api/lectures/admin/accounts'])
+    assert.equal((await request(route,{cookie:`${studentCookie}; ${adminCookie}`})).status,401,route);
+  });
+  await t.test('lecture cookie names grant no existing student or admin access',async()=>{
+   const cookie='lectures_session=isolated-test; lectures_admin_session=isolated-test';
+   for(const route of ['/api/my/profile','/api/admin/students'])assert.equal((await request(route,{cookie})).status,401,route);
+  });
+  await t.test('lecture logout does not clear existing login cookies',async()=>{
+   const cookie=`${studentCookie}; ${adminCookie}`;const r=await request('/api/lectures/auth/logout',{method:'POST',cookie,body:{}});assert.equal(r.status,200);
+   assert.deepEqual(r.headers.getSetCookie().map(s=>s.split('=')[0]),['lectures_session']);
+   assert.equal((await request('/api/my/profile',{cookie})).status,200);assert.equal((await request('/api/admin/students',{cookie})).status,200);
+  });
+  await t.test('existing student logout clears only its own cookie',async()=>{
+   const r=await request('/api/my/logout',{method:'POST',cookie:`${studentCookie}; ${adminCookie}`});assert.equal(r.status,200);
+   assert.deepEqual(r.headers.getSetCookie().map(s=>s.split('=')[0]),['my_session']);assert.equal((await request('/api/admin/students',{cookie:adminCookie})).status,200);
+  });
+  await t.test('existing admin logout clears only its own cookie',async()=>{
+   const r=await request('/api/admin/logout',{method:'POST',cookie:`${studentCookie}; ${adminCookie}`});assert.equal(r.status,200);
+   assert.deepEqual(r.headers.getSetCookie().map(s=>s.split('=')[0]),['admin_session']);assert.equal((await request('/api/my/profile',{cookie:studentCookie})).status,200);
+  });
+  await t.test('profile update hides credentials while preserving stored login data',async()=>{
+   const profile=await assertPrivateProfile(await request('/api/my/profile',{method:'PATCH',cookie:studentCookie,body:{address:'임시 검수 주소'}}));assert.equal(profile.address,'임시 검수 주소');
+   const saved=JSON.parse(await readFile(studentFile,'utf8'));assert.equal(saved[0].password,student.password);assert.equal(saved[0].password_plain,password);
+  });
+ }finally{
+  if(child?.pid&&child.exitCode===null&&child.signalCode===null){const stopped=once(child,'exit');child.kill();await stopped}
+  const resolved=path.resolve(temp);assert.equal(path.dirname(resolved),path.resolve(tmpdir()));assert.ok(path.basename(resolved).startsWith('pkjmath-legacy-auth-'));
+  await rm(resolved,{recursive:true,force:true});
+ }
+});
