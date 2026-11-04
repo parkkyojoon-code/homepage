@@ -2,12 +2,19 @@ import { NextResponse } from 'next/server'
 import { billingClaimInput,billingResultInput,claimBilling,recordBillingResult } from '@/lib/lectures/billing-queue'
 import { requireWorker } from '@/lib/lectures/worker-auth'
 import { failure,HttpError } from '@/lib/lectures/http'
+import { database } from '@/lib/lectures/db'
+import { checkWorkerDatabase } from '@/lib/lectures/worker-health'
 export const runtime='nodejs'
 export async function POST(request:Request,context:{params:Promise<{action:string}>}){
  try{
   requireWorker(request)
   const text=await request.text();if(text.length>4096)throw new HttpError(413,'요청이 너무 큽니다.')
   const body=JSON.parse(text),{action}=await context.params
+  if(action==='health'){
+   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length)throw new HttpError(400,'점검 요청 형식이 올바르지 않습니다.')
+   await checkWorkerDatabase(database())
+   return NextResponse.json({ready:true},{headers:{'Cache-Control':'no-store'}})
+  }
   if(action==='claim')return NextResponse.json({job:await claimBilling(billingClaimInput.parse(body).kind)},{headers:{'Cache-Control':'no-store'}})
   if(action==='result')return NextResponse.json(await recordBillingResult(billingResultInput.parse(body)),{headers:{'Cache-Control':'no-store'}})
   throw new HttpError(404,'경로를 찾을 수 없습니다.')

@@ -11,6 +11,7 @@ import { confirmWithinTransaction } from '../.test-build/lib/lectures/manual-pay
 import { revokeWithinTransaction } from '../.test-build/lib/lectures/manual-revocation.js'
 import { classroom, lectureDestination } from '../.test-build/lib/lectures/classroom.js'
 import { hashPassword, verifyPassword } from '../.test-build/lib/lectures/security.js'
+import { checkWorkerDatabase } from '../.test-build/lib/lectures/worker-health.js'
 const testDirectory = fileURLToPath(new URL('.',import.meta.url))
 
 async function scenario(run) {
@@ -245,6 +246,18 @@ async function billed(tx,user,lecture,draft=billedDraft(lecture)){
 }
 function report(job,data){return {kind:job.kind,orderId:job.orderId,billId:job.billId,claimToken:job.claimToken,...data}}
 async function readJob(db,tx,orderId){await db.query('UPDATE lecture_billing_requests SET next_check_at=now() WHERE order_id=$1',[orderId]);return tx(c=>claimBillingWithinTransaction(c,'READ'))}
+
+test('worker readiness is read-only and never consumes a pending bill; incomplete queue schemas fail',()=>scenario(async({db,client,tx,user,lecture})=>{
+ const order=await billed(tx,user,lecture)
+ const before=(await db.query('SELECT * FROM lecture_billing_requests WHERE order_id=$1',[order.id])).rows[0]
+ await db.exec('BEGIN READ ONLY')
+ try{await checkWorkerDatabase(client);await db.exec('COMMIT')}catch(error){await db.exec('ROLLBACK');throw error}
+ assert.deepEqual((await db.query('SELECT * FROM lecture_billing_requests WHERE order_id=$1',[order.id])).rows[0],before)
+ assert.equal((await tx(c=>claimBillingWithinTransaction(c,'SEND'))).orderId,order.id)
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM lecture_billing_events')).rows[0].n,0)
+ await db.exec('ALTER TABLE lecture_billing_requests DROP COLUMN lease_refresh_sequence')
+ await assert.rejects(checkWorkerDatabase(client))
+}))
 
 test('billing checkout snapshots guardian, prices and one fixed bill; queue failure rolls back the whole order',()=>scenario(async({db,tx,user,lecture})=>{
  const draft=billedDraft(lecture),order=await billed(tx,user,lecture,draft)

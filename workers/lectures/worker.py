@@ -117,6 +117,10 @@ class Worker:
     def internal(self, action, body):
         return self.transport.post(self.web + "/api/lectures/internal/billing/" + action, body, self.token)
 
+    def check(self):
+        if self.internal("health", {}).get("ready") is not True:
+            raise TransportFailure("WEB_NOT_READY")
+
     def cycle(self, batch=5):
         count = 0
         for kind in (["SEND", "READ"] if self.send_enabled else ["READ"]):
@@ -155,11 +159,22 @@ def configured_worker(env):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--check", action="store_true", help="Check web authentication and database readiness without claiming jobs or contacting PaySsam")
     args = parser.parse_args()
     try:
         worker = configured_worker(os.environ)
         if worker is None:
             print("Lecture billing worker is disabled.", flush=True)
+            if args.check:
+                raise SystemExit(1)
+            return
+        if args.check:
+            try:
+                worker.check()
+            except Exception:
+                print("Lecture billing connection check failed. No jobs claimed or provider requests made.", flush=True)
+                raise SystemExit(1) from None
+            print("Lecture billing connection check passed. No jobs claimed or provider requests made.", flush=True)
             return
         while True:
             try:
