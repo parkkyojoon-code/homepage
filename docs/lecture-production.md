@@ -1,6 +1,6 @@
 # 기존 홈페이지에 신규 강의 기능 연결
 
-2026-11-04 Railway 운영 설정의 읽기 전용 확인 결과를 기준으로 작성했다. 아래 추가 작업은 아직 적용하지 않았다. 배포 진행표는 [lecture-release.md](lecture-release.md)를 따른다.
+2026-11-04 운영 기준을 확인하고, 2026-11-05 사용자 승인 범위에서 신규 운영 DB와 비활성 worker를 준비했다. 기존 운영 웹의 신규 코드 배포·DB 연결은 아직 적용하지 않았다. 배포 진행표는 [lecture-release.md](lecture-release.md)를 따른다.
 
 ## 현재 운영 기준
 
@@ -13,6 +13,15 @@
 
 ## 준비할 연결
 
+### 2026-11-05 적용 상태
+
+- 운영 프로젝트에 별도 Postgres와 전용 volume을 생성했다. `lectures-db-setup`에서 9개 마이그레이션을 적용했으며 `reachable: true`, `pending: []`, `schemaChecked: true`를 확인했다. Railway Data 화면에서도 신규 21개 테이블을 확인했다.
+- 초기화 서비스는 `codex/lecture-service`의 검증된 코드로 일회 실행 후 종료했다. 공개 주소·기존 홈페이지 volume 연결이 없으며 Restart Never, 자동 배포 비활성 상태다.
+- `lectures-worker`는 같은 브랜치의 `/workers/lectures`와 자동 감지 Dockerfile로 배포했다. 운영 전용 토큰과 기존 결제선생 설정 3개는 비공개 변수로 저장했다. 변수 7개를 원본과 대조해 일치를 확인했다.
+- worker는 `LECTURES_WORKER_ENABLED=false`, `LECTURES_WORKER_SEND_ENABLED=false`, 시작 명령 `python -u worker.py`, Restart Never, 자동 배포 비활성이다. 로그의 `Lecture billing worker is disabled.`와 정상 종료를 확인했다. 공개 주소와 DB 직접 접근 권한은 추가하지 않았다.
+- 기존 homepage의 master·도메인·15개 변수·`/app/data`·volume은 변경하지 않았다. 운영 웹에는 아직 신규 API가 없으므로 **운영 웹↔worker 인증·DB 준비 상태를 확인하는 `--check`는 미실행**이다. 비활성 종료를 연결 검사 성공으로 간주하지 않는다.
+- 운영 웹 배포 시 `LECTURES_WORKER_TOKEN`은 `${{lectures-worker.LECTURES_WORKER_TOKEN}}` 참조로 연결할 수 있다. 토큰을 문서나 로컬 파일로 복사하지 않는다. 그 후 웹·worker를 준비하고 `--check`를 실행한다.
+
 검증 환경의 DB는 실결제 검수 기록을 포함해 그대로 보존한다. 운영에는 같은 운영 프로젝트 안에 별도 신규 PostgreSQL과 신규 강의 worker를 추가하는 방식으로 준비한다. 검수 계정·임시 강의·테스트 주문을 운영 고객 데이터로 복사하지 않는다. 기존 Google Sheets와 학생 JSON 전체 이전은 수행하지 않는다.
 
 | 대상 | 추가·확인할 설정 | 보존할 설정 |
@@ -23,7 +32,7 @@
 | 신규 worker | root /workers/lectures, Dockerfile, LECTURES_WEB_ORIGIN=https://pkjmath.com, PAYSSAM_API_KEY/MEMBER/MERCHANT 비공개 설정 | 기존 register_checker·기존 수강생 청구 프로그램은 변경하지 않음 |
 | 초기 연결 검수 | SEND_ENABLED=false, python -u worker.py --check, Restart Never | 점검 과정에서 청구 작업 확보·발송·조회 없음 |
 
-정식 변수 이름은 worker의 env.example을 따른다. 표의 SEND_ENABLED는 LECTURES_WORKER_SEND_ENABLED를 줄여 적은 것이다. 실제 비밀값을 Git·문서·채팅·로그에 넣지 않는다. 새 DB 생성과 운영 전용 인증 연결은 검토 후 적용한다.
+정식 변수 이름은 worker의 env.example을 따른다. 표의 SEND_ENABLED는 LECTURES_WORKER_SEND_ENABLED를 줄여 적은 것이다. 표는 최종 연결 목표이며 위 적용 상태와 구분한다. 실제 비밀값을 Git·문서·채팅·로그에 넣지 않는다.
 
 두 운영 도메인은 실제로 각각 접속되므로 신규 쓰기 API에서도 두 Origin을 명시적으로 허용한다. 추가 주소는 쉼표로 구분한 정확한 Origin만 사용하며 와일드카드·경로·끝 슬래시·잘못된 설정은 거절한다. 설정한 기본 주소가 있을 때 Host/forwarded 헤더로 허용 범위를 넓히지 않는다. 검증 환경의 추가 Origin은 비워 둔다.
 
