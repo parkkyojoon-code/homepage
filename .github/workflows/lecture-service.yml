@@ -33,7 +33,7 @@ permissions:
   contents: read
 jobs:
   legacy-auth:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,7 +43,8 @@ jobs:
       - run: npm ci
       - run: npm run test:legacy-auth
   check:
-    runs-on: ubuntu-latest
+    # Keep PostgreSQL 16 client availability stable when ubuntu-latest advances.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
