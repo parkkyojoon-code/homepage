@@ -1,8 +1,22 @@
 # 기존 홈페이지에 신규 강의 기능 연결
 
-2026-11-04 운영 기준을 확인하고, 2026-11-05 사용자 승인 범위에서 신규 운영 DB와 비활성 worker를 준비했다. 기존 운영 웹의 신규 코드 배포·DB 연결은 아직 적용하지 않았다. 배포 진행표는 [lecture-release.md](lecture-release.md)를 따른다.
+2026-11-04 운영 기준을 확인하고, 2026-11-05 사용자 승인 후 신규 운영 DB·관리자·웹 연결 배포와 worker 연결 검사를 완료했다. 실제 판매·청구서 발송·상시 결제 조회는 아직 시작하지 않았다. 배포 진행표는 [lecture-release.md](lecture-release.md)를 따른다.
+
+## 2026-11-05 운영 반영 완료
+
+- PR #2를 fast-forward로 master에 반영했다. 운영 코드 SHA는 `9c2893af7759a0895df182d0154883c9e6e51f37`이며 최신 PR 검사 run `41865130418`이 성공했다. 이후 이 문서의 기록 보완은 개발 브랜치에서 별도로 관리한다.
+- 운영 웹 배포 `ebadb5ea-575b-452a-a3d6-14a852d71a06`에 신규 변수 6개와 pre-deploy DB 검사 명령만 추가했다. 기존 15개 변수·도메인·기본 build/start·volume·`/app/data`는 유지했다. master 자동 배포는 원래 상태인 활성으로 복원했다.
+- 운영 DB 마이그레이션과 구조 검사에 미적용 항목이 없음을 확인했다. 기존 데이터 volume 연결 중 기동이 지연되고 HTTP 점검 1회가 시간 초과됐으나, 이후 Next Ready 로그와 정상 운영 응답을 확인했다. 장애 원인을 확정한 것으로 기록하지 않는다.
+- 두 운영 도메인의 신규 API 접근 보호 검사 각 12건(총 24건), 기존 페이지 익명 HTML GET 각 7건(총 14건)이 통과했다. 기존 학생 로그인·Sheets 쓰기의 전체 회귀 검수를 대신하지 않는다.
+- 사용자가 직접 비밀번호를 설정한 운영 첫 OWNER `pkjmath_admin`을 생성했다. 실제 운영 로그인, 총괄·활성 상태, 주문 0건, 등록 강의 0개를 브라우저에서 확인했다. 임시 bootstrap 변수 3개는 별도 승인 후 삭제했다.
+- 초기화 서비스는 검사 전용 `npm run db:lectures:check`, 자동 배포 비활성, Restart Never다.
+- 운영 worker 배포 `209b380c-21aa-4939-9191-f452c8ce4189`에서 `Lecture billing connection check passed. No jobs claimed or provider requests made.`를 확인했다. 웹과 worker가 운영 전용 토큰 참조로 연결됐으며 실제 DB 준비 상태 검사까지 통과했다.
+- worker의 시작 명령은 `python -u worker.py --check`, 실행 플래그 true, 발송 플래그 false, Restart Never, 자동 배포 비활성이다. 정상 종료한 일회 검사이며 **상시 결제 조회나 청구서 발송을 수행하는 상태가 아니다**.
+- 운영 주소: https://pkjmath.com/lectures / https://pkjmath.com/admin/lectures . 검증용 구매자·강의·주문은 복사하지 않았다. 실제 판매 항목 등록과 승인된 운영 활성화는 다음 단계다.
 
 ## 현재 운영 기준
+
+아래는 2026-11-04 변경 전 기준이다. 현재 적용 상태는 위 완료 기록을 우선한다.
 
 - 운영 주소: https://pkjmath.com 및 https://www.pkjmath.com
 - 기존 홈페이지 서비스 하나와 homepage-volume이 연결돼 있다.
@@ -13,7 +27,7 @@
 
 ## 준비할 연결
 
-### 2026-11-05 적용 상태
+### 2026-11-05 운영 배포 전 준비 기록
 
 - 운영 프로젝트에 별도 Postgres와 전용 volume을 생성했다. `lectures-db-setup`에서 9개 마이그레이션을 적용했으며 `reachable: true`, `pending: []`, `schemaChecked: true`를 확인했다. Railway Data 화면에서도 신규 21개 테이블을 확인했다.
 - 초기화 서비스는 `codex/lecture-service`의 검증된 코드로 일회 실행 후 종료했다. 공개 주소·기존 홈페이지 volume 연결이 없으며 Restart Never, 자동 배포 비활성 상태다.
