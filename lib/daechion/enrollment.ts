@@ -67,7 +67,7 @@ export async function enrollmentFence(client: LedgerClient, job: EnrollmentJob, 
 }
 
 export async function reviewEnrollment(client: LedgerClient, job: EnrollmentJob, reason: string) {
-  const allowed = ['student_identity_review', 'guardian_identity_review', 'enrollment_unknown', 'enrollment_fence_changed']
+  const allowed = ['student_identity_review', 'guardian_identity_review', 'enrollment_unknown', 'enrollment_fence_changed','enrollment_tenant_mismatch']
   const code = allowed.includes(reason) || /^identity_[a-z_]{1,48}$/.test(reason) ? reason : 'enrollment_unknown'
   return automationTransaction(client, async () => {
     const app = await lockApplication(client, job.applicationId)
