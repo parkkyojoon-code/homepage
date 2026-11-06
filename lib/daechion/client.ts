@@ -75,7 +75,8 @@ export function daechionClient(config: { apiKey: string; fetcher?: typeof fetch;
     me: () => request('GET', '/v1/me', meSchema),
     lectures: () => request('GET', '/v1/lectures', z.array(lectureSchema)),
     students: (phone: string, name: string) => {
-      const query = new URLSearchParams({ phone: normalizePhone(phone), name: name.trim().normalize('NFC') })
+      const query = new URLSearchParams({ phone: normalizePhone(phone) })
+      if (name.trim()) query.set('name', name.trim().normalize('NFC'))
       return request('GET', `/v1/students?${query}`, z.array(studentSchema))
     },
     student: async (studentId: number) => {

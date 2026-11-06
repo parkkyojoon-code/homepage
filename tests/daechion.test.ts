@@ -287,3 +287,17 @@ test('approval time requires a known timezone and a real calendar date', () => {
   assert.equal(approvalTimestamp('2026-11-07T12:00:00+09:00'), '2026-11-07T03:00:00.000Z')
   for (const raw of ['20260230120000', '20261107250000', '2026-11-07T12:00:00', 'unknown', null]) assert.equal(approvalTimestamp(raw), null)
 })
+
+test('identity lookup does not hide a differently named existing phone behind a name filter', async () => {
+  let creates = 0
+  await assert.rejects(resolveStudent(port({students:async(phone,name)=>{
+    assert.equal(phone,input.studentPhone);assert.equal(name,'')
+    return [{...existing,name:'다른이름'}]
+  },createStudent:async()=>{creates++;return existing}}),input),/student_identity_review/)
+  assert.equal(creates,0)
+  const transport = mock(url=>{
+    assert.equal(new URL(url).searchParams.has('name'),false)
+    return Response.json([])
+  })
+  await transport.client.students(input.studentPhone,'')
+})

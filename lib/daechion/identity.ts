@@ -22,7 +22,9 @@ export async function resolveStudent(port: StudentPort, raw: StudentInput): Prom
     ...(raw.guardianPhone ? { guardianPhone: normalizePhone(raw.guardianPhone) } : {}),
   }
   if (!input.name) throw new DaechionError('invalid_student_name')
-  const candidates = await port.students(input.studentPhone, input.name)
+  // Name filtering would hide an account using this phone under a different name
+  // (including a typo), and could incorrectly fall through to createStudent.
+  const candidates = await port.students(input.studentPhone, '')
   if (candidates.length > 1) throw new DaechionError('student_identity_review')
   if (candidates.length === 1) return { student: verify(candidates[0], input), created: false }
   let created: DaechionStudent
