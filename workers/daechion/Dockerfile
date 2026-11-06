@@ -15,6 +15,7 @@ COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/.daechion-worker-build ./.daechion-worker-build
 COPY scripts/daechion-db.cjs scripts/daechion-migrations.cjs scripts/daechion-api-check.cjs ./scripts/
+COPY scripts/daechion-sheets-verify.cjs ./scripts/
 COPY db/daechion ./db/daechion
 COPY workers/daechion/billing.cjs ./workers/daechion/billing.cjs
 # First deployment only checks the schema. No billing/enrollment loop by default.

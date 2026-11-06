@@ -21,6 +21,7 @@ on:
       - 'tests/daechion.test.ts'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
+      - 'tests/daechion-sheets-verify.test.mjs'
       - 'workers/daechion/**'
       - 'db/daechion/**'
       - 'scripts/daechion-*.cjs'
@@ -58,6 +59,7 @@ jobs:
       - run: npm ci
       - run: npm run build:daechion-worker
       - run: npm run test:daechion
+      - run: node --test tests/daechion-sheets-verify.test.mjs
       - run: npm run test:legacy-auth
       - name: Build isolated Daechion worker image
         run: docker build --file workers/daechion/Dockerfile --tag pkjmath-daechion-worker:ci .
