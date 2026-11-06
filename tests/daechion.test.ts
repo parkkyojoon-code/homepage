@@ -7,7 +7,7 @@ import { productBinding } from '../lib/daechion/product-policy'
 import { parsePurchaseProcess, purchaseProcessOf } from '../lib/purchase-process'
 import { prepareApplication, submitApplication, type IntakeProduct } from '../lib/daechion/intake'
 import { withAutomationClient } from '../lib/daechion/database'
-import { payssamBillingProvider, type BillSendJob } from '../lib/daechion/payssam'
+import { payssamBillingProvider, approvalTimestamp, type BillSendJob } from '../lib/daechion/payssam'
 import { newBillId } from '../lib/daechion/billing'
 
 const key = 'unit-test-only-not-a-real-credential'
@@ -266,4 +266,24 @@ test('invalid bill parameters fail before transport and billing IDs stay distinc
   for (const callbackUrl of ['http://web.invalid/callback', 'https://web.invalid/api/lectures/callback', 'https://name:password@web.invalid/callback']) {
     assert.throws(() => payssamBillingProvider({ apiKey: 'test', member: 'test', merchant: 'test', callbackUrl }), /INVALID_BILLING_CALLBACK/)
   }
+})
+
+test('payment read verifies account/bill/amount and discards unrelated provider data', async () => {
+  const { provider, calls } = billingMock(() => Response.json({ bill_id: billingJob.billId, appr_state: 'F',
+    appr_price: '1200', appr_dt: '20261107120000', appr_issuer_num: 'must-not-retain' }))
+  assert.deepEqual(await provider.read(billingJob.billId), { state: 'F', billId: billingJob.billId, amountWon: 1200, paidAt: '2026-11-07T03:00:00.000Z' })
+  assert.equal(calls[0].url, 'https://erp-api.payssam.kr/if/bill/read')
+  assert.equal(JSON.parse(String(calls[0].init.body)).bill_id, billingJob.billId)
+  for (const change of [{ bill_id: 'wrong' }, { member: 'wrong' }, { appr_price: '1,200' }, { appr_price: '0' }, { code: 'bad' }]) {
+    const fake = billingMock(() => Response.json({ bill_id: billingJob.billId, appr_state: 'F', appr_price: '1200', ...change }))
+    assert.deepEqual(await fake.provider.read(billingJob.billId), { state: 'UNKNOWN' })
+  }
+  assert.deepEqual(await billingMock(() => { throw Error('private') }).provider.read(billingJob.billId), { state: 'UNKNOWN' })
+})
+
+test('approval time requires a known timezone and a real calendar date', () => {
+  assert.equal(approvalTimestamp('20261107120000'), '2026-11-07T03:00:00.000Z')
+  assert.equal(approvalTimestamp('2026-11-07 12:00:00'), '2026-11-07T03:00:00.000Z')
+  assert.equal(approvalTimestamp('2026-11-07T12:00:00+09:00'), '2026-11-07T03:00:00.000Z')
+  for (const raw of ['20260230120000', '20261107250000', '2026-11-07T12:00:00', 'unknown', null]) assert.equal(approvalTimestamp(raw), null)
 })

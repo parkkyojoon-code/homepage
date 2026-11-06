@@ -15,7 +15,7 @@ test('default disabled worker CLI exits without loading a database or provider',
 
 test('connection check never starts a send cycle even when sending and --once are enabled', async () => {
   const calls = [], output = []
-  await worker.main({ argv: ['--check', '--once'], env: { DAECHION_BILLING_WORKER_ENABLED: 'true', DAECHION_BILLING_SEND_ENABLED: 'true' },
+  await worker.main({ argv: ['--check', '--once'], env: { DAECHION_BILLING_WORKER_ENABLED: 'true', DAECHION_BILLING_SEND_ENABLED: 'true', DAECHION_PAYMENT_READ_ENABLED:'true', DAECHION_ENROLLMENT_ENABLED:'true' },
     makeRuntime: () => ({ check: async () => { calls.push('check') }, cycle: async () => { calls.push('send') } }),
     write: value => output.push(value),
   })
@@ -36,4 +36,13 @@ test('once mode checks readiness and passes explicit send permission; failed che
   }), /not ready/)
   await assert.rejects(worker.main({ argv: ['--check'], env: {} }), /DISABLED/)
   await assert.rejects(worker.main({ argv: ['--send-everything'], env: {} }), /INVALID_WORKER_ARGUMENT/)
+})
+
+test('payment reads and enrollment have separate default-off controls', async () => {
+  const flags = []
+  for (const env of [{}, {DAECHION_PAYMENT_READ_ENABLED:'true'}, {DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true'}]) {
+    await worker.main({argv:['--once'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',...env},
+      makeRuntime:()=>({check:async()=>{},cycle:async(_send,options)=>{flags.push(options);return {}}}),write:()=>{}})
+  }
+  assert.deepEqual(flags,[{paymentsEnabled:false,enrollmentEnabled:false},{paymentsEnabled:true,enrollmentEnabled:false},{paymentsEnabled:true,enrollmentEnabled:true}])
 })

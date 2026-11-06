@@ -8,6 +8,8 @@ import ledger from '../.daechion-test-build/lib/daechion/ledger.js'
 import sheetView from '../.daechion-test-build/lib/daechion/sheets-view.js'
 import intake from '../.daechion-test-build/lib/daechion/intake.js'
 import billing from '../.daechion-test-build/lib/daechion/billing.js'
+import payment from '../.daechion-test-build/lib/daechion/payment.js'
+import enrollment from '../.daechion-test-build/lib/daechion/enrollment.js'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
@@ -189,12 +191,126 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:20000,
         env:{...process.env,DAECHION_DATABASE_URL:process.env.DAECHION_TEST_POSTGRES_URL,
           DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_BILLING_SEND_ENABLED:'true',
+          DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_API_KEY:'fake-key',DAECHION_TENANT_ID:'fake-tenant',
           PAYSSAM_API_KEY:'fake-test-key',PAYSSAM_MEMBER:'fake-member',PAYSSAM_MERCHANT:'fake-merchant',
           DAECHION_BILLING_CALLBACK_URL:'https://web.invalid/api/daechion/billing/callback'},
       })
       assert.equal(result.status,0,result.stderr)
       assert.deepEqual(JSON.parse(result.stdout),{ready:true,schema:'daechion_automation',sending:false})
       assert.equal((await db.query('SELECT count(*)::text AS n FROM daechion_automation.bills')).rows[0].n,before)
+    })
+    const paymentFixture = async () => {
+      const result = await make()
+      await billing.sendApplicationBill(result.id,true,{provider:{accountId:'payment-test',send:async()=> 'SENT'},withClient:run=>run(client)})
+      return result.id
+    }
+    const observe = async (id, changes={}) => {
+      const target = await payment.paymentTarget(client,id,'payment-test')
+      const bill = (await db.query('SELECT sent_at,due_at FROM daechion_automation.bills WHERE id=$1',[target.recordId])).rows[0]
+      return payment.applyPaymentObservation(client,target,{state:'F',billId:target.billId,amountWon:1200,paidAt:new Date(new Date(bill.sent_at).getTime()+1000).toISOString(),...changes})
+    }
+    const appRow = async id => (await db.query('SELECT * FROM daechion_automation.applications WHERE id=$1',[id])).rows[0]
+    const student = {id:77,name:input.studentName,studentPhoneNumber:'01000000001',parentPhoneNumber:'01000000002',active:false}
+    const fakeDaechion = (overrides={}) => ({students:async()=>[student],student:async()=>student,
+      createStudent:async()=>{throw Error('unexpected create')},
+      enroll:async(lectureId,studentId)=>({lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}),...overrides})
+
+    await t.test('verified timely payments are replay-safe and stale unpaid responses cannot undo them',async()=>{
+      const id = await paymentFixture(), target = await payment.paymentTarget(client,id,'payment-test')
+      assert.equal(await observe(id),'PAID')
+      const version = (await appRow(id)).version
+      assert.equal(await observe(id),'PAID')
+      assert.equal(String((await appRow(id)).version),String(version))
+      assert.equal(await payment.applyPaymentObservation(client,target,{state:'W',billId:target.billId,amountWon:null,paidAt:null}),'STALE')
+      assert.equal((await appRow(id)).payment_state,'PAID')
+    })
+    await t.test('only confirmed unpaid invoices expire; timely payment discovered after closure resumes, late payment stays held',async()=>{
+      for (const kind of ['unknown','unpaid','timely','late']) {
+        const id = await paymentFixture()
+        await db.query("UPDATE daechion_automation.bills SET sent_at=now()-interval '8 days',due_at=now()-interval '1 day' WHERE application_id=$1",[id])
+        await observe(id,kind==='unknown'?{state:'UNKNOWN'}:{state:'W',amountWon:null,paidAt:null})
+        assert.equal((await appRow(id)).automation_state,kind==='unknown'?'ACTIVE':'CLOSED')
+        if(kind==='timely'||kind==='late') {
+          const bill = (await db.query('SELECT due_at FROM daechion_automation.bills WHERE application_id=$1',[id])).rows[0]
+          await observe(id,{paidAt:new Date(new Date(bill.due_at).getTime()+(kind==='timely'?-1000:1000)).toISOString()})
+          const app = await appRow(id)
+          assert.equal(app.payment_state,'PAID');assert.equal(app.automation_state,kind==='timely'?'ACTIVE':'HOLD')
+          assert.equal(app.review_code,kind==='timely'?null:'late_payment')
+          assert.equal((await db.query('SELECT state FROM daechion_automation.registrations WHERE application_id=$1 LIMIT 1',[id])).rows[0].state,kind==='timely'?'PENDING':'STOPPED')
+        }
+      }
+    })
+    await t.test('wrong amounts, missing approval times, manual holds and unknown sends never become enrollment-eligible',async()=>{
+      for(const change of [{amountWon:1199},{paidAt:null}]) {
+        const id = await paymentFixture();await observe(id,change)
+        assert.equal((await appRow(id)).automation_state,'HOLD')
+        assert.equal(await enrollment.claimEnrollment(client,id),null)
+      }
+      const held = await paymentFixture()
+      await db.query("UPDATE daechion_automation.applications SET automation_state='HOLD',review_code='manual_hold' WHERE id=$1",[held])
+      await observe(held)
+      assert.equal((await appRow(held)).review_code,'manual_hold')
+      assert.equal(await enrollment.claimEnrollment(client,held),null)
+      const unknown = (await make()).id
+      await billing.reserveApplicationBill(client,unknown,'payment-test');await billing.claimBillSend(client,unknown,'payment-test')
+      await observe(unknown,{paidAt:new Date().toISOString()})
+      assert.equal((await appRow(unknown)).automation_state,'HOLD')
+      assert.equal(await enrollment.claimEnrollment(client,unknown),null)
+    })
+    await t.test('unpaid applicants cannot call Daechion; paid new students receive all targets and one ready-message job',async()=>{
+      const unpaid = (await make()).id
+      const forbidden = fakeDaechion({students:async()=>{throw Error('must not lookup unpaid')}})
+      assert.equal(await enrollment.enrollApplication(unpaid,true,{daechion:forbidden,withClient:run=>run(client)}),'SKIPPED')
+      const id = await paymentFixture();await observe(id)
+      let created = null, createCalls = 0, enrollCalls = 0
+      const daechion = fakeDaechion({students:async()=>created?[created]:[],createStudent:async data=>{
+        createCalls++;assert.deepEqual(data,{name:input.studentName,studentPhone:'01000000001',guardianPhone:'01000000002'});created=student;return student
+      },enroll:async(lectureId,studentId)=>{enrollCalls++;return {lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}}})
+      const ports = {daechion,withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.equal((await appRow(id)).notification_state,'NOT_READY')
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'SKIPPED')
+      assert.equal(createCalls,1);assert.equal(enrollCalls,2)
+      assert.equal((await appRow(id)).notification_state,'PENDING')
+      assert.equal((await db.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE'",[id])).rows.length,1)
+      await observe(id,{state:'C',paidAt:null})
+      assert.equal((await appRow(id)).payment_state,'CANCELLED')
+      assert.equal((await appRow(id)).automation_state,'HOLD')
+      assert.ok((await db.query('SELECT state FROM daechion_automation.registrations WHERE application_id=$1',[id])).rows.every(row=>row.state==='DONE'))
+      assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE'",[id])).rows[0].state,'FAILED')
+    })
+    await t.test('unknown enrollment writes and expired claims require review rather than replay',async()=>{
+      const id = await paymentFixture();await observe(id);let calls = 0
+      const ports = {daechion:fakeDaechion({enroll:async()=>{calls++;throw Error('private timeout')}}),withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'REVIEW')
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'SKIPPED');assert.equal(calls,1)
+      const crashed = await paymentFixture();await observe(crashed)
+      assert.ok(await enrollment.claimEnrollment(client,crashed))
+      await db.query("UPDATE daechion_automation.registrations SET lease_until=now()-interval '1 second' WHERE application_id=$1 AND state='RUNNING'",[crashed])
+      assert.equal(await enrollment.claimEnrollment(client,crashed),null)
+      assert.equal((await appRow(crashed)).review_code,'enrollment_unknown')
+    })
+    await t.test('cancellation during external enrollment suppresses completion and preserves manual revocation policy',async()=>{
+      const id = await paymentFixture();await observe(id)
+      const ports = {daechion:fakeDaechion({enroll:async(lectureId,studentId)=>{
+        await observe(id,{state:'C',paidAt:null});return {lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}
+      }}),withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'REVIEW')
+      assert.equal((await appRow(id)).review_code,'payment_cancelled')
+      assert.equal((await appRow(id)).notification_state,'NOT_READY')
+      assert.equal((await db.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE'",[id])).rows.length,0)
+    })
+    await t.test('parallel PostgreSQL enrollment workers cannot duplicate the same target',{skip:!db.isPostgres},async()=>{
+      const made = await createApplication(client,randomUUID(),input,[{productId:input.productId,lectureIds:[10]}],'PROCESS_2')
+      await billing.sendApplicationBill(made.id,true,{provider:{accountId:'payment-test',send:async()=> 'SENT'},withClient:run=>run(client)})
+      await observe(made.id);let calls = 0
+      const ports = {daechion:fakeDaechion({enroll:async(lectureId,studentId)=>{calls++;return {lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}}}),withClient:async run=>{
+        const separate = new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL});await separate.connect()
+        try{return await run(separate)}finally{await separate.end()}
+      }}
+      assert.deepEqual((await Promise.all([enrollment.enrollApplication(made.id,true,ports),enrollment.enrollApplication(made.id,true,ports)])).sort(),['DONE','SKIPPED'])
+      assert.equal(calls,1)
     })
     await t.test('legacy products, mismatched amounts, unknown inputs and missing consent are not accepted',async()=>{
       for (const productId of ['12course','chuweol']) await assert.rejects(createApplication(client,randomUUID(),{...input,productId},[{productId,lectureIds:[10]}],'PROCESS_2'),/product_not_enabled/)

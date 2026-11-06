@@ -8,6 +8,31 @@ export interface BillingProvider {
   readonly accountId: string
   send(job: BillSendJob): Promise<'SENT' | 'UNKNOWN'>
 }
+export type PaymentObservation = { state: 'UNKNOWN' } | {
+  state: 'F' | 'W' | 'C' | 'D'; billId: string; amountWon: number | null; paidAt: string | null
+}
+export interface PaymentProvider {
+  readonly accountId: string
+  read(billId: string): Promise<PaymentObservation>
+}
+
+// Unknown formats remain unknown; local server timezone must never change payment
+// eligibility. V1 compact/space-separated approval timestamps are interpreted as KST.
+export function approvalTimestamp(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const compact = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(raw)
+  const separated = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(raw)
+  const parts = compact ?? separated
+  if (parts) {
+    const [, y, m, d, h, min, sec] = parts
+    const canonical = `${y}-${m}-${d}T${h}:${min}:${sec}`
+    const value = new Date(`${canonical}+09:00`)
+    if (!Number.isFinite(value.getTime()) || new Date(value.getTime() + 9 * 3600000).toISOString().slice(0, 19) !== canonical) return null
+    return value.toISOString()
+  }
+  const iso = z.string().datetime({ offset: true }).safeParse(raw)
+  return iso.success ? new Date(iso.data).toISOString() : null
+}
 const billJob = z.object({
   billId: z.string().regex(/^\d{20}$/), amountWon: z.number().int().positive().max(2147483647),
   recipientName: z.string().trim().min(1).max(80), recipientPhone: z.string().regex(/^010\d{8}$/),
@@ -24,7 +49,7 @@ const BASE = 'https://erp-api.payssam.kr'
 export function payssamBillingProvider(settings: {
   apiKey: string; member: string; merchant: string; callbackUrl: string;
   fetcher?: typeof fetch; now?: () => Date
-}): BillingProvider {
+}): BillingProvider & PaymentProvider {
   if (![settings.apiKey, settings.member, settings.merchant].every(value => typeof value === 'string' && value.trim())) {
     throw Error('BILLING_PROVIDER_NOT_CONFIGURED')
   }
@@ -37,6 +62,27 @@ export function payssamBillingProvider(settings: {
   const fetcher = settings.fetcher ?? fetch
   return {
     accountId,
+    async read(billId) {
+      if (!/^\d{20}$/.test(billId)) return { state: 'UNKNOWN' }
+      try {
+        const response = await fetcher(`${BASE}/if/bill/read`, {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000),
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...account, bill_id: billId }),
+        })
+        if (response.status !== 200) return { state: 'UNKNOWN' }
+        const parsed = z.object({ code: z.literal('0000').optional(), bill_id: z.literal(billId),
+          appr_state: z.enum(['F', 'W', 'C', 'D']), appr_price: z.string().optional(), appr_dt: z.string().max(40).nullable().optional(),
+          apikey: z.string().optional(), member: z.string().optional(), merchant: z.string().optional(),
+        }).safeParse(await response.json())
+        if (!parsed.success || Object.entries(account).some(([key, value]) =>
+          parsed.data[key as keyof typeof account] !== undefined && parsed.data[key as keyof typeof account] !== value)) return { state: 'UNKNOWN' }
+        const data = parsed.data
+        const amount = /^\d{1,10}$/.test(data.appr_price ?? '') ? Number(data.appr_price) : null
+        const validAmount = amount !== null && amount > 0 && amount <= 2147483647 ? amount : null
+        if (data.appr_state === 'F' && validAmount === null) return { state: 'UNKNOWN' }
+        return { state: data.appr_state, billId, amountWon: validAmount, paidAt: data.appr_state === 'F' ? approvalTimestamp(data.appr_dt) : null }
+      } catch { return { state: 'UNKNOWN' } }
+    },
     async send(raw) {
       const parsed = billJob.safeParse(raw)
       if (!parsed.success) return 'UNKNOWN'
