@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import styles from './review.module.css'
+import { reviewReasonLabel } from '@/lib/daechion/review-reasons'
 
 interface Row {id:string;product_title:string;student_name:string;student_phone:string;payment_state:string;automation_state:string;notification_state:string;review_code:string|null;identity_status:string;version:string}
 interface Detail {app:{id:string;current_version:string;product_title:string;payment_state:string;automation_state:string;notification_state:string;review_code:string|null;submission:{studentName:string;studentPhone:string;guardianName:string;guardianPhone:string;payerPhone:string;studentHistory?:string;totalWon:number}};
@@ -59,12 +60,12 @@ export default function ReviewPage(){
     <form className={styles.search} onSubmit={event=>{event.preventDefault();search(0)}}><input aria-label="이름 또는 전화번호 검색" placeholder="이름 또는 전화번호" value={q} maxLength={80} onChange={event=>setQ(event.target.value)}/><label><input type="checkbox" checked={reviewOnly} onChange={event=>setReviewOnly(event.target.checked)}/>확인 필요 건만</label><button disabled={busy}>검색</button></form>
     {error&&<p className={styles.error} role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
     <div className={styles.table}><table><thead><tr><th>학생</th><th>강의</th><th>결제</th><th>중복 수강생 확인</th><th>자동 처리</th><th>안내</th></tr></thead><tbody>
-      {rows.map(row=><tr key={row.id}><td><button onClick={()=>open(row.id)} disabled={busy}>{row.student_name}</button><small>{row.student_phone}</small></td><td>{row.product_title}</td><td>{label(row.payment_state)}</td><td><span className={row.identity_status==='PASSED'?styles.pass:row.identity_status==='REVIEW'?styles.review:styles.wait}>{label(row.identity_status)}</span></td><td>{label(row.automation_state)}</td><td>{label(row.notification_state)}</td></tr>)}
+      {rows.map(row=><tr key={row.id}><td><button onClick={()=>open(row.id)} disabled={busy}>{row.student_name}</button><small>{row.student_phone}</small></td><td>{row.product_title}</td><td>{row.payment_state==='PENDING'?'미납':label(row.payment_state)}</td><td><span className={row.identity_status==='PASSED'?styles.pass:row.identity_status==='REVIEW'?styles.review:styles.wait}>{label(row.identity_status)}</span></td><td>{label(row.automation_state)}</td><td>{label(row.notification_state)}</td></tr>)}
     </tbody></table></div>
     {!rows.length&&<p>표시할 신청이 없습니다.</p>}<div className={styles.pager}><button disabled={busy||page===0} onClick={()=>search(page-1)}>이전</button><span>{page+1}페이지</span><button disabled={busy||rows.length<50} onClick={()=>search(page+1)}>다음</button></div>
     {detail&&<section className={styles.detail}>
       <div className={styles.heading}><h2>{detail.app.submission.studentName} · {detail.app.product_title}</h2><button disabled={busy} onClick={()=>open(detail.app.id)}>새로 불러오기</button></div>
-      <dl className={styles.summary}>{[['학생 전화번호',detail.app.submission.studentPhone],['학부모 이름',detail.app.submission.guardianName],['보호자 로그인 번호',detail.app.submission.guardianPhone],['결제 번호',detail.app.submission.payerPhone],['기존·신규 선택',label(detail.app.submission.studentHistory)],['총 청구 금액',detail.app.submission.totalWon.toLocaleString()+'원'],['확인 사유',detail.app.review_code??detail.identity?.reason_code??'—']].map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value||'—'}</dd></div>)}</dl>
+      <dl className={styles.summary}>{[['학생 전화번호',detail.app.submission.studentPhone],['학부모 이름',detail.app.submission.guardianName],['보호자 로그인 번호',detail.app.submission.guardianPhone],['결제 번호',detail.app.submission.payerPhone],['기존·신규 선택',label(detail.app.submission.studentHistory)],['총 청구 금액',detail.app.submission.totalWon.toLocaleString()+'원'],['확인 사유',reviewReasonLabel(detail.app.review_code??detail.identity?.reason_code)]].map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value||'—'}</dd></div>)}</dl>
       <h3>청구·등록 상태</h3>{detail.bills.map(bill=><p key={bill.bill_id}>청구서 {bill.bill_id} · {bill.amount_won.toLocaleString()}원 · {label(bill.state)}</p>)}
       {detail.registrations.map(item=><p key={item.lecture_id}>강의 ID {item.lecture_id} · 학생 ID {item.student_id??'미확정'} · {label(item.state)}</p>)}
       {detail.messages.map(item=><p key={item.phone}>안내 {item.phone} · {label(item.state)}</p>)}{detail.jobs.map((item,index)=><p key={index}>{item.kind==='SHEETS'?'Sheets 반영':'안내 작업'} · {label(item.state)}</p>)}

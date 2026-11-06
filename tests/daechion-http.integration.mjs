@@ -70,7 +70,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     assert.ok(ready)
     const input = {requestKey:randomUUID(),productId,studentHistory:'NEW',applicantType:'GUARDIAN',studentName:'가상 HTTP 학생',guardianName:'가상 HTTP 보호자',
       studentPhone:'010-0000-0771',guardianPhone:'010-0000-0772',payerPhone:'010-0000-0773',mode:'ONLINE',campus:'',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
-    let applicationId
+    let applicationId,adminCookie,qaSheetPorts,readPublishedRow
     await t.test('only the configured process-two product is available; old route cannot accept it',async()=>{
       assert.equal((await (await request(`/api/daechion/applications?productId=${productId}`)).json()).available,true)
       for(const id of ['12course','chuweol'])assert.equal((await (await request(`/api/daechion/applications?productId=${id}`)).json()).available,false)
@@ -105,8 +105,8 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       const route=`/api/admin/daechion/applications?id=${applicationId}`
       assert.equal((await request(route)).status,401)
       const login=await request('/api/admin/login',{body:{password:adminPassword}});assert.equal(login.status,200)
-      const cookie=login.headers.getSetCookie().find(value=>value.startsWith('admin_session=')).split(';')[0]
-      const response=await request(route,{cookie});assert.equal(response.status,200)
+      adminCookie=login.headers.getSetCookie().find(value=>value.startsWith('admin_session=')).split(';')[0]
+      const response=await request(route,{cookie:adminCookie});assert.equal(response.status,200)
       assert.ok(JSON.stringify(await response.json()).includes(applicationId))
     })
     await t.test('public callbacks cannot assert paid status or grant access, even with a valid receipt key',async()=>{
@@ -136,6 +136,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
         return {spreadsheetId:target.spreadsheetId,replies:[{},{},{}]}
       }}
       const ports={api,target,withClient:run=>run(client)}
+      qaSheetPorts=ports;readPublishedRow=()=>publishedRow
       assert.equal(await sheetsWorker.syncOneApplication(ports),'DONE')
       assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED')
       assert.equal(publishedRow[0],applicationId);assert.equal(publishedRow[4],input.studentName)
@@ -143,6 +144,29 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       assert.equal(publishedRow[9],baseClass.name);assert.equal(publishedRow[16],1200)
       assert.equal(publishedRow[21],'미발송');assert.equal(publishedRow[26],'미납');assert.equal(publishedRow[36],'조회 대기')
       assert.equal((await client.query("SELECT state FROM daechion_automation.outbox WHERE kind='SHEETS'")).rows[0].state,'DONE')
+    })
+    await t.test('authenticated manual hold rejects incomplete and stale edits, replays once and reaches the operational sheet',async()=>{
+      const route='/api/admin/daechion/applications'
+      const version=(await client.query('SELECT version::text FROM daechion_automation.applications WHERE id=$1',[applicationId])).rows[0].version
+      const action={requestKey:randomUUID(),applicationId,expectedVersion:version,action:'HOLD',operatorName:'검수 담당자',reason:'가상 수동 처리 검수',confirmed:true}
+      assert.equal((await request(route,{body:action})).status,401)
+      assert.equal((await request(route,{body:action,cookie:adminCookie,requestOrigin:'https://untrusted.invalid'})).status,403)
+      for(const invalid of [{...action,operatorName:''},{...action,reason:''},{...action,confirmed:false}])
+        assert.equal((await request(route,{body:invalid,cookie:adminCookie})).status,400)
+      const response=await request(route,{body:action,cookie:adminCookie});assert.equal(response.status,200)
+      assert.equal((await response.json()).success,true)
+      const held=(await client.query('SELECT version::text,automation_state,review_code FROM daechion_automation.applications WHERE id=$1',[applicationId])).rows[0]
+      assert.equal(held.automation_state,'HOLD');assert.equal(held.review_code,'manual_hold')
+      assert.notEqual(held.version,version)
+      assert.equal((await client.query('SELECT state FROM daechion_automation.registrations WHERE application_id=$1',[applicationId])).rows[0].state,'STOPPED')
+      const replay=await request(route,{body:action,cookie:adminCookie});assert.equal(replay.status,200);assert.equal((await replay.json()).replayed,true)
+      const stale=await request(route,{body:{...action,requestKey:randomUUID()},cookie:adminCookie});assert.equal(stale.status,409)
+      const detail=await (await request(route+'?id='+applicationId,{cookie:adminCookie})).json()
+      assert.equal(detail.app.current_version,held.version);assert.equal(detail.actions.length,1)
+      assert.equal(detail.actions[0].operator_name,action.operatorName);assert.equal(detail.actions[0].reason,action.reason)
+      assert.equal(await sheetsWorker.syncOneApplication(qaSheetPorts),'DONE')
+      assert.equal(readPublishedRow()[30],'보류');assert.equal(readPublishedRow()[32],'관리자가 자동 처리를 보류함')
+      assert.equal(readPublishedRow().includes('manual_hold'),false)
     })
   } finally {
     if(child?.pid&&child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill();await exited}
