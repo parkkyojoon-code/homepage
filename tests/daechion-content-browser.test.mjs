@@ -56,14 +56,14 @@ function grant(){const d=modal('권한 부여',${JSON.stringify(provider.ACCESS_
 function weeks(){const d=modal('차시 선택','<label><input type="checkbox" checked>차시 A</label>');const b=document.createElement('button');b.textContent='일괄 추가';b.onclick=()=>{d.remove();grant()};d.append(b)}
 function picker(){const d=modal('일괄 학생 추가','<input aria-label="검색어 입력 (초성 검색 가능)">'+row(false,localStorage.getItem('wrong')==='yes'));const b=document.createElement('button');b.textContent='1명 추가 Ctrl+Enter';b.onclick=()=>{if(!d.querySelector('input[type=checkbox]').checked)throw Error('No student selected');d.remove();weeks()};d.append(b)}
 function file(title){const d=modal('상세 정보','<h3>'+title+'</h3>');const b=document.createElement('button');b.textContent='권한 관리';b.onclick=()=>{d.remove();const p=modal('파일 권한 부여','<input aria-label="검색어 입력 (초성 검색 가능)">'+row(localStorage.getItem('granted')==='yes'&&localStorage.getItem('missing')!=='yes'));const c=document.createElement('button');c.textContent='취소';c.onclick=()=>p.remove();p.append(c)};d.append(b)}
-function collection(kind,library=false){app.querySelectorAll('[data-collection]').forEach(x=>x.remove());const d=document.createElement('div');d.setAttribute('data-collection','yes');if(library){d.innerHTML='<button>파일 추가</button><table><tbody></tbody></table>'}else if(kind==='video'){d.innerHTML='<button>영상 추가</button><div data-row-index="0"><p>검수영상</p></div>';d.querySelector('p').onclick=()=>file('검수영상')}else{d.innerHTML='<button>파일 추가</button><table><tbody><tr>'+Array.from({length:9},(_,i)=>'<td>'+(i===2?'검수자료.pdf':'')+'</td>').join('')+'</tr></tbody></table>';d.querySelectorAll('td')[2].onclick=()=>file('검수자료.pdf')};app.append(d)}
-if(path.endsWith('/participants')){button('일괄 학생 추가',picker);const b=button('강의 자료실 0개',()=>collection('material',true));b.setAttribute('role','tab')}else{for(const [name,kind] of [['영상','video'],['자료','material']]){const b=button(name,()=>collection(kind));b.setAttribute('role','tab')}}
+function collection(kind,library=false){app.querySelectorAll('[data-collection]').forEach(x=>x.remove());const d=document.createElement('div');d.setAttribute('data-collection','yes');if(library){d.innerHTML='<button>파일 추가하기</button><p>등록된 자료가 없어요.</p>'}else if(kind==='video'){d.innerHTML='<button>영상 추가</button><div data-row-index="0"><p>검수영상</p></div>';d.querySelector('p').onclick=()=>file('검수영상')}else{d.innerHTML='<button>파일 추가</button><table><tbody><tr>'+Array.from({length:9},(_,i)=>'<td>'+(i===2?'검수자료.pdf':'')+'</td>').join('')+'</tr></tbody></table>';d.querySelectorAll('td')[2].onclick=()=>file('검수자료.pdf')};app.append(d)}
+if(path.endsWith('/participants')){button('일괄 학생 추가',picker);const b=button(localStorage.getItem('library')==='yes'?'강의 자료실 1개':'강의 자료실 0개',()=>collection('material',true));b.setAttribute('role','tab')}else{for(const [name,kind] of [['영상','video'],['자료','material']]){const b=button(name,()=>collection(kind));b.setAttribute('role','tab')}}
 </script>`
 
 test('real browser grants only the selected student, clears attendance copying and verifies persisted video/material rights',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:90000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
-  for(const mode of ['success','wrong','missing','hold','identity-changed']){
+  for(const mode of ['success','wrong','missing','hold','identity-changed','library-nonempty']){
     let fences=0,writes=0,closed=false
     const launch=async options=>{
       const browser=await chromium.launch(options)
@@ -72,7 +72,7 @@ test('real browser grants only the selected student, clears attendance copying a
         const newPage=context.newPage.bind(context)
         context.newPage=async()=>{
           const page=await newPage()
-          await page.addInitScript(({mode})=>{if(mode==='wrong')localStorage.setItem('wrong','yes');if(mode==='missing')localStorage.setItem('missing','yes')},{mode})
+          await page.addInitScript(({mode})=>{if(mode==='wrong')localStorage.setItem('wrong','yes');if(mode==='missing')localStorage.setItem('missing','yes');if(mode==='library-nonempty')localStorage.setItem('library','yes')},{mode})
           await page.route('**/*',route=>route.fulfill({contentType:'text/html',body:fixture}))
           context.fixturePage=page
           return page
@@ -93,7 +93,7 @@ test('real browser grants only the selected student, clears attendance copying a
     const service=provider.browserAccessProvider(env,guardedApi,{launch})
     const promise=service.ensureContentAccess({...input,beforeWrite:async()=>{fences++;if(mode==='hold'&&fences===2)throw Error('Hold')}})
     if(mode==='success'){assert.deepEqual(await promise,{verified:true,lectureId:10,studentId:77,weeklyLectureIds:[100]});assert.equal(writes,1);assert.equal(fences,2)}
-    else {await assert.rejects(promise,/CONTENT_ACCESS_UNCONFIRMED/);assert.equal(writes,mode==='missing'?1:0)}
+    else {await assert.rejects(promise,/CONTENT_ACCESS_UNCONFIRMED/);assert.equal(writes,['missing','library-nonempty'].includes(mode)?1:0)}
     assert.equal(closed,true)
   }
 })

@@ -77,6 +77,20 @@ async function verifyCollection(page,url,tabName,kind,input) {
   return titles.length
 }
 
+async function verifyLibrary(page,url) {
+  await page.goto(url)
+  const tab=page.getByRole('tab',{name:/^강의 자료실(?:\s|$)/})
+  await tab.click()
+  await page.getByRole('button',{name:'파일 추가하기',exact:true}).waitFor({state:'visible'})
+  await page.waitForLoadState('networkidle',{timeout:10000})
+  // Observed library UI has category folders, unlike a weekly material table.
+  // Only an explicitly empty library is verified until its nonempty layout has
+  // been inspected and tested. Never silently skip a nonempty library.
+  if((await tab.innerText()).replace(/\s+/g,'')!=='강의자료실0개')fail()
+  await page.getByText('등록된 자료가 없어요.',{exact:true}).waitFor({state:'visible'})
+  return 0
+}
+
 async function applyAndVerify(page,input,lecture,onStage=()=>{}) {
   const participants=`${ORIGIN}/crm/lectures/${input.lectureId}/participants`
   onStage('PICKER_PAGE')
@@ -125,10 +139,9 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{}) {
     onStage('VERIFY_MATERIAL')
     contentCount+=await verifyCollection(page,url,'자료','material',input)
   }
-  // Library uses the same material table. A changed layout is a review, not a
-  // reason to skip verification. Empty libraries are allowed.
+  // The library has its own category UI; do not infer a weekly-material table.
   onStage('VERIFY_LIBRARY')
-  contentCount+=await verifyCollection(page,participants,/^강의 자료실(?:\s|$)/,'material',input)
+  contentCount+=await verifyLibrary(page,participants)
   if(!contentCount)fail()
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
