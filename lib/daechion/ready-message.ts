@@ -4,7 +4,7 @@ import { applicationSnapshotSchema, type LedgerClient } from './ledger'
 import { normalizePhone } from './client'
 import { automationTransaction, automationChanged } from './automation-store'
 
-export const lmsText=(name:string,title:string)=>`안녕하세요. 박교준 수리논술입니다.\n${name} 학생의 ${title} 수강 등록이 완료되었습니다.\nhttps://parkkyojoon.daechion.com\n학생 번호 또는 등록한 보호자 번호로 로그인해주세요.\n기존 계정은 사용하던 비밀번호를 사용해주세요. 처음 생성된 계정의 초기 비밀번호는 해당 로그인 번호 뒤 4자리입니다.`
+export const lmsText=(name:string,title:string)=>`안녕하세요. 박교준 수리논술입니다.\n${name} 학생의 ${title} 수강 등록이 완료되었습니다.\nhttps://parkkyojoon.daechion.com\n학생 번호 또는 등록한 보호자 번호로 로그인해주세요.\n기존 계정은 사용하던 비밀번호를 사용해주세요.\n신규 계정의 초기 비밀번호는 로그인에 사용하는 전화번호 끝 4자리입니다. 학생 번호로 로그인하면 학생 번호 끝 4자리, 학부모 번호로 로그인하면 학부모 번호 끝 4자리를 입력해주세요.`
 export interface ReadyMessageProvider {send(input:{receiptId:string;phone:string;text:string}):Promise<{accepted:boolean;messageId?:string}>}
 export function solapiReadyProvider(settings:{apiKey:string;apiSecret:string;sender:string;fetcher?:typeof fetch}):ReadyMessageProvider {
   if(!settings.apiKey?.trim()||!settings.apiSecret?.trim()||!/^\d{8,11}$/.test(settings.sender))throw Error('READY_MESSAGE_CONFIGURATION_REQUIRED')
