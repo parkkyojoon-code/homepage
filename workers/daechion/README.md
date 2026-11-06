@@ -56,6 +56,8 @@ DAECHION_SHEETS_ENABLED 기본값은 false다. DAECHION_SHEETS_SPREADSHEET_ID(�
 
 행 UUID metadata와 헤더를 검증한 뒤 관리 대상 열만 RAW/명시적 stringValue·numberValue로 기록한다. 메모 열은 보존한다. 외부 쓰기 결과가 불명인 작업은 UNKNOWN이며 같은 신청의 추가 발행을 중단한다. 이 경우 기존 행/metadata를 대조한 뒤 관리자 복구가 필요하며 임의 재삽입하지 않는다. Sheets 실패가 결제나 수강 상태를 바꾸지는 않는다.
 
+쓰기 요청을 시작하기 전의 일시적 조회 실패(통신 오류·429·일부 5xx)만 60초 뒤 재시도한다. 한 작업에서 총 3회 시도까지 허용하고 계속 실패하면 UNKNOWN으로 남긴다. 인증/접근 권한/파일 없음 오류, 잘못된 헤더나 초기화 표식, 실제 쓰기 시작 후의 실패는 즉시 UNKNOWN이다. developerMetadata:search는 POST 형식이지만 읽기 작업이며, 그 외 POST는 요청 직전부터 쓰기 결과 불명 가능성이 있는 것으로 취급한다. 로그의 deferred는 안전하게 재시도 대기시킨 작업 수다.
+
 실제 새 파일 생성·접근 권한·초기화와 별도 가상 탭의 정렬·번호 보존·메모 보존 검수는 완료했다. 일반 동기화와 웹 접수는 아직 비활성이다. 웹 설정은 web-env.example을 따른다.
 
 현재 운영 소스 apply_checker.py의 send_bill 구현과 대조했다. 공식 V1 명세도 확인했다.

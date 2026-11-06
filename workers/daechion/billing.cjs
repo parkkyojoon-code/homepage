@@ -59,7 +59,7 @@ function runtime(env) {
       // Actual API QA showed enrollment can succeed without existing file access.
       // Never announce readiness until this external prerequisite is verified.
       if ((enrollmentEnabled || readyMessagesEnabled) && env.DAECHION_ACCESS_POLICY_VERIFIED !== 'true') throw Error('ACCESS_POLICY_VERIFICATION_REQUIRED')
-      const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0,messages:0 }
+      const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0,messages:0,deferred:0 }
       const provider=(sendEnabled||paymentsEnabled)?paymentProvider():undefined
       if (enrollmentEnabled && !tenantChecked) {
         if (String((await enrollmentProvider().me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
@@ -123,7 +123,7 @@ function runtime(env) {
           try {
             const result=await syncOneApplication({api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
             if(result==='SKIPPED')break
-            if(result==='DONE')outcomes.sheets++;else outcomes.unknown++
+            if(result==='DONE')outcomes.sheets++;else if(result==='DEFERRED')outcomes.deferred++;else outcomes.unknown++
           }catch{outcomes.failed++;break}
         }
       }

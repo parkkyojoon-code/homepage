@@ -592,13 +592,54 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         if(path.includes('developerMetadata:search'))return body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_process2_sheet_v1'?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:1,location:{sheetId:7}}}]}:{}
         if(path.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'신규 신청'}}]}
         if(method==='GET')return {values:[SHEET_HEADERS]}
-        throw Error('simulated lost insert response')
+        throw Error('SHEETS_REQUEST_UNCONFIRMED')
       }}
       const ports={api,target:{spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7},withClient:run=>run(client)}
       assert.equal(await sheetsWorker.syncOneApplication(ports),'UNKNOWN')
       assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED')
       assert.equal((await appRow(created.id)).payment_state,'PENDING')
       assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[created.id])).rows[0].state,'UNKNOWN')
+    })
+    await t.test('transient Sheets reads retry after a delay without touching financial state or repeating a write',async()=>{
+      await db.query("UPDATE daechion_automation.outbox SET state='DONE',lease_token=NULL,lease_until=NULL WHERE kind='SHEETS'")
+      const created=await make(),target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}
+      let failing=true,reads=0,writes=0
+      const api={call:async(method,path,body)=>{
+        if(path.includes('developerMetadata:search')){
+          reads++;if(failing)throw Error('SHEETS_HTTP_503')
+          return body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_process2_sheet_v1'?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:1,location:{sheetId:7}}}]}:{}
+        }
+        if(path.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'신규 신청'}}]}
+        if(method==='GET')return {values:[SHEET_HEADERS]}
+        writes++;return {spreadsheetId:target.spreadsheetId,replies:[{},{},{}]}
+      }}
+      const ports={api,target,withClient:run=>run(client)}
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'DEFERRED')
+      const job=(await db.query("SELECT state,attempts,available_at>now() AS delayed FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[created.id])).rows[0]
+      assert.deepEqual(job,{state:'PENDING',attempts:1,delayed:true})
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED');assert.equal(reads,1);assert.equal(writes,0)
+      assert.equal((await appRow(created.id)).payment_state,'PENDING')
+      assert.equal((await db.query('SELECT state FROM daechion_automation.registrations WHERE application_id=$1',[created.id])).rows[0].state,'PENDING')
+      await db.query("UPDATE daechion_automation.outbox SET available_at=now()-interval '1 second' WHERE application_id=$1",[created.id])
+      failing=false
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'DONE');assert.equal(writes,1)
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED');assert.equal(writes,1)
+    })
+    await t.test('unwritten read retries are bounded and authorization failures require review immediately',async()=>{
+      const created=await make(),target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}
+      let requests=0
+      const ports={api:{call:async()=>{requests++;throw Error('SHEETS_REQUEST_UNCONFIRMED')}},target,withClient:run=>run(client)}
+      for(const expected of ['DEFERRED','DEFERRED','UNKNOWN']){
+        assert.equal(await sheetsWorker.syncOneApplication(ports),expected)
+        await db.query("UPDATE daechion_automation.outbox SET available_at=now()-interval '1 second' WHERE application_id=$1",[created.id])
+      }
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED');assert.equal(requests,3)
+      assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[created.id])).rows[0].state,'UNKNOWN')
+      for(const status of [401,403,404]){
+        const denied=await make()
+        assert.equal(await sheetsWorker.syncOneApplication({...ports,api:{call:async()=>{throw Error('SHEETS_HTTP_'+status)}}}),'UNKNOWN')
+        assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[denied.id])).rows[0].state,'UNKNOWN')
+      }
     })
     await t.test('Sheets setup adopts only an exact empty imported template and preserves any staff data',async()=>{
       const target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}

@@ -45,10 +45,31 @@ export async function finishSheetJob(client:LedgerClient,job:SheetJob,success:bo
     return true
   })
 }
+
+// Only used when a transient read failed before any mutating Sheets request.
+// An expired/replaced claim never gets returned to PENDING by this path.
+async function deferUnwrittenSheetJob(client:LedgerClient,job:SheetJob) {
+  return automationTransaction(client,async()=>{
+    await client.query('SELECT id FROM daechion_automation.applications WHERE id=$1 FOR UPDATE',[job.applicationId])
+    const changed=await client.query(`UPDATE daechion_automation.outbox
+      SET state=CASE WHEN attempts<3 THEN 'PENDING' ELSE 'UNKNOWN' END,
+      available_at=now()+interval '60 seconds',lease_token=NULL,lease_until=NULL
+      WHERE id=$1 AND kind='SHEETS' AND state='RUNNING' AND lease_token=$2 RETURNING state`,[job.id,job.token])
+    return changed.rows[0]?.state==='PENDING'?'DEFERRED':'UNKNOWN'
+  })
+}
 export async function syncOneApplication(ports:{api:SheetsApi;target:SheetTarget;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
   const job=await ports.withClient(claimSheetJob)
   if(!job)return 'SKIPPED'
-  try {await publishApplication(ports.api,ports.target,job.view)}catch{
+  let writeAttempted=false
+  const trackedApi:SheetsApi={call(method,path,body){
+    // developerMetadata search uses POST but is a documented read operation.
+    if(method!=='GET'&&!(method==='POST'&&path.endsWith('/developerMetadata:search')))writeAttempted=true
+    return ports.api.call(method,path,body)
+  }}
+  try {await publishApplication(trackedApi,ports.target,job.view)}catch(error){
+    const transientRead=error instanceof Error&&/^(SHEETS_REQUEST_UNCONFIRMED|SHEETS_HTTP_(429|500|502|503|504))$/.test(error.message)
+    if(!writeAttempted&&transientRead)return ports.withClient(client=>deferUnwrittenSheetJob(client,job))
     await ports.withClient(client=>finishSheetJob(client,job,false));return 'UNKNOWN'
   }
   return await ports.withClient(client=>finishSheetJob(client,job,true))?'DONE':'UNKNOWN'

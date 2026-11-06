@@ -7,7 +7,7 @@ import apiCheck from '../scripts/daechion-api-check.cjs'
 test('disabled provider phases do not require billing, SMS, Daechion or Google credentials',async()=>{
   const service=worker.runtime({DAECHION_SHEETS_ENABLED:'true',DAECHION_READY_MESSAGE_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',GOOGLE_SERVICE_ACCOUNT_JSON:'not valid JSON'})
   const result=await service.cycle(false)
-  assert.deepEqual(result,{sent:0,unknown:0,skipped:0,failed:0,checked:0,enrolled:0,review:0,sheets:0,messages:0})
+  assert.deepEqual(result,{sent:0,unknown:0,skipped:0,failed:0,checked:0,enrolled:0,review:0,sheets:0,messages:0,deferred:0})
   await assert.rejects(service.setupSheets(),/separate new spreadsheet/)
 })
 
