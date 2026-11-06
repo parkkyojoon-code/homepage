@@ -599,6 +599,24 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.equal((await appRow(created.id)).payment_state,'PENDING')
       assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[created.id])).rows[0].state,'UNKNOWN')
     })
+    await t.test('Sheets setup adopts only an exact empty imported template and preserves any staff data',async()=>{
+      const target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}
+      const headers=[...SHEET_HEADERS,'직원 메모']
+      for(const mode of ['template','wrongHeader','existingData','changedDuringRead']){
+        let writes=0
+        const api={call:async(method,path,body)=>{
+          if(path.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'신규강의 신청현황',gridProperties:{columnCount:39}}}]}
+          if(path.includes('developerMetadata:search'))return {}
+          if(method==='GET'){
+            if(decodeURIComponent(path).endsWith('!1:1'))return {values:[mode==='wrongHeader'?['다른 업무 목록']:headers]}
+            return {values:[mode==='changedDuringRead'?['누군가 변경함']:headers,...(mode==='existingData'?[['실제 업무 데이터']]:[])]}
+          }
+          writes++;return {spreadsheetId:target.spreadsheetId,replies:body.requests.map(()=>({}))}
+        }}
+        if(mode==='template'){await publisher.setupApplicationSheet(api,target);assert.equal(writes,1)}
+        else{await assert.rejects(publisher.setupApplicationSheet(api,target),/NEW_SHEET_TAB_NOT_EMPTY|NEW_SHEET_HEADERS_CHANGED/);assert.equal(writes,0)}
+      }
+    })
     await t.test('Sheets setup initializes an empty separate tab and refuses hidden existing data',async()=>{
       const target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}
       const calls=[]

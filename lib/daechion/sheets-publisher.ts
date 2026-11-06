@@ -34,11 +34,15 @@ export async function setupApplicationSheet(api:SheetsApi,target:SheetTarget) {
   const existing=(header.values as unknown[][]|undefined)?.[0]??[]
   const tagged=await findMetadata(api,target,marker,'1')
   if(tagged.length===1&&JSON.stringify(existing.slice(0,SHEET_HEADERS.length))===JSON.stringify(SHEET_HEADERS))return
-  if(existing.length||tagged.length)throw Error('NEW_SHEET_TAB_NOT_EMPTY')
+  const expectedHeaders=[...SHEET_HEADERS,'직원 메모']
+  const importedTemplate=JSON.stringify(existing)===JSON.stringify(expectedHeaders)
+  if((existing.length&&!importedTemplate)||tagged.length)throw Error('NEW_SHEET_TAB_NOT_EMPTY')
   // Inspect the entire used tab before treating it as new; empty headers alone
   // do not imply that rows below them contain no staff data.
   const used=await api.call('GET',base+'/values/'+encodeURIComponent("'"+sheet.properties.title.replace(/'/g,"''")+"'"))
-  if((used.values as unknown[][]|undefined)?.some(row=>row.some(value=>value!==''&&value!==null)))throw Error('NEW_SHEET_TAB_NOT_EMPTY')
+  const usedRows=(used.values as unknown[][]|undefined)??[]
+  if(importedTemplate&&JSON.stringify(usedRows[0])!==JSON.stringify(expectedHeaders))throw Error('NEW_SHEET_HEADERS_CHANGED')
+  if(usedRows.slice(importedTemplate?1:0).some(row=>row.some(value=>value!==''&&value!==null)))throw Error('NEW_SHEET_TAB_NOT_EMPTY')
   const result=await api.call('POST',base+':batchUpdate',{requests:[
     {updateSheetProperties:{properties:{sheetId:target.sheetId,gridProperties:{columnCount:Math.max(sheet.properties.gridProperties.columnCount,SHEET_HEADERS.length+1),frozenRowCount:1}},fields:'gridProperties.columnCount,gridProperties.frozenRowCount'}},
     {updateCells:{start:{sheetId:target.sheetId,rowIndex:0,columnIndex:0},rows:[{values:cells([...SHEET_HEADERS,'직원 메모'])}],fields:'userEnteredValue'}},
