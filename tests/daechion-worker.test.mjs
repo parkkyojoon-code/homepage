@@ -4,6 +4,13 @@ import { spawnSync } from 'node:child_process'
 import worker from '../workers/daechion/billing.cjs'
 import apiCheck from '../scripts/daechion-api-check.cjs'
 
+test('disabled provider phases do not require billing, SMS, Daechion or Google credentials',async()=>{
+  const service=worker.runtime({DAECHION_SHEETS_ENABLED:'true',DAECHION_READY_MESSAGE_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',GOOGLE_SERVICE_ACCOUNT_JSON:'not valid JSON'})
+  const result=await service.cycle(false)
+  assert.deepEqual(result,{sent:0,unknown:0,skipped:0,failed:0,checked:0,enrolled:0,review:0,sheets:0,messages:0})
+  await assert.rejects(service.setupSheets(),/separate new spreadsheet/)
+})
+
 test('API preflight checks configuration, tenant and scopes before listing or any student reads',async()=>{
   const env={DAECHION_API_KEY:'fake-only',DAECHION_TENANT_ID:'test-tenant'}
   const scopes=['students:read','students:write','lectures:read','enrollments:write']

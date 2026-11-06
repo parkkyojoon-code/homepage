@@ -10,26 +10,38 @@ function runtime(env) {
   const { setupApplicationSheet } = require('../../.daechion-worker-build/lib/daechion/sheets-publisher.js')
   const { sendOneReadyMessage,solapiReadyProvider } = require('../../.daechion-worker-build/lib/daechion/ready-message.js')
   const migrations = require('../../scripts/daechion-migrations.cjs')
-  const provider = payssamBillingProvider({ apiKey: env.PAYSSAM_API_KEY, member: env.PAYSSAM_MEMBER,
-    merchant: env.PAYSSAM_MERCHANT, callbackUrl: env.DAECHION_BILLING_CALLBACK_URL })
+  let provider
+  function paymentProvider() {
+    if(!provider)provider=payssamBillingProvider({apiKey:env.PAYSSAM_API_KEY,member:env.PAYSSAM_MEMBER,
+      merchant:env.PAYSSAM_MERCHANT,callbackUrl:env.DAECHION_BILLING_CALLBACK_URL})
+    return provider
+  }
   let daechion, tenantChecked = false
   let messageProvider
-  if(env.DAECHION_READY_MESSAGE_ENABLED==='true')messageProvider=solapiReadyProvider({apiKey:env.SOLAPI_API_KEY,apiSecret:env.SOLAPI_API_SECRET,sender:env.SOLAPI_SENDER})
+  function readyMessageProvider(){
+    if(!messageProvider)messageProvider=solapiReadyProvider({apiKey:env.SOLAPI_API_KEY,apiSecret:env.SOLAPI_API_SECRET,sender:env.SOLAPI_SENDER})
+    return messageProvider
+  }
   let sheetApi, sheetTarget
-  if(env.DAECHION_SHEETS_ENABLED==='true') {
+  function sheetRuntime() {
+    if(sheetApi&&sheetTarget)return {sheetApi,sheetTarget}
+    if(env.DAECHION_SHEETS_ENABLED!=='true')throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
     const {googleSheetsApi}=require('../../.daechion-worker-build/lib/daechion/google-sheets.js')
     const {sheetsDestination}=require('../../.daechion-worker-build/lib/daechion/sheets-view.js')
     sheetsDestination(env.DAECHION_SHEETS_SPREADSHEET_ID,env.GOOGLE_SHEET_ID)
     if(!/^\d+$/.test(env.DAECHION_SHEETS_SHEET_ID??''))throw Error('NEW_SHEET_TAB_REQUIRED')
     sheetTarget={spreadsheetId:env.DAECHION_SHEETS_SPREADSHEET_ID,legacySpreadsheetId:env.GOOGLE_SHEET_ID,sheetId:Number(env.DAECHION_SHEETS_SHEET_ID)}
     sheetApi=googleSheetsApi(env.GOOGLE_SERVICE_ACCOUNT_JSON??'')
+    return {sheetApi,sheetTarget}
   }
-  if (env.DAECHION_ENROLLMENT_ENABLED === 'true') {
+  function enrollmentProvider() {
+    if(daechion)return daechion
     if (env.DAECHION_PAYMENT_READ_ENABLED !== 'true') throw Error('PAYMENT_READ_REQUIRED_FOR_ENROLLMENT')
     if (env.DAECHION_IDENTITY_LOOKUP_VERIFIED !== 'true') throw Error('IDENTITY_LOOKUP_VERIFICATION_REQUIRED')
     if (!env.DAECHION_API_KEY || !env.DAECHION_TENANT_ID?.trim()) throw Error('DAECHION_TENANT_CONFIGURATION_REQUIRED')
     const { daechionClient } = require('../../.daechion-worker-build/lib/daechion/client.js')
     daechion = daechionClient({ apiKey: env.DAECHION_API_KEY })
+    return daechion
   }
   return {
     async check() {
@@ -40,13 +52,14 @@ function runtime(env) {
       })
     },
     async setupSheets() {
-      if(!sheetApi||!sheetTarget)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
-      await setupApplicationSheet(sheetApi,sheetTarget)
+      const sheet=sheetRuntime()
+      await setupApplicationSheet(sheet.sheetApi,sheet.sheetTarget)
     },
     async cycle(sendEnabled, { paymentsEnabled = false, enrollmentEnabled = false, sheetsEnabled = false,readyMessagesEnabled=false } = {}) {
       const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0,messages:0 }
+      const provider=(sendEnabled||paymentsEnabled)?paymentProvider():undefined
       if (enrollmentEnabled && !tenantChecked) {
-        if (!daechion || String((await daechion.me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
+        if (String((await enrollmentProvider().me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
         tenantChecked = true
       }
       const ids = sendEnabled ? await withAutomationClient(async client => {
@@ -96,13 +109,13 @@ function runtime(env) {
         }
       }
       if(readyMessagesEnabled){
-        if(!messageProvider)throw Error('READY_MESSAGE_CONFIGURATION_REQUIRED')
+        const messageProvider=readyMessageProvider()
         for(let i=0;i<5;i++){
           try{const result=await sendOneReadyMessage({provider:messageProvider,withClient:withAutomationClient});if(result==='SKIPPED')break;if(result==='SENT')outcomes.messages++;else outcomes.unknown++}catch{outcomes.failed++;break}
         }
       }
       if(sheetsEnabled) {
-        if(!sheetApi||!sheetTarget)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
+        const {sheetApi,sheetTarget}=sheetRuntime()
         for(let i=0;i<5;i++) {
           try {
             const result=await syncOneApplication({api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
@@ -154,4 +167,4 @@ if (require.main === module) main().then(() => process.exit(0)).catch(() => {
   // No connection strings, applicant IDs/phones, provider bodies or credentials.
   console.error('DAECHION_BILLING_WORKER_FAILED'); process.exit(1)
 })
-module.exports = { main }
+module.exports = { main, runtime }

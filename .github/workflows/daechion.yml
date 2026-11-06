@@ -59,3 +59,12 @@ jobs:
       - run: npm run build:daechion-worker
       - run: npm run test:daechion
       - run: npm run test:legacy-auth
+      - name: Build isolated Daechion worker image
+        run: docker build --file workers/daechion/Dockerfile --tag pkjmath-daechion-worker:ci .
+      - name: Verify unconfigured worker image refuses to start
+        run: |
+          if docker run --rm pkjmath-daechion-worker:ci > worker-default.log 2>&1; then
+            echo "An unconfigured worker must refuse to start"
+            exit 1
+          fi
+          test "$(cat worker-default.log)" = "DAECHION_BILLING_WORKER_FAILED"

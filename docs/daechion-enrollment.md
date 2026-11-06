@@ -8,6 +8,12 @@
 
 배포 전 `npm run build:daechion-worker` 후 `node scripts/daechion-api-check.cjs`로 같은 읽기 전용 검사를 반복할 수 있다. DAECHION_API_KEY와 DAECHION_TENANT_ID는 비공개 환경변수로만 제공하며 CLI 인자로 키를 받지 않는다. 다른 tenant 또는 필요한 scope 누락이면 중단한다. 출력에는 강의 메타데이터만 포함하고 키·학생 이름·번호는 포함하지 않는다. 이 명령은 DB에 연결하지 않으며 청구/등록 작업자를 불러오거나 플래그를 켜지 않는다.
 
+2026-11-07 연결 준비: 브라우저에서 별도 Google Sheets 생성을 완료하고 39개 헤더, 빈 데이터 행, 세 상태 색상, 텍스트 번호·원화 금액·필터·머리글 고정을 실제 저장 파일로 검증했다. 운영 홈페이지는 온라인이고 이전 PostgreSQL은 중지 상태다. 자동화 서비스 계정 주소만 확인했으며 새 파일 공유나 운영 설정 변경은 아직 하지 않았다.
+
+초기 작업자 배포는 `workers/daechion/Dockerfile`을 사용하고 기본 CMD는 `node workers/daechion/billing.cjs --check`다. `DAECHION_BILLING_WORKER_ENABLED=true`와 별도 DAECHION_DATABASE_URL을 설정한 뒤에도 최초 배포는 DB 스키마 확인 후 종료하며 작업 루프를 시작하지 않는다. Google/결제선생/대치온/문자 클라이언트는 실제 해당 단계를 실행할 때만 초기화한다. 모든 발송·조회·등록·Sheets·문자 실행 플래그는 검수 단계에 필요한 것만 켠다. `--check`는 다른 플래그가 켜져 있고 그 API 설정이 비어 있어도 DB만 확인한다.
+
+적용 순서는 신규 시트에 기존 서비스 계정 편집 권한 부여 → 기존 PostgreSQL 재가동과 별도 daechion_automation 스키마 마이그레이션 → 신규 daechion-worker 서비스의 비공개 DB/Google 연결 → 기본 --check → 명시적 --setup-sheets → 가상 신청으로 단발성 Sheets 동기화 검수다. 기존 홈페이지의 운영 배포·청구·학생 등록·문자 발송 플래그는 이 작업으로 켜지 않는다. DB 생성 도구는 실제 DB 이름 확인을 요구하므로 이름을 추정해서 migrate하지 않는다.
+
 승인된 검수 학생의 고유 ID를 지정한 `node scripts/daechion-api-check.cjs --student-id 12345`는 해당 학생의 등록된 학생/보호자 1·2 번호 각각으로 조회해 같은 학생 ID가 반환되는지도 확인한다. 12345는 명령 예시다. 번호가 같은 슬롯은 조회를 한 번만 한다. 결과에는 확인한 슬롯 종류와 비활성 여부만 출력하고 이름·번호·학생 ID는 내보내지 않는다. 하나의 사례가 모든 비활성/보호자 2 사례를 증명하지 않으므로 결과의 phoneKinds/inactiveStudent를 보고 추가 검수한다. 검수 성공으로 DAECHION_IDENTITY_LOOKUP_VERIFIED를 자동 변경하지 않는다.
 
 ## 운영 범위

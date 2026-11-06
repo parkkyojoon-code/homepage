@@ -199,10 +199,10 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:20000,
         env:{...process.env,DAECHION_DATABASE_URL:process.env.DAECHION_TEST_POSTGRES_URL,
           DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_BILLING_SEND_ENABLED:'true',
-          DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_API_KEY:'fake-key',DAECHION_TENANT_ID:'fake-tenant',
-          DAECHION_READY_MESSAGE_ENABLED:'true',SOLAPI_API_KEY:'fake-key',SOLAPI_API_SECRET:'fake-secret',SOLAPI_SENDER:'01000000999',DAECHION_SHEETS_ENABLED:'false',
-          PAYSSAM_API_KEY:'fake-test-key',PAYSSAM_MEMBER:'fake-member',PAYSSAM_MERCHANT:'fake-merchant',
-          DAECHION_BILLING_CALLBACK_URL:'https://web.invalid/api/daechion/billing/callback'},
+          DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_IDENTITY_LOOKUP_VERIFIED:'false',DAECHION_API_KEY:'',DAECHION_TENANT_ID:'',
+          DAECHION_READY_MESSAGE_ENABLED:'true',SOLAPI_API_KEY:'',SOLAPI_API_SECRET:'',SOLAPI_SENDER:'',DAECHION_SHEETS_ENABLED:'true',
+          GOOGLE_SERVICE_ACCOUNT_JSON:'not valid JSON',DAECHION_SHEETS_SPREADSHEET_ID:'',DAECHION_SHEETS_SHEET_ID:'',GOOGLE_SHEET_ID:'',
+          PAYSSAM_API_KEY:'',PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',DAECHION_BILLING_CALLBACK_URL:''},
       })
       assert.equal(result.status,0,result.stderr)
       assert.deepEqual(JSON.parse(result.stdout),{ready:true,schema:'daechion_automation',sending:false})
