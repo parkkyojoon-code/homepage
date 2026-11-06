@@ -23,6 +23,7 @@ on:
       - 'tests/daechion-worker.test.mjs'
       - 'tests/daechion-sheets-verify.test.mjs'
       - 'tests/daechion-http.integration.mjs'
+      - 'tests/daechion-browser-preview.mjs'
       - 'workers/daechion/**'
       - 'db/daechion/**'
       - 'scripts/daechion-*.cjs'
@@ -61,6 +62,7 @@ jobs:
       - run: npm run build:daechion-worker
       - run: npm run test:daechion
       - run: node --test tests/daechion-sheets-verify.test.mjs
+      - run: node --check tests/daechion-browser-preview.mjs
       - run: npm run test:legacy-auth
       - run: node --test tests/daechion-http.integration.mjs
       - name: Build isolated Daechion worker image
