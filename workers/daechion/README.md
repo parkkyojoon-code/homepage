@@ -6,6 +6,10 @@
 
 ## 실행
 
+실제 API 등록 검수에서 기존 영상의 파일 권한이 자동 부여되지 않았다. 전체 기본 정책을 '참여자 모두에게'로 변경한 뒤 검수 계정의 차시 등록을 새로 만들어도 같았다. 따라서 DAECHION_ACCESS_POLICY_VERIFIED 기본값은 false다. 실제 파일 접근까지 확인하기 전에는 자동 수강 등록과 준비 완료 안내 단계를 실행하지 않는다. --check와 Sheets 초기화는 이 제한과 별개다.
+
+강의 고유 ID 사전 확인: `node scripts/daechion-api-check.cjs --lecture-id 123`. 해당 ID의 존재·진행중 상태·차시 유무·차시 ID 중복을 읽기 전용으로 확인한다. 필요하면 `--student-id 456`을 함께 사용한다. 이 명령은 학생 생성이나 등록을 하지 않는다.
+
 1. `npm ci`
 2. `npm run build:daechion-worker`
 3. 전용 비공개 환경에 `env.example`의 값을 설정한다. 실제 키와 연결 문자열을 파일/Git/로그에 넣지 않는다.

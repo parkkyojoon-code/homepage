@@ -26,6 +26,15 @@ test('API preflight checks configuration, tenant and scopes before listing or an
   assert.equal(JSON.stringify(result).includes(env.DAECHION_API_KEY),false)
 })
 
+test('automatic enrollment and readiness messages stop before provider calls until actual file access is verified',async()=>{
+  for(const verified of [undefined,'false']){
+    const runtime=worker.runtime({DAECHION_ACCESS_POLICY_VERIFIED:verified})
+    await assert.rejects(runtime.cycle(true,{enrollmentEnabled:true,paymentsEnabled:true}),/ACCESS_POLICY_VERIFICATION_REQUIRED/)
+    await assert.rejects(runtime.cycle(false,{readyMessagesEnabled:true}),/ACCESS_POLICY_VERIFICATION_REQUIRED/)
+    assert.equal((await runtime.cycle(false)).sent,0)
+  }
+})
+
 test('optional phone lookup preflight checks both guardian slots including an inactive student without exposing phones',async()=>{
   const env={DAECHION_API_KEY:'fake-only',DAECHION_TENANT_ID:'test-tenant'},calls=[]
   const student={id:77,name:'개인정보 검수',studentPhoneNumber:'010-0000-0001',parentPhoneNumber:'01000000002',parentPhoneNumber2:'01000000003',active:false}
@@ -37,6 +46,25 @@ test('optional phone lookup preflight checks both guardian slots including an in
   await assert.rejects(apiCheck.runApiCheck(['--student-id','77'],env,{...service,students:async()=>[]}),/API_CHECK_PHONE_LOOKUP_INCOMPLETE/)
   const missing={...student,studentPhoneNumber:null,parentPhoneNumber:null,parentPhoneNumber2:null}
   await assert.rejects(apiCheck.runApiCheck(['--student-id','77'],env,{...service,student:async()=>missing}),/API_CHECK_STUDENT_PHONE_MISSING/)
+})
+
+test('read-only preflight selects a unique lecture ID and rejects closed or empty targets before student lookup',async()=>{
+  const env={DAECHION_API_KEY:'fake-only',DAECHION_TENANT_ID:'test-tenant'}
+  const lectures=[{id:6006577,name:'同名',opened:true,weeklyLectures:[{id:101}]},{id:99,name:'同名',opened:true,weeklyLectures:[{id:102}]}]
+  let reads=0
+  const service={me:async()=>({tenantId:'test-tenant',scopes:['students:read','students:write','lectures:read','enrollments:write']}),lectures:async()=>lectures,
+    student:async()=>{reads++;throw Error('Unexpected student lookup')},students:async()=>{throw Error('Unexpected phone lookup')},
+    enroll:async()=>{throw Error('Must not enroll')},createStudent:async()=>{throw Error('Must not create')}}
+  const result=await apiCheck.runApiCheck(['--lecture-id','6006577'],env,service)
+  assert.deepEqual(result.selectedLecture,{id:6006577,name:'同名',opened:true,weeklyLectureIds:[101]})
+  assert.equal(result.readOnly,true)
+  for(const [item,code] of [[undefined,'NOT_FOUND'],[{...lectures[0],opened:false},'CLOSED'],[{...lectures[0],weeklyLectures:[]},'EMPTY'],
+    [{...lectures[0],weeklyLectures:[{id:101},{id:101}]},'DUPLICATE_WEEK_ID']]){
+    await assert.rejects(apiCheck.runApiCheck(['--student-id','1','--lecture-id','6006577'],env,{...service,lectures:async()=>item?[item]:[]}),new RegExp(code))
+  }
+  for(const args of [['--lecture-id'],['--lecture-id','0'],['--lecture-id','6006577','--lecture-id','99'],['--lecture-id','9999999999999999999']])
+    await assert.rejects(apiCheck.runApiCheck(args,env,service),/INVALID_API_CHECK_ARGUMENTS/)
+  assert.equal(reads,0)
 })
 
 test('API check CLI refuses missing credentials without printing environment secrets',()=>{
