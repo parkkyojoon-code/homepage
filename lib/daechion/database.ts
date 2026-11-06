@@ -19,6 +19,10 @@ function automationPool() {
 export async function withAutomationClient<T>(run: (client: LedgerClient) => Promise<T>): Promise<T> {
   const client = await automationPool().connect()
   // createApplication owns BEGIN/COMMIT/ROLLBACK. Do not wrap it in another transaction.
+  let failed = false
   try { return await run(client) }
-  finally { client.release() }
+  catch (error) { failed = true; throw error }
+  // A failed callback may have lost its transaction or session-level lock.
+  // Discard that connection rather than returning uncertain state to the pool.
+  finally { client.release(failed) }
 }

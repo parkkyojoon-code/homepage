@@ -124,3 +124,15 @@ test('explicit Sheets setup never enters the financial cycle and --check takes p
     assert.deepEqual(calls,check?['check']:['check','setup'])
   }
 })
+
+test('session-only mode cannot send bills, read payments, enroll, publish Sheets or send messages even with all flags set',async()=>{
+  for(const success of [true,false]){
+    const calls=[],output=[]
+    await worker.main({argv:['--session-only','--once','--setup-sheets'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_SESSION_MAINTENANCE_ENABLED:'true',
+      DAECHION_BILLING_SEND_ENABLED:'true',DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_SHEETS_ENABLED:'true',DAECHION_READY_MESSAGE_ENABLED:'true'},
+    makeRuntime:()=>({check:async()=>calls.push('check'),maintainSession:async()=>{calls.push('session');if(!success)throw Error('private error');return {refreshed:true}},
+      cycle:async()=>{throw Error('Must not enter financial cycle')},setupSheets:async()=>{throw Error('Must not publish Sheets')}}),write:value=>output.push(value)})
+    assert.deepEqual(calls,['check','session']);assert.deepEqual(output,[{sessionMaintenance:true,refreshed:success,sending:false}])
+  }
+  await assert.rejects(worker.main({argv:['--session-only','--once'],env:{DAECHION_BILLING_WORKER_ENABLED:'true'},makeRuntime:()=>({check:async()=>{}})}),/SESSION_MAINTENANCE_DISABLED/)
+})

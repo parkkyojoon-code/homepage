@@ -91,13 +91,14 @@ async function verifyLibrary(page,url) {
   return 0
 }
 
-async function applyAndVerify(page,input,lecture,onStage=()=>{}) {
+async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=async()=>{}) {
   const participants=`${ORIGIN}/crm/lectures/${input.lectureId}/participants`
   onStage('PICKER_PAGE')
   await page.goto(participants)
   // A login redirect or a page for another lecture is not successful auth.
   await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
   if(new URL(page.url()).origin!==ORIGIN||new URL(page.url()).pathname!==new URL(participants).pathname)fail()
+  await authenticated()
   await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).click()
   const picker=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'일괄 학생 추가',exact:true})})
   await picker.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true}).fill(input.studentPhone)
@@ -146,31 +147,43 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{}) {
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
 
-function browserAccessProvider(env,api,{launch,onStage=()=>{}}={}) {
+function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
   if(env.DAECHION_CONTENT_BROWSER_ENABLED!=='true'||env.DAECHION_CONTENT_BROWSER_VERIFIED!=='true')throw Error('CONTENT_BROWSER_DISABLED')
-  const state=storageState(env.DAECHION_BROWSER_STORAGE_STATE)
+  let state=storageState(env.DAECHION_BROWSER_STORAGE_STATE),memoryBusy=false
   const launchBrowser=launch??(options=>require('playwright').chromium.launch(options))
   if(!launch)require.resolve('playwright')
-  return {async ensureContentAccess(input){
-    let browser
+  async function execute(input,lease,refreshOnly=false){
+    let browser,context,abort
     let stage='API_PREFLIGHT'
     const report=value=>{stage=value;onStage(value)}
     try {
+      await lease.assert()
       report('API_PREFLIGHT')
-      if(!uniqueIds(input.weeklyLectureIds)||!Number.isSafeInteger(input.studentId)||input.studentId<=0||!Number.isSafeInteger(input.lectureId)||input.lectureId<=0||
-        !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()||typeof input.beforeWrite!=='function')fail()
+      if(!Number.isSafeInteger(input.lectureId)||input.lectureId<=0)fail()
+      if(!refreshOnly&&(!uniqueIds(input.weeklyLectureIds)||!Number.isSafeInteger(input.studentId)||input.studentId<=0||
+        !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()||typeof input.beforeWrite!=='function'))fail()
       if(String((await api.me()).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
-      const student=await api.student(input.studentId)
-      if(student.id!==input.studentId||phone(student.studentPhoneNumber)!==input.studentPhone||student.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim())fail()
+      if(!refreshOnly){
+        const student=await api.student(input.studentId)
+        if(student.id!==input.studentId||phone(student.studentPhoneNumber)!==input.studentPhone||student.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim())fail()
+      }
       const matches=(await api.lectures()).filter(item=>item.id===input.lectureId)
       if(matches.length!==1)fail()
       const lecture=matches[0],names=lecture.weeklyLectures.map(week=>week.name)
-      if(!lecture.opened||!sameIds(lecture.weeklyLectures.map(week=>week.id),input.weeklyLectureIds)||
-        new Set(names).size!==names.length||names.some(name=>!name.trim()||name==='전체 선택'))fail()
+      if(!refreshOnly&&(!lecture.opened||!sameIds(lecture.weeklyLectures.map(week=>week.id),input.weeklyLectureIds)||
+        new Set(names).size!==names.length||names.some(name=>!name.trim()||name==='전체 선택')))fail()
       report('BROWSER_LAUNCH')
       browser=await launchBrowser({headless:true})
       report('BROWSER_CONTEXT')
-      const context=await browser.newContext({storageState:state,acceptDownloads:false})
+      let initialState=lease.state
+      if(refreshOnly&&input.exerciseExpiredAccess){
+        if(env.DAECHION_CONTENT_TEST_ONLY!=='true'||env.DAECHION_CONTENT_TEST_LECTURE_ID!==String(input.lectureId))fail()
+        initialState=require('./token-state.cjs').expiredAccessCopy(initialState)
+      }
+      context=await browser.newContext({storageState:storageState(initialState),acceptDownloads:false})
+      abort=()=>{void browser.close().catch(()=>{})}
+      lease.signal.addEventListener('abort',abort,{once:true})
+      if(lease.signal.aborted)fail()
       context.setDefaultTimeout(10000)
       // Do not record traces, screenshots, requests, cookies or student lists.
       await context.route('**/*',route=>{
@@ -178,19 +191,48 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{}}={}) {
         return url.protocol==='https:'&&[ORIGIN,'https://api.daechion.com'].includes(url.origin)&&request.method()!=='DELETE'?route.continue():route.abort()
       })
       const page=await context.newPage()
+      const authenticated=async()=>{await lease.assert();await lease.save(JSON.stringify(await context.storageState()))}
+      if(refreshOnly){
+        report('SESSION_REFRESH')
+        const target=`${ORIGIN}/crm/lectures/${input.lectureId}/participants`
+        await page.goto(target)
+        await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
+        await page.getByRole('heading',{name:lecture.name,exact:true}).waitFor({state:'visible'})
+        if(page.url()!==target)fail()
+        if(input.exerciseExpiredAccess){
+          const expiry=require('./token-state.cjs').accessExpiry(JSON.stringify(await context.storageState()))
+          if(!expiry||expiry<=Date.now()/1000+30)fail()
+        }
+        await authenticated()
+        return {refreshed:true,...(input.exerciseExpiredAccess?{expiredAccessExercised:true}:{})}
+      }
       // Closing the browser on the deadline also stops an in-flight UI action;
       // a DB lease alone must never race a still-running browser.
       const guardedInput={...input,beforeWrite:async()=>{
         const current=await api.student(input.studentId),matches=await api.students(input.studentPhone,'')
         if(current.id!==input.studentId||phone(current.studentPhoneNumber)!==input.studentPhone||current.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim()||
           matches.length!==1||matches[0].id!==input.studentId)fail()
+        await lease.assert()
         await input.beforeWrite()
       }}
       let timer
-      try{return await Promise.race([applyAndVerify(page,guardedInput,lecture,report),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])}
+      try{
+        const result=await Promise.race([applyAndVerify(page,guardedInput,lecture,report,authenticated),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])
+        await authenticated()
+        return result
+      }
       finally{clearTimeout(timer)}
     } catch {throw Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage})}
-    finally{if(browser)await browser.close().catch(()=>{})}
-  }}
+    finally{if(abort)lease.signal.removeEventListener('abort',abort);if(browser)await browser.close().catch(()=>{})}
+  }
+  async function run(input,refreshOnly=false){
+    if(sessions)return sessions.run(lease=>execute(input,lease,refreshOnly))
+    // Isolated tests/local tooling only. Production injects durable sessions.
+    if(memoryBusy)throw Error('CONTENT_SESSION_BUSY')
+    memoryBusy=true
+    try{return await execute(input,{state:JSON.stringify(state),signal:new AbortController().signal,assert:async()=>{},save:async value=>{state=storageState(value)}},refreshOnly)}
+    finally{memoryBusy=false}
+  }
+  return {ensureContentAccess:input=>run(input),refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }
 module.exports={browserAccessProvider,applyAndVerify,storageState,exactStudentRow,ACCESS_LABELS}

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
 import provider from '../workers/daechion/browser/provider.cjs'
 import contentVerify from '../scripts/daechion-content-verify.cjs'
+import sessionStore from '../workers/daechion/browser/session-store.cjs'
+import tokenState from '../workers/daechion/browser/token-state.cjs'
+import sessionCheck from '../scripts/daechion-session-check.cjs'
 const require=createRequire(import.meta.url)
 const env={DAECHION_CONTENT_BROWSER_ENABLED:'true',DAECHION_CONTENT_BROWSER_VERIFIED:'true',DAECHION_TENANT_ID:'116',
   DAECHION_BROWSER_STORAGE_STATE:JSON.stringify({cookies:[],origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'fixture',value:'synthetic-only'}]}]})}
@@ -10,6 +13,40 @@ const input={studentId:77,lectureId:10,weeklyLectureIds:[100],studentName:'검�
 const api={me:async()=>({tenantId:116}),student:async()=>({id:77,name:'검수학생',studentPhoneNumber:'010-0000-0001',active:false}),
   students:async()=>[{id:77}],
   lectures:async()=>[{id:10,name:'같은 이름',opened:true,weeklyLectures:[{id:100,name:'차시 A'}]}]}
+
+const fixtureToken=exp=>Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url')+'.'+Buffer.from(JSON.stringify({exp})).toString('base64url')+'.synthetic-signature'
+test('expiration acceptance changes only an isolated access-token copy and preserves the refresh cookie',()=>{
+  const raw=JSON.stringify({cookies:[{domain:'parkkyojoon.daechion.com',name:'refresh',value:'private-refresh-fixture'}],
+    origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'auth',value:fixtureToken(2000000000)}]}]})
+  const expired=tokenState.expiredAccessCopy(raw)
+  assert.equal(tokenState.accessExpiry(expired),1);assert.equal(tokenState.accessExpiry(raw),2000000000)
+  assert.deepEqual(JSON.parse(expired).cookies,JSON.parse(raw).cookies)
+  assert.throws(()=>tokenState.expiredAccessCopy(env.DAECHION_BROWSER_STORAGE_STATE),/REFRESH_TEST_UNAVAILABLE/)
+})
+test('session acceptance is read-only, reloads persistence and requires explicit reset and target matching',async()=>{
+  const settings={DAECHION_TENANT_ID:'116',DAECHION_CONTENT_TEST_ONLY:'true',DAECHION_CONTENT_TEST_LECTURE_ID:'10'},calls=[]
+  const ports={api,storeFactory:()=>({reset:async()=>{calls.push('reset')}}),accessFactory:()=>({refreshSession:async(id,options)=>{
+    calls.push({id,expired:options?.exerciseExpiredAccess===true});return {refreshed:true,...(options?.exerciseExpiredAccess?{expiredAccessExercised:true}:{})}
+  }})}
+  await assert.rejects(sessionCheck.checkSession(['--lecture-id','11'],settings,ports),/TARGET_REQUIRED/)
+  await assert.rejects(sessionCheck.checkSession(['--lecture-id','10','--grant'],settings,ports),/ARGUMENTS_REQUIRED/)
+  assert.equal(calls.length,0)
+  assert.deepEqual(await sessionCheck.checkSession(['--lecture-id','10','--exercise-expired-access'],settings,ports),{readOnly:true,refreshed:true,reloaded:true,expiredAccessExercised:true,lectureId:10})
+  assert.deepEqual(calls,[{id:10,expired:true},{id:10,expired:false}])
+  calls.length=0
+  await sessionCheck.checkSession(['--lecture-id','10','--reset-session'],settings,ports)
+  assert.equal(calls[0],'reset')
+})
+
+test('browser authentication uses randomized authenticated encryption bound to key and academy',()=>{
+  const raw=env.DAECHION_BROWSER_STORAGE_STATE,cipher=sessionStore.sessionCipher('a'.repeat(48),'116')
+  const first=cipher.encrypt(raw),second=cipher.encrypt(raw)
+  assert.notEqual(first,second);assert.equal(cipher.decrypt(first),raw);assert.equal(first.includes('synthetic-only'),false)
+  for(const other of [sessionStore.sessionCipher('b'.repeat(48),'116'),sessionStore.sessionCipher('a'.repeat(48),'117')])
+    assert.throws(()=>other.decrypt(first),/^Error: CONTENT_SESSION_STORAGE_UNCONFIRMED$/)
+  const broken=JSON.parse(first);broken.tag=Buffer.alloc(16).toString('base64')
+  assert.throws(()=>cipher.decrypt(JSON.stringify(broken)),/^Error: CONTENT_SESSION_STORAGE_UNCONFIRMED$/)
+})
 
 test('real acceptance CLI is limited to explicit test targets and never enables normal runtime flags',async()=>{
   const argv=['--student-id','77','--lecture-id','10','--verify']
@@ -96,4 +133,33 @@ test('real browser grants only the selected student, clears attendance copying a
     else {await assert.rejects(promise,/CONTENT_ACCESS_UNCONFIRMED/);assert.equal(writes,['missing','library-nonempty'].includes(mode)?1:0)}
     assert.equal(closed,true)
   }
+})
+
+test('real browser captures refreshed credentials and a cold provider reloads them without participant actions',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:45000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  const old=fixtureToken(Math.floor(Date.now()/1000)+600),fresh=fixtureToken(Math.floor(Date.now()/1000)+3600)
+  const settings={...env,DAECHION_CONTENT_TEST_ONLY:'true',DAECHION_CONTENT_TEST_LECTURE_ID:'10',DAECHION_BROWSER_STORAGE_STATE:JSON.stringify({cookies:[],origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'auth',value:old}]}]})}
+  let saved=settings.DAECHION_BROWSER_STORAGE_STATE,saves=0,contexts=0
+  const sessions={run:async work=>work({state:saved,signal:new AbortController().signal,assert:async()=>{},save:async value=>{saved=value;saves++}})}
+  const launch=async options=>{
+    const browser=await chromium.launch(options)
+    return {newContext:async options=>{
+      contexts++
+      if(contexts===1)assert.equal(tokenState.accessExpiry(JSON.stringify(options.storageState)),1)
+      else assert.equal(options.storageState.origins[0].localStorage.find(item=>item.name==='auth').value,fresh,'saved token is reloaded')
+      const context=await browser.newContext(options),newPage=context.newPage.bind(context)
+      context.newPage=async()=>{
+        const page=await newPage()
+        await page.route('**/*',route=>route.fulfill({contentType:'text/html',body:'<h3>같은 이름</h3><button onclick="window.actions=1">일괄 학생 추가</button><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
+        browser.fixturePage=page;return page
+      }
+      return context
+    },close:async()=>{if(browser.fixturePage&&!browser.fixturePage.isClosed())assert.equal(await browser.fixturePage.evaluate(()=>window.actions??0),0);await browser.close()}}
+  }
+  const first=provider.browserAccessProvider(settings,api,{launch,sessions})
+  assert.deepEqual(await first.refreshSession(10,{exerciseExpiredAccess:true}),{refreshed:true,expiredAccessExercised:true})
+  const restarted=provider.browserAccessProvider(settings,api,{launch,sessions})
+  assert.deepEqual(await restarted.refreshSession(10),{refreshed:true})
+  assert.equal(saves,2);assert.equal(contexts,2);assert.equal(settings.DAECHION_BROWSER_STORAGE_STATE.includes(old),true)
 })

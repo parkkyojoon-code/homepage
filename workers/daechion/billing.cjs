@@ -16,7 +16,7 @@ function runtime(env) {
       merchant:env.PAYSSAM_MERCHANT,callbackUrl:env.DAECHION_BILLING_CALLBACK_URL})
     return provider
   }
-  let daechion, tenantChecked = false
+  let daechion, tenantChecked = false,sessionRefreshAt=0
   let messageProvider
   function readyMessageProvider(){
     if(!messageProvider)messageProvider=solapiReadyProvider({apiKey:env.SOLAPI_API_KEY,apiSecret:env.SOLAPI_API_SECRET,sender:env.SOLAPI_SENDER})
@@ -34,18 +34,29 @@ function runtime(env) {
     sheetApi=googleSheetsApi(env.GOOGLE_SERVICE_ACCOUNT_JSON??'')
     return {sheetApi,sheetTarget}
   }
-  function enrollmentProvider() {
+  function browserProvider() {
     if(daechion)return daechion
-    if (env.DAECHION_PAYMENT_READ_ENABLED !== 'true') throw Error('PAYMENT_READ_REQUIRED_FOR_ENROLLMENT')
-    if (env.DAECHION_IDENTITY_LOOKUP_VERIFIED !== 'true') throw Error('IDENTITY_LOOKUP_VERIFICATION_REQUIRED')
     if (!env.DAECHION_API_KEY || !env.DAECHION_TENANT_ID?.trim()) throw Error('DAECHION_TENANT_CONFIGURATION_REQUIRED')
     const { daechionClient } = require('../../.daechion-worker-build/lib/daechion/client.js')
     const api = daechionClient({ apiKey: env.DAECHION_API_KEY })
     const {browserAccessProvider}=require('./browser/provider.cjs')
-    daechion = {...api,...browserAccessProvider(env,api)}
+    const {browserSessionStore}=require('./browser/session-store.cjs')
+    const sessions=browserSessionStore(env,withAutomationClient)
+    daechion = {...api,...browserAccessProvider(env,api,{sessions})}
     return daechion
   }
+  function enrollmentProvider(){
+    if (env.DAECHION_PAYMENT_READ_ENABLED !== 'true') throw Error('PAYMENT_READ_REQUIRED_FOR_ENROLLMENT')
+    if (env.DAECHION_IDENTITY_LOOKUP_VERIFIED !== 'true') throw Error('IDENTITY_LOOKUP_VERIFICATION_REQUIRED')
+    return browserProvider()
+  }
+  async function maintainSession(){
+    const id=Number(env.DAECHION_BROWSER_CHECK_LECTURE_ID??env.DAECHION_CONTENT_TEST_LECTURE_ID)
+    if(!Number.isSafeInteger(id)||id<=0)throw Error('CONTENT_SESSION_CHECK_TARGET_REQUIRED')
+    return browserProvider().refreshSession(id)
+  }
   return {
+    maintainSession,
     async check() {
       await withAutomationClient(async client => {
         const state = await migrations.status(client)
@@ -66,6 +77,10 @@ function runtime(env) {
       if (enrollmentEnabled && !tenantChecked) {
         if (String((await enrollmentProvider().me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
         tenantChecked = true
+      }
+      if(enrollmentEnabled&&Date.now()>=sessionRefreshAt){
+        try{await maintainSession();sessionRefreshAt=Date.now()+15*60*1000}
+        catch{outcomes.failed++;sessionRefreshAt=Date.now()+60000}
       }
       const ids = sendEnabled ? await withAutomationClient(async client => {
         const result = await client.query(`SELECT a.id FROM daechion_automation.applications a
@@ -136,7 +151,7 @@ function runtime(env) {
 
 async function main({ argv = process.argv.slice(2), env = process.env, makeRuntime = runtime,
   write = value => console.log(JSON.stringify(value)) } = {}) {
-  if (argv.some(value => !['--check', '--once','--setup-sheets'].includes(value))) throw Error('INVALID_WORKER_ARGUMENT')
+  if (argv.some(value => !['--check', '--once','--setup-sheets','--session-only'].includes(value))) throw Error('INVALID_WORKER_ARGUMENT')
   if (env.DAECHION_BILLING_WORKER_ENABLED !== 'true') {
     if (argv.includes('--check')) throw Error('DAECHION_BILLING_WORKER_DISABLED')
     write({ enabled: false }); return
@@ -148,6 +163,23 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     await service.check(); write({ ready: true, schema: 'daechion_automation', sending: false }); return
   }
   await service.check()
+  if(argv.includes('--session-only')){
+    if(env.DAECHION_SESSION_MAINTENANCE_ENABLED!=='true')throw Error('SESSION_MAINTENANCE_DISABLED')
+    const controller=new AbortController()
+    let stopping=false
+    const stop=()=>{stopping=true;controller.abort()}
+    process.once('SIGTERM',stop);process.once('SIGINT',stop)
+    try{
+      do{
+        let refreshed=false
+        try{refreshed=(await service.maintainSession())?.refreshed===true}catch{}
+        write({sessionMaintenance:true,refreshed,sending:false})
+        if(argv.includes('--once')||stopping)break
+        try{await sleep(refreshed?900000:60000,undefined,{signal:controller.signal})}catch{if(!stopping)throw Error('SESSION_MAINTENANCE_WAIT_FAILED')}
+      }while(!stopping)
+    }finally{process.removeListener('SIGTERM',stop);process.removeListener('SIGINT',stop)}
+    return
+  }
   if(argv.includes('--setup-sheets')) {await service.setupSheets();write({sheetInitialized:true});return}
   let stopping = false
   const stop = () => { stopping = true }

@@ -17,6 +17,7 @@ import sheetsWorker from '../.daechion-test-build/lib/daechion/sheets-worker.js'
 import admin from '../.daechion-test-build/lib/daechion/admin.js'
 import adminHttp from '../.daechion-test-build/lib/daechion/admin-http.js'
 import readyMessage from '../.daechion-test-build/lib/daechion/ready-message.js'
+import sessionStore from '../workers/daechion/browser/session-store.cjs'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
@@ -60,9 +61,9 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     await db.exec('CREATE TABLE legacy_students(id integer PRIMARY KEY); INSERT INTO legacy_students VALUES(7);')
     const migrator = migrationClient(db)
     await t.test('migration status is read-only; tracked application is repeatable and checksum protected',async()=>{
-      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql']})
+      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql','005_browser_sessions.sql']})
       assert.equal((await db.query("SELECT to_regnamespace('daechion_automation') AS name")).rows[0].name,null)
-      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql'])
+      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql','005_browser_sessions.sql'])
       assert.deepEqual(await migrations.migrate(migrator),[])
       await assert.rejects(migrations.migrate(migrator,{...migrations.loadMigration(),checksum:'changed'}),/AUTOMATION_MIGRATION_HISTORY_MISMATCH/)
     })
@@ -224,6 +225,72 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       createStudent:async()=>{throw Error('unexpected create')},
       ensureContentAccess:async({beforeWrite,...target})=>{await beforeWrite();return {verified:true,...target}},
       enroll:async(lectureId,studentId)=>({lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}),...overrides})
+
+    const sessionSeed=value=>JSON.stringify({cookies:[],origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'auth-fixture',value}]}]})
+    const sessionEnv={DAECHION_TENANT_ID:'session-test',DAECHION_API_KEY:'k'.repeat(48),DAECHION_BROWSER_STORAGE_STATE:sessionSeed('state-v1-secret')}
+    let sessionLockHeld=false
+    const withSession=async run=>{
+      if(db.isPostgres){const connection=new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL});await connection.connect();try{return await run(connection)}finally{await connection.end()}}
+      let owns=false
+      try{return await run({query:async(sql,values)=>{
+        if(sql.startsWith('SELECT pg_try_advisory_lock')){if(sessionLockHeld)return {rows:[{locked:false}]};sessionLockHeld=true;owns=true;return {rows:[{locked:true}]}}
+        if(sql.startsWith('SELECT pg_advisory_unlock')){sessionLockHeld=false;owns=false;return {rows:[{pg_advisory_unlock:true}]}}
+        return db.query(sql,values)
+      }})}finally{if(owns)sessionLockHeld=false}
+    }
+    await t.test('refreshed authentication survives restarts encrypted and an old worker cannot roll back a new login',async()=>{
+      const first=sessionStore.browserSessionStore(sessionEnv,withSession)
+      await first.run(async lease=>{assert.equal(lease.state,sessionEnv.DAECHION_BROWSER_STORAGE_STATE);await lease.save(sessionSeed('state-v2-secret'))})
+      const stored=(await db.query('SELECT state_ciphertext FROM daechion_automation.browser_sessions WHERE tenant_id=$1',[sessionEnv.DAECHION_TENANT_ID])).rows[0].state_ciphertext
+      assert.equal(stored.includes('state-v2-secret'),false);assert.equal(stored.includes('auth-fixture'),false)
+      const restarted=sessionStore.browserSessionStore(sessionEnv,withSession)
+      await restarted.run(async lease=>{assert.equal(lease.state,sessionSeed('state-v2-secret'))})
+      const replacement=sessionStore.browserSessionStore({...sessionEnv,DAECHION_BROWSER_STORAGE_STATE:sessionSeed('state-v3-secret')},withSession)
+      await assert.rejects(replacement.run(async()=>{throw Error('must not enter')}),/CONTENT_SESSION_SEED_CHANGED/)
+      await replacement.reset()
+      await replacement.run(async lease=>{assert.equal(lease.state,sessionSeed('state-v3-secret'))})
+      await assert.rejects(restarted.run(async()=>{throw Error('must not enter')}),/CONTENT_SESSION_SEED_CHANGED/)
+    })
+    await t.test('corruption, lost save versions and DB read failures never fall back to the original authentication seed',async()=>{
+      const settings={...sessionEnv,DAECHION_TENANT_ID:'session-corruption'},store=sessionStore.browserSessionStore(settings,withSession)
+      await store.run(async()=>{})
+      await db.query("UPDATE daechion_automation.browser_sessions SET state_ciphertext=repeat('x',40) WHERE tenant_id=$1",[settings.DAECHION_TENANT_ID])
+      await assert.rejects(store.run(async()=>{throw Error('must not enter')}),/CONTENT_SESSION_STORAGE_UNCONFIRMED/)
+      const casEnv={...sessionEnv,DAECHION_TENANT_ID:'session-cas'},cas=sessionStore.browserSessionStore(casEnv,withSession)
+      await assert.rejects(cas.run(async lease=>{
+        await db.query('UPDATE daechion_automation.browser_sessions SET revision=revision+1 WHERE tenant_id=$1',[casEnv.DAECHION_TENANT_ID])
+        await lease.save(sessionSeed('must-not-save'))
+      }),/CONTENT_SESSION_STORAGE_UNCONFIRMED/)
+      const failing=sessionStore.browserSessionStore(sessionEnv,async run=>run({query:async()=>{throw Error('private database details')}}))
+      await assert.rejects(failing.run(async()=>{}),/^Error: CONTENT_SESSION_STORAGE_UNCONFIRMED$/)
+    })
+    await t.test('parallel PostgreSQL browser sessions are serialized and locks release after failure',{skip:!db.isPostgres},async()=>{
+      const store=sessionStore.browserSessionStore({...sessionEnv,DAECHION_TENANT_ID:'session-concurrency'},withSession)
+      let entered,release
+      const ready=new Promise(resolve=>{entered=resolve}),barrier=new Promise(resolve=>{release=resolve})
+      const first=store.run(async()=>{entered();await barrier;throw Error('synthetic failure')})
+      const failed=assert.rejects(first,/CONTENT_SESSION_STORAGE_UNCONFIRMED/)
+      await ready
+      try{await assert.rejects(store.run(async()=>{throw Error('must not enter')}),/CONTENT_SESSION_BUSY/)}finally{release()}
+      await failed
+      await store.run(async lease=>{await lease.assert()})
+    })
+    await t.test('connection loss aborts the browser lease and prevents a successful session result',async()=>{
+      for(const event of ['error','end']){
+        const {EventEmitter}=await import('node:events')
+        const events=new EventEmitter()
+        const store=sessionStore.browserSessionStore({...sessionEnv,DAECHION_TENANT_ID:'session-lost-'+event},
+          run=>withSession(connection=>{events.query=(...args)=>connection.query(...args);return run(events)}))
+        await assert.rejects(store.run(async lease=>{
+          assert.equal(lease.signal.aborted,false)
+          events.emit(event)
+          assert.equal(lease.signal.aborted,true)
+          await assert.rejects(lease.save(sessionSeed('must-not-save')),/CONTENT_SESSION_STORAGE_UNCONFIRMED/)
+          return {refreshed:true}
+        }),/CONTENT_SESSION_STORAGE_UNCONFIRMED/)
+        assert.equal(events.listenerCount(event),0)
+      }
+    })
 
     await t.test('a changed worker tenant cannot create accounts or grant the same numeric lecture ID in another academy',async()=>{
       const {id}=await make(undefined,{...input,studentHistory:'EXISTING',daechionTenantId:'tenant-original'})
@@ -733,12 +800,12 @@ test('identity migration upgrades tracked 001 without rewriting submissions or o
     await db.exec('CREATE TABLE daechion_automation.schema_migrations(name text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())')
     await db.query('INSERT INTO daechion_automation.schema_migrations(name,checksum) VALUES($1,$2)',[initial.name,initial.checksum])
     await db.query('INSERT INTO daechion_automation.applications(id,request_key,request_fingerprint,product_id,product_title,tuition_won,textbook_won,total_won,submission) VALUES($1,$2,$3,$4,$5,1000,200,1200,$6::jsonb)',[id,randomUUID(),'0'.repeat(64),input.productId,input.productTitle,JSON.stringify(input)])
-    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql','004_content_access.sql']})
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql','004_content_access.sql','005_browser_sessions.sql']})
     const second = migrations.loadMigration('002_identity.sql')
     await assert.rejects(migrations.migrate(migrationClient(db),[initial,{...second,body:second.body+'\nSELECT * FROM missing_upgrade_table;'}]))
     assert.equal((await db.query("SELECT to_regclass('daechion_automation.identity_checks') AS name")).rows[0].name,null)
-    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql','004_content_access.sql']})
-    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql','003_admin_messages.sql','004_content_access.sql'])
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql','004_content_access.sql','005_browser_sessions.sql']})
+    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql','003_admin_messages.sql','004_content_access.sql','005_browser_sessions.sql'])
     assert.deepEqual((await db.query('SELECT submission FROM daechion_automation.applications WHERE id=$1',[id])).rows[0].submission,input)
     assert.deepEqual((await db.query('SELECT status,student_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows,[{status:'WAITING',student_id:null}])
     assert.equal((await db.query("SELECT checksum FROM daechion_automation.schema_migrations WHERE name='001_initial.sql'")).rows[0].checksum,initial.checksum)

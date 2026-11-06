@@ -16,9 +16,15 @@ async function verifyContent(argv,env,{api,accessFactory,onStage=()=>{}}={}){
   const studentPhone=String(student.studentPhoneNumber??'').replace(/[\s-]/g,'')
   if(student.id!==studentId||!/^01\d{9}$/.test(studentPhone)||matches.length!==1||!matches[0].opened||!matches[0].weeklyLectures.length)throw Error('CONTENT_TEST_TARGET_UNCONFIRMED')
   const {browserAccessProvider}=require('../workers/daechion/browser/provider.cjs')
+  let sessions
+  if(!accessFactory){
+    const {browserSessionStore}=require('../workers/daechion/browser/session-store.cjs')
+    const {withAutomationClient}=require('../.daechion-worker-build/lib/daechion/database.js')
+    sessions=browserSessionStore(env,withAutomationClient)
+  }
   // Only this explicitly allowlisted test call bypasses the not-yet-verified
   // runtime flags. Never change the environment or start automatic processing.
-  const service=(accessFactory??browserAccessProvider)({...env,DAECHION_CONTENT_BROWSER_ENABLED:'true',DAECHION_CONTENT_BROWSER_VERIFIED:'true'},api,{onStage})
+  const service=(accessFactory??browserAccessProvider)({...env,DAECHION_CONTENT_BROWSER_ENABLED:'true',DAECHION_CONTENT_BROWSER_VERIFIED:'true'},api,{onStage,sessions})
   const result=await service.ensureContentAccess({studentId,lectureId,weeklyLectureIds:matches[0].weeklyLectures.map(week=>week.id),
     studentName:student.name,studentPhone,beforeWrite:async()=>{
       if(env.DAECHION_CONTENT_TEST_ONLY!=='true'||env.DAECHION_CONTENT_TEST_STUDENT_ID!==String(studentId)||env.DAECHION_CONTENT_TEST_LECTURE_ID!==String(lectureId))throw Error('CONTENT_TEST_TARGET_UNCONFIRMED')
