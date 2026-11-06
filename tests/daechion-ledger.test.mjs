@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite'
 import pg from 'pg'
 import ledger from '../.daechion-test-build/lib/daechion/ledger.js'
 import sheetView from '../.daechion-test-build/lib/daechion/sheets-view.js'
+import intake from '../.daechion-test-build/lib/daechion/intake.js'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
@@ -70,6 +71,25 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       await assert.rejects(make(key,{...input,studentName:'다른학생'}),/request_key_conflict/)
       assert.equal((await db.query('SELECT id FROM daechion_automation.applications WHERE request_key=$1',[key])).rows.length,1)
       assert.equal((await db.query('SELECT id FROM daechion_automation.outbox WHERE application_id=$1',[first.id])).rows.length,1)
+    })
+    await t.test('intake persists server-derived application and targets atomically without claiming billing success',async()=>{
+      const product = {id:'intake-course',name:'신규 접수 검수',visible:true,purchaseProcess:'PROCESS_2',
+        modes:{online:{enabled:true,price:1000},offline:{enabled:false,price:0}},textbook:{included:true,price:200}}
+      const request = {requestKey:randomUUID(),productId:product.id,applicantType:'STUDENT',studentName:'검수학생',
+        guardianName:'검수학부모',studentPhone:'01000000001',payerPhone:'01000000003',guardianPhone:'01000000002',
+        mode:'ONLINE',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
+      const ports = {loadProduct:()=>product,bindings:[{productId:product.id,lectureIds:[30]}],withClient:run=>run(client)}
+      const result = await intake.submitApplication(request,ports)
+      assert.equal(result.status,'RECEIVED'); assert.equal(result.invoiceStatus,'NOT_SENT')
+      assert.deepEqual(await intake.submitApplication(request,ports),{...result,created:false})
+      await assert.rejects(intake.submitApplication({...request,studentName:'다른학생'},ports),/REQUEST_CONFLICT/)
+      const row = (await db.query('SELECT submission FROM daechion_automation.applications WHERE id=$1',[result.applicationId])).rows[0]
+      assert.equal(row.submission.guardianName,request.guardianName)
+      assert.equal(row.submission.guardianPhone,request.guardianPhone)
+      assert.equal(row.submission.payerPhone,request.payerPhone)
+      assert.deepEqual((await db.query('SELECT lecture_id,state FROM daechion_automation.registrations WHERE application_id=$1',[result.applicationId])).rows,[{lecture_id:30,state:'PENDING'}])
+      assert.equal((await db.query('SELECT id FROM daechion_automation.bills WHERE application_id=$1',[result.applicationId])).rows.length,0)
+      assert.deepEqual((await db.query('SELECT kind FROM daechion_automation.outbox WHERE application_id=$1',[result.applicationId])).rows,[{kind:'SHEETS'}])
     })
     await t.test('parallel PostgreSQL requests share one application and one sheet job',{skip:!db.isPostgres},async()=>{
       const clients = [new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL}),new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL})]
