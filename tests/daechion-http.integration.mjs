@@ -70,7 +70,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     assert.ok(ready)
     const input = {requestKey:randomUUID(),productId,studentHistory:'NEW',applicantType:'GUARDIAN',studentName:'가상 HTTP 학생',guardianName:'가상 HTTP 보호자',
       studentPhone:'010-0000-0771',guardianPhone:'010-0000-0772',payerPhone:'010-0000-0773',mode:'ONLINE',campus:'',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
-    let applicationId,adminCookie,qaSheetPorts,readPublishedRow
+    let applicationId,adminCookie,qaSheetPorts,readPublishedRow,readSheetWrites
     await t.test('only the configured process-two product is available; old route cannot accept it',async()=>{
       assert.equal((await (await request(`/api/daechion/applications?productId=${productId}`)).json()).available,true)
       for(const id of ['12course','chuweol'])assert.equal((await (await request(`/api/daechion/applications?productId=${id}`)).json()).available,false)
@@ -125,18 +125,25 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     })
     await t.test('the HTTP-created DB job reaches the real publisher once, without legacy-sheet access',async()=>{
       const target={spreadsheetId:'isolated-new-sheet-http-test',legacySpreadsheetId:'isolated-old-sheet-http-test',sheetId:7}
-      let publishedRow
+      let publishedRow,inserts=0,updates=0
       const api={call:async(method,requestPath,body)=>{
         assert.ok(requestPath.startsWith('/spreadsheets/'+target.spreadsheetId))
-        if(requestPath.includes('developerMetadata:search'))return body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_process2_sheet_v1'?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:1,location:{sheetId:7}}}]}:{}
+        if(requestPath.includes('developerMetadata:search'))return body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_process2_sheet_v1'?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:1,location:{sheetId:7}}}]}:publishedRow?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:45,location:{dimensionRange:{sheetId:7,dimension:'ROWS',startIndex:1,endIndex:2}}}}]}:{}
         if(requestPath.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'검수'}}]}
         if(method==='GET')return {values:[sheetView.SHEET_HEADERS]}
+        if(requestPath.endsWith('/values:batchUpdateByDataFilter')){
+          assert.equal(body.valueInputOption,'RAW');assert.equal(body.data[0].dataFilter.developerMetadataLookup.metadataId,45)
+          publishedRow=body.data[0].values[0];updates++
+          return {spreadsheetId:target.spreadsheetId,totalUpdatedRows:1}
+        }
         assert.equal(requestPath,`/spreadsheets/${target.spreadsheetId}:batchUpdate`)
         publishedRow=body.requests.find(r=>r.updateCells).updateCells.rows[0].values.map(c=>c.userEnteredValue.stringValue??c.userEnteredValue.numberValue)
+        inserts++
         return {spreadsheetId:target.spreadsheetId,replies:[{},{},{}]}
       }}
       const ports={api,target,withClient:run=>run(client)}
       qaSheetPorts=ports;readPublishedRow=()=>publishedRow
+      readSheetWrites=()=>({inserts,updates})
       assert.equal(await sheetsWorker.syncOneApplication(ports),'DONE')
       assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED')
       assert.equal(publishedRow[0],applicationId);assert.equal(publishedRow[4],input.studentName)
@@ -167,6 +174,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       assert.equal(await sheetsWorker.syncOneApplication(qaSheetPorts),'DONE')
       assert.equal(readPublishedRow()[30],'보류');assert.equal(readPublishedRow()[32],'관리자가 자동 처리를 보류함')
       assert.equal(readPublishedRow().includes('manual_hold'),false)
+      assert.deepEqual(readSheetWrites(),{inserts:1,updates:1})
     })
   } finally {
     if(child?.pid&&child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill();await exited}
