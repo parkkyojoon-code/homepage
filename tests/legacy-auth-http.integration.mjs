@@ -152,6 +152,7 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
    for(const route of ['/','/classes','/my','/api/classes'])assert.equal((await request(route)).status,200,route);
    const r=await request('/api/admin/classes',{cookie:adminCookie});assert.equal(r.status,200);assert.ok(Array.isArray(await r.json()));
    const r2=await request('/api/apply',{method:'POST',body:{}});assert.equal(r2.status,400,'legacy application validation remains reachable');
+   const callback=await request('/api/daechion/payssam/notification',{method:'POST',body:{}});assert.equal(callback.status,503,'new payment receipt is disabled by default');
   });
   await t.test('existing student logout clears only its own cookie',async()=>{
    const r=await request('/api/my/logout',{method:'POST',cookie:`${studentCookie}; ${adminCookie}`});assert.equal(r.status,200);

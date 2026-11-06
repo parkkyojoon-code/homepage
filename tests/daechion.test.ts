@@ -12,6 +12,27 @@ import { payssamBillingProvider, approvalTimestamp, type BillSendJob } from '../
 import { newBillId } from '../lib/daechion/billing'
 import { identityConditionalFormatting, SHEET_HEADERS } from '../lib/daechion/sheets-view'
 import { solapiReadyProvider,lmsText } from '../lib/daechion/ready-message'
+import { payssamCallback } from '../lib/daechion/payssam-callback'
+
+test('V1 callback acknowledges authenticated receipts without echoing sensitive fields',async()=>{
+  const env={DAECHION_PAYSSAM_CALLBACK_ENABLED:'true',PAYSSAM_API_KEY:'fake-callback-key'}
+  const body={apikey:env.PAYSSAM_API_KEY,bill_id:'20261107000000000001',appr_state:'F',appr_price:'1',appr_issuer_num:'private-card-placeholder'}
+  const request=(value:unknown,contentType='application/json')=>new Request('https://example.invalid/api/daechion/payssam/notification',{method:'POST',headers:{'Content-Type':contentType},body:JSON.stringify(value)})
+  for(const appr_state of ['F','W','C','D']){
+    const response=await payssamCallback(request({...body,appr_state}),env)
+    assert.equal(response.status,200);assert.equal(response.headers.get('Cache-Control'),'no-store')
+    assert.deepEqual(await response.json(),{code:'0000',msg:'OK'})
+  }
+  assert.equal((await payssamCallback(request(body),{})).status,503)
+  assert.equal((await payssamCallback(request(body),{...env,DAECHION_PAYSSAM_CALLBACK_ENABLED:'false'})).status,503)
+  assert.equal((await payssamCallback(request({...body,apikey:'wrong'}),env)).status,401)
+  assert.equal((await payssamCallback(request({...body,bill_id:'bad'}),env)).status,400)
+  assert.equal((await payssamCallback(request({...body,appr_state:'PAID'}),env)).status,400)
+  assert.equal((await payssamCallback(request(body,'text/plain'),env)).status,415)
+  assert.equal((await payssamCallback(request({...body,padding:'x'.repeat(8200)}),env)).status,413)
+  const malformed=new Request('https://example.invalid',{method:'POST',headers:{'Content-Type':'application/json'},body:'{'})
+  assert.equal((await payssamCallback(malformed,env)).status,400)
+})
 
 const key = 'unit-test-only-not-a-real-credential'
 
@@ -254,7 +275,7 @@ function billingMock(respond: (url: string, init: RequestInit) => Response | Pro
     calls.push({ url: String(url), init }); return respond(String(url), init)
   }) as typeof fetch
   return { calls, provider: payssamBillingProvider({ apiKey: 'fake-test-key', member: 'fake-member', merchant: 'fake-merchant',
-    callbackUrl: 'https://web.invalid/api/daechion/billing/callback', fetcher, now: () => new Date('2026-11-06T16:00:00Z') }) }
+    callbackUrl: 'https://web.invalid/api/daechion/payssam/notification', fetcher, now: () => new Date('2026-11-06T16:00:00Z') }) }
 }
 
 test('billing bridge uses the legacy V1 hash and payer only; seven-day waiting does not invalidate the bill', async () => {
@@ -301,7 +322,7 @@ test('invalid bill parameters fail before transport and billing IDs stay distinc
   const ids = Array.from({ length: 100 }, newBillId)
   assert.equal(new Set(ids).size, ids.length)
   assert.ok(ids.every(id => /^9\d{19}$/.test(id)))
-  for (const callbackUrl of ['http://web.invalid/callback', 'https://web.invalid/api/lectures/callback', 'https://name:password@web.invalid/callback']) {
+  for (const callbackUrl of ['http://web.invalid/callback', 'https://web.invalid/api/lectures/callback', 'https://name:password@web.invalid/callback', 'https://web.invalid/', 'https://web.invalid/api/daechion/billing/callback']) {
     assert.throws(() => payssamBillingProvider({ apiKey: 'test', member: 'test', merchant: 'test', callbackUrl }), /INVALID_BILLING_CALLBACK/)
   }
 })

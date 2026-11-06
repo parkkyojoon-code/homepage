@@ -56,7 +56,7 @@ export function payssamBillingProvider(settings: {
   let callback: URL
   try { callback = new URL(settings.callbackUrl) } catch { throw Error('INVALID_BILLING_CALLBACK') }
   if (callback.protocol !== 'https:' || callback.username || callback.password || callback.hash || callback.search ||
-    callback.pathname.startsWith('/api/lectures')) throw Error('INVALID_BILLING_CALLBACK')
+    callback.pathname !== '/api/daechion/payssam/notification') throw Error('INVALID_BILLING_CALLBACK')
   const account = { apikey: settings.apiKey, member: settings.member, merchant: settings.merchant }
   const accountId = createHash('sha256').update(JSON.stringify([BASE, account.member, account.merchant])).digest('hex')
   const fetcher = settings.fetcher ?? fetch

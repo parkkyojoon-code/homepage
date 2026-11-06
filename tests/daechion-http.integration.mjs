@@ -45,12 +45,14 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     await new Promise((resolve,reject)=>reservation.close(e=>e?reject(e):resolve()))
     const origin = `http://127.0.0.1:${port}`
     const adminPassword = randomBytes(24).toString('hex')
+    const callbackKey = randomBytes(24).toString('hex')
     const env = {...process.env,NODE_ENV:'production',DATA_DIR:temp,ADMIN_PASSWORD:adminPassword,ADMIN_SECRET:randomBytes(32).toString('hex'),
       DAECHION_INTAKE_ENABLED:'true',DAECHION_ADMIN_ENABLED:'true',DAECHION_DATABASE_URL:connectionString,
       DAECHION_TENANT_ID:'test-only',DAECHION_APP_ORIGIN:origin,DAECHION_ADDITIONAL_ORIGINS:'',DAECHION_PRODUCT_BINDINGS_JSON:'[]',
       DAECHION_BILLING_WORKER_ENABLED:'false',DAECHION_BILLING_SEND_ENABLED:'false',DAECHION_PAYMENT_READ_ENABLED:'false',
       DAECHION_ENROLLMENT_ENABLED:'false',DAECHION_READY_MESSAGE_ENABLED:'false',DAECHION_SHEETS_ENABLED:'false',
-      DAECHION_API_KEY:'',GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:'',PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',
+      DAECHION_API_KEY:'',GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:callbackKey,PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',
+      DAECHION_PAYSSAM_CALLBACK_ENABLED:'true',
       SOLAPI_API_KEY:'',SOLAPI_API_SECRET:'',LECTURES_DATABASE_URL:'',LECTURES_WORKER_ENABLED:'false',LECTURES_WORKER_TOKEN:''}
     child = spawn(process.execPath,[path.join(root,'node_modules','next','dist','bin','next'),'start','--hostname','127.0.0.1','--port',String(port)],{cwd:root,env,stdio:'ignore',windowsHide:true})
     let startError; child.on('error',e=>{startError=e})
@@ -106,6 +108,20 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       const cookie=login.headers.getSetCookie().find(value=>value.startsWith('admin_session=')).split(';')[0]
       const response=await request(route,{cookie});assert.equal(response.status,200)
       assert.ok(JSON.stringify(await response.json()).includes(applicationId))
+    })
+    await t.test('public callbacks cannot assert paid status or grant access, even with a valid receipt key',async()=>{
+      const route='/api/daechion/payssam/notification'
+      const receipt={apikey:callbackKey,bill_id:'20261107000000000001',appr_state:'F',appr_price:'1'}
+      assert.equal((await request(route,{body:{...receipt,apikey:'forged'}})).status,401)
+      for(const appr_state of ['F','F','C','D']){
+        const response=await request(route,{body:{...receipt,appr_state},requestOrigin:''})
+        assert.equal(response.status,200);assert.deepEqual(await response.json(),{code:'0000',msg:'OK'})
+      }
+      assert.equal((await client.query('SELECT payment_state FROM daechion_automation.applications WHERE id=$1',[applicationId])).rows[0].payment_state,'PENDING')
+      assert.equal((await client.query('SELECT state FROM daechion_automation.registrations WHERE application_id=$1',[applicationId])).rows[0].state,'PENDING')
+      assert.equal(Number((await client.query('SELECT count(*) FROM daechion_automation.bills')).rows[0].count),0)
+      assert.equal(Number((await client.query('SELECT count(*) FROM daechion_automation.ready_receipts')).rows[0].count),0)
+      assert.equal((await request('/api/lectures/payssam/notification',{body:receipt})).status,410)
     })
     await t.test('the HTTP-created DB job reaches the real publisher once, without legacy-sheet access',async()=>{
       const target={spreadsheetId:'isolated-new-sheet-http-test',legacySpreadsheetId:'isolated-old-sheet-http-test',sheetId:7}

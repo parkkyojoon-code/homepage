@@ -8,3 +8,6 @@ DAECHION_ADDITIONAL_ORIGINS=https://www.pkjmath.com
 # Legacy fallback for products without an admin-saved binding. Admin selection takes precedence.
 # An explicit admin removal blocks this fallback. No original product IDs.
 DAECHION_PRODUCT_BINDINGS_JSON=[]
+# Authenticated V1 receipt acknowledgement only. Does not assert payment or enroll.
+DAECHION_PAYSSAM_CALLBACK_ENABLED=false
+PAYSSAM_API_KEY=
