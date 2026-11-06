@@ -87,7 +87,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.equal(row.submission.guardianName,request.guardianName)
       assert.equal(row.submission.guardianPhone,request.guardianPhone)
       assert.equal(row.submission.payerPhone,request.payerPhone)
-      assert.deepEqual((await db.query('SELECT lecture_id,state FROM daechion_automation.registrations WHERE application_id=$1',[result.applicationId])).rows,[{lecture_id:30,state:'PENDING'}])
+      assert.deepEqual((await db.query('SELECT lecture_id::text AS lecture_id,state FROM daechion_automation.registrations WHERE application_id=$1',[result.applicationId])).rows,[{lecture_id:'30',state:'PENDING'}])
       assert.equal((await db.query('SELECT id FROM daechion_automation.bills WHERE application_id=$1',[result.applicationId])).rows.length,0)
       assert.deepEqual((await db.query('SELECT kind FROM daechion_automation.outbox WHERE application_id=$1',[result.applicationId])).rows,[{kind:'SHEETS'}])
     })

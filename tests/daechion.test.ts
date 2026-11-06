@@ -185,7 +185,7 @@ test('disabled modes and unlisted campuses are rejected; valid offline prices ar
 test('invalid intake is rejected before acquiring a database connection', async () => {
   let connections = 0
   const ports = { loadProduct: () => intakeProduct, bindings: intakeBindings,
-    withClient: async <T>(_run: (client: import('../lib/daechion/ledger').LedgerClient) => Promise<T>): Promise<T> => { connections++; throw Error('Unexpected database access') } }
+    withClient: async <T>(run: (client: import('../lib/daechion/ledger').LedgerClient) => Promise<T>): Promise<T> => { void run; connections++; throw Error('Unexpected database access') } }
   await assert.rejects(submitApplication({ ...intakeInput, expectedTotalWon: 1 }, ports), /PRICE_CHANGED/)
   await assert.rejects(submitApplication({ ...intakeInput, agreePrivacy: false }, ports), /INVALID_APPLICATION/)
   assert.equal(connections, 0)
