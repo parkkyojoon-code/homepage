@@ -6,6 +6,9 @@ on:
     paths:
       - 'lib/daechion/**'
       - 'tests/daechion.test.ts'
+      - 'tests/daechion-ledger.test.mjs'
+      - 'db/daechion/**'
+      - 'scripts/daechion-*.cjs'
       - 'tsconfig.daechion-tests.json'
       - '.github/workflows/daechion.yml'
       - 'package*.json'
@@ -15,6 +18,21 @@ permissions:
 jobs:
   contract:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: daechion_ci
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: daechion_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DAECHION_TEST_POSTGRES_URL: postgresql://daechion_ci:ci-test-only@127.0.0.1:5432/daechion_ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
