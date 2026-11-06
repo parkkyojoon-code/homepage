@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { daechionClient, DaechionError, normalizePhone, type DaechionStudent, type StudentPort } from '../lib/daechion/client'
 import { resolveStudent } from '../lib/daechion/identity'
 import { productBinding } from '../lib/daechion/product-policy'
+import { parsePurchaseProcess, purchaseProcessOf } from '../lib/purchase-process'
 
 const key = 'unit-test-only-not-a-real-credential'
 const input = { name: '검수학생', studentPhone: '01000000001' }
@@ -22,13 +23,23 @@ function port(overrides: Partial<StudentPort> = {}): StudentPort {
 }
 
 test('both existing products are excluded even if an operator accidentally adds mappings', () => {
-  for (const id of ['12course', 'chuweol']) assert.equal(productBinding(id, [{ productId: id, lectureIds: [10] }]), null)
+  for (const id of ['12course', 'chuweol']) assert.equal(productBinding(id, [{ productId: id, lectureIds: [10] }], 'PROCESS_2'), null)
 })
 test('unknown products never enroll; only explicit valid mappings work', () => {
-  assert.equal(productBinding('new-course', []), null)
-  assert.deepEqual(productBinding('new-course', [{ productId: 'new-course', lectureIds: [10, 11] }]), { productId: 'new-course', lectureIds: [10, 11] })
-  for (const ids of [[], [10, 10], [-1], [1.2]]) assert.throws(() => productBinding('new-course', [{ productId: 'new-course', lectureIds: ids }]))
-  assert.throws(() => productBinding('new-course', [{ productId: 'new-course', lectureIds: [10] }, { productId: 'new-course', lectureIds: [11] }]))
+  assert.equal(productBinding('new-course', [], 'PROCESS_2'), null)
+  assert.deepEqual(productBinding('new-course', [{ productId: 'new-course', lectureIds: [10, 11] }], 'PROCESS_2'), { productId: 'new-course', lectureIds: [10, 11] })
+  for (const ids of [[], [10, 10], [-1], [1.2]]) assert.throws(() => productBinding('new-course', [{ productId: 'new-course', lectureIds: ids }], 'PROCESS_2'))
+  assert.throws(() => productBinding('new-course', [{ productId: 'new-course', lectureIds: [10] }, { productId: 'new-course', lectureIds: [11] }], 'PROCESS_2'))
+})
+test('newness alone never selects automatic registration; process 1 is the default', () => {
+  const bindings = [{productId:'new-course',lectureIds:[10]}]
+  assert.equal(productBinding('new-course',bindings),null)
+  assert.equal(productBinding('new-course',bindings,'PROCESS_1'),null)
+  assert.equal(parsePurchaseProcess(undefined),'PROCESS_1')
+  assert.equal(purchaseProcessOf({id:'new-course'}),'PROCESS_1')
+  assert.equal(purchaseProcessOf({id:'new-course',purchaseProcess:'PROCESS_2'}),'PROCESS_2')
+  assert.equal(purchaseProcessOf({id:'12course',purchaseProcess:'PROCESS_2'}),'PROCESS_1')
+  assert.throws(()=>parsePurchaseProcess(['PROCESS_1','PROCESS_2']))
 })
 test('phone normalization accepts formatting but does not silently discard arbitrary characters', () => {
   assert.equal(normalizePhone('010-0000-0001'), input.studentPhone)

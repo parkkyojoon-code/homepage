@@ -6,6 +6,7 @@ import { motion } from "framer-motion"
 import { CheckCircle, ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { calcSubjectSelectionPrice, type SubjectSelection } from "@/lib/subjectPricing"
+import type { PurchaseProcess } from '@/lib/purchase-process'
 
 // 수업 정보
 const courseTypeMap = (category: string, option: string, campus: string, hasSubjectSelection: boolean): string => {
@@ -29,6 +30,7 @@ export default function ApplyPage() {
 
   const [classData, setClassData] = useState<{
     name: string; category: string
+    purchaseProcess?: PurchaseProcess
     onlinePrice: number; offlinePrice: number
     textbookIncluded: boolean; textbookPrice: number
     subjectSelection: SubjectSelection | null
@@ -43,6 +45,7 @@ export default function ApplyPage() {
       .then(data => {
         if (data) setClassData({
           name: data.name,
+          purchaseProcess: data.purchaseProcess,
           category: data.category,
           onlinePrice: data.modes?.online?.price ?? 0,
           offlinePrice: data.modes?.offline?.price ?? 0,
@@ -121,6 +124,13 @@ export default function ApplyPage() {
         </button>
       </div>
     )
+  }
+
+  if (classData.purchaseProcess === 'PROCESS_2') {
+    return <div style={{ minHeight: '100vh', padding: '140px 24px', background: '#000', color: '#fff', textAlign: 'center' }}>
+      <h1 style={{ fontSize: 24 }}>신규 강의 구매를 준비 중입니다.</h1>
+      <Link href={`/classes/${courseId}`} style={{ color: '#00c6ff' }}>수업 정보로 돌아가기</Link>
+    </div>
   }
 
   const validateForm = () => {

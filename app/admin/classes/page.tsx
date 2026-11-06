@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { isOriginalProduct, purchaseProcessOf, type PurchaseProcess } from '@/lib/purchase-process'
 
 interface MediaItem { type: 'image' | 'youtube'; value: string }
 interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
@@ -9,6 +10,7 @@ interface SubjectPricingTier { count: number; price: number }
 interface SubjectSelection { subjects: string[]; tiers: SubjectPricingTier[] }
 interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
+  purchaseProcess?: PurchaseProcess
   image: string | null
   duration: string
   modes: { online: ClassMode; offline: ClassMode }
@@ -23,6 +25,7 @@ const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후
 
 const EMPTY_CLASS = {
   customId: '', visible: false, name: '', category: '수리논술', badge: '',
+  purchaseProcess: 'PROCESS_1' as PurchaseProcess,
   image: null,
   duration: '',
   modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
@@ -95,7 +98,7 @@ export default function AdminClassesPage() {
   }
 
   function openEdit(cls: ClassData) {
-    setEditTarget(JSON.parse(JSON.stringify(cls)))
+    setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls) })
     setIsNew(false)
   }
 
@@ -461,6 +464,16 @@ export default function AdminClassesPage() {
 
           {/* 기본 정보 */}
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div role="group" aria-label="프로세스" style={{ display: 'flex', gap: 24 }}>
+              {(['PROCESS_1', 'PROCESS_2'] as const).map((value, index) => (
+                <label key={value} style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 13 }}>
+                  <input type="checkbox" checked={(e.purchaseProcess ?? 'PROCESS_1') === value}
+                    disabled={!isNew && isOriginalProduct(e.id) && value === 'PROCESS_2'}
+                    onChange={() => upd(['purchaseProcess'], value)} style={{ accentColor: '#0066FF' }} />
+                  프로세스{index + 1}
+                </label>
+              ))}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <label style={lbl}>수업 ID <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>URL에 사용됨</span></label>

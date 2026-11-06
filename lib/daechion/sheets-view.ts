@@ -1,7 +1,7 @@
 import { applicationSnapshotSchema, type ApplicationSnapshot } from './ledger'
 
 export const SHEET_HEADERS = Object.freeze([
-  '신청번호','신청시각','신청자 유형','학생 이름','학부모 이름','학생 전화번호','보호자 로그인 전화번호','결제 전화번호',
+  '신청번호','신청시각','프로세스','신청자 유형','학생 이름','학부모 이름','학생 전화번호','보호자 로그인 전화번호','결제 전화번호',
   '신청 강의','상품 ID','선택 과목','수업 방식','캠퍼스','수업료','교재비','총 청구 금액',
   '원비 확인','개인정보 동의','안내문 버전','추가 신청 정보','청구 상태','현재 청구서 번호','전체 청구서 번호',
   '청구 발송시각','납부기한','결제 상태','결제 완료시각','대치온 학생 ID','대치온 강의 ID',
@@ -37,7 +37,7 @@ export function applicationSheetRow(view: ApplicationView): (string | number)[] 
   if (view.currentBillId && !view.allBillIds.includes(view.currentBillId)) throw new Error('Missing current bill history')
   const allIds = [...new Set(view.allBillIds)]
   if (allIds.some(id => !/^\d{1,64}$/.test(id))) throw new Error('Invalid Sheets bill ID')
-  return [view.id,koreanTime(view.createdAt),s.applicantType === 'STUDENT' ? '학생 본인' : '학부모',s.studentName,s.guardianName,
+  return [view.id,koreanTime(view.createdAt),'프로세스2',s.applicantType === 'STUDENT' ? '학생 본인' : '학부모',s.studentName,s.guardianName,
     s.studentPhone,s.guardianPhone,s.payerPhone,s.productTitle,s.productId,s.selectedSubjects.join('·'),
     s.mode === 'ONLINE' ? '온라인' : '현장',s.campus,s.tuitionWon,s.textbookWon,s.totalWon,'확인','동의',s.noticeVersion,
     s.additionalInputs.map(field => `${field.label}: ${field.value}`).join('\n'),stateLabel('billing',view.billingState),view.currentBillId ?? '',allIds.join('\n'),

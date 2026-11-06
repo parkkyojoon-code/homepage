@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAdminAuthed } from '@/lib/admin-auth'
 import { loadClasses, saveClasses, deleteImage } from '@/lib/classes'
+import { isOriginalProduct, parsePurchaseProcess, purchaseProcessOf } from '@/lib/purchase-process'
 
 // PUT: 수업 수정
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -12,10 +13,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   const idx = classes.findIndex(c => c.id === id)
   if (idx === -1) return NextResponse.json({ error: 'not_found' }, { status: 404 })
 
+  let purchaseProcess
+  try { purchaseProcess = parsePurchaseProcess(body.purchaseProcess, purchaseProcessOf(classes[idx])) } catch {
+    return NextResponse.json({ error: '프로세스를 선택해주세요.' }, { status: 400 })
+  }
+  if (isOriginalProduct(id) && purchaseProcess === 'PROCESS_2') {
+    return NextResponse.json({ error: '기존 수업은 프로세스1을 유지합니다.' }, { status: 400 })
+  }
+
   classes[idx] = {
     ...classes[idx],
     ...body,
     id,                             // id 변경 불가
+    purchaseProcess,
     image: body.image ?? classes[idx].image,  // 이미지는 별도 엔드포인트로
     updatedAt: new Date().toISOString(),
   }

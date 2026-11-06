@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getClassById } from '@/lib/classes'
+import { purchaseProcessOf } from '@/lib/purchase-process'
 
 export async function GET(_: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
@@ -7,5 +8,5 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
   if (!cls || !cls.visible) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 })
   }
-  return NextResponse.json(cls)
+  return NextResponse.json({ ...cls, purchaseProcess: purchaseProcessOf(cls) })
 }

@@ -2,12 +2,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { normalizePhone } from './client'
 import { productBinding, type ProductBinding } from './product-policy'
+import type { PurchaseProcess } from '../purchase-process'
 
 const phone = z.string().transform(normalizePhone)
 const optionalPhone = z.string().default('').transform(value => value.trim() ? normalizePhone(value) : '')
 const money = z.number().int().min(0).max(2147483647)
 export const applicationSnapshotSchema = z.object({
   productId: z.string().trim().min(1), productTitle: z.string().trim().min(1),
+  purchaseProcess: z.literal('PROCESS_2').default('PROCESS_2'),
   tuitionWon: money, textbookWon: money, totalWon: money.positive(),
   studentName: z.string().trim().min(1), guardianName: z.string().trim().default(''),
   studentPhone: phone, payerPhone: phone, guardianPhone: optionalPhone,
@@ -27,10 +29,10 @@ export class LedgerError extends Error {
 
 // The caller must supply server-resolved product/prices and a dedicated DB connection.
 // Do not pass the browser body directly or use a shared Pool as a transaction client.
-export async function createApplication(client: LedgerClient, requestKey: string, raw: unknown, bindings: readonly ProductBinding[]) {
+export async function createApplication(client: LedgerClient, requestKey: string, raw: unknown, bindings: readonly ProductBinding[], process: PurchaseProcess = 'PROCESS_1') {
   z.string().uuid().parse(requestKey)
   const snapshot = applicationSnapshotSchema.parse(raw)
-  const binding = productBinding(snapshot.productId, bindings)
+  const binding = productBinding(snapshot.productId, bindings, process)
   if (!binding) throw new LedgerError('product_not_enabled')
   const fingerprint = createHash('sha256').update(JSON.stringify({ snapshot, lectureIds: binding.lectureIds })).digest('hex')
   const id = randomUUID()

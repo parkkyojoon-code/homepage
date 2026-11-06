@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAdminAuthed } from '@/lib/admin-auth'
 import { loadClasses, saveClasses, generateId, ClassData } from '@/lib/classes'
+import { isOriginalProduct, parsePurchaseProcess } from '@/lib/purchase-process'
 
 // GET: 전체 수업 목록 (visible 무관)
 export async function GET() {
@@ -16,9 +17,17 @@ export async function POST(req: NextRequest) {
   const now = new Date().toISOString()
 
   const newId = body.id?.trim() || generateId(body.name || 'class')
+  let purchaseProcess
+  try { purchaseProcess = parsePurchaseProcess(body.purchaseProcess) } catch {
+    return NextResponse.json({ error: '프로세스를 선택해주세요.' }, { status: 400 })
+  }
+  if (isOriginalProduct(newId) && purchaseProcess === 'PROCESS_2') {
+    return NextResponse.json({ error: '기존 수업은 프로세스1을 유지합니다.' }, { status: 400 })
+  }
 
   const newClass: ClassData = {
     id:          newId,
+    purchaseProcess,
     visible:     body.visible ?? false,
     name:        body.name || '',
     category:    body.category || '수리논술',

@@ -5,6 +5,14 @@ on:
   pull_request:
     paths:
       - 'lib/daechion/**'
+      - 'lib/purchase-process.ts'
+      - 'lib/classes.ts'
+      - 'app/admin/classes/**'
+      - 'app/api/admin/classes/**'
+      - 'app/api/classes/**'
+      - 'app/api/apply/**'
+      - 'app/apply/**'
+      - 'tests/legacy-auth-http.integration.mjs'
       - 'tests/daechion.test.ts'
       - 'tests/daechion-ledger.test.mjs'
       - 'db/daechion/**'
@@ -41,3 +49,4 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:daechion
+      - run: npm run test:legacy-auth

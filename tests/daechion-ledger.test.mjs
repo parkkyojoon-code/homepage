@@ -41,7 +41,7 @@ function migrationClient(db) {
 test('isolated ledger and separate Sheets projection',{timeout:90000},async t => {
   const db = await database()
   const client = { query: (sql, values) => db.query(sql, values) }
-  const make = (key = randomUUID(), data = input) => createApplication(client, key, data, bindings)
+  const make = (key = randomUUID(), data = input) => createApplication(client, key, data, bindings, 'PROCESS_2')
   let applicationId
   try {
     await db.exec('CREATE TABLE legacy_students(id integer PRIMARY KEY); INSERT INTO legacy_students VALUES(7);')
@@ -76,14 +76,15 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       try {
         await Promise.all(clients.map(client=>client.connect()))
         const key = randomUUID()
-        const results = await Promise.all(clients.map(client=>createApplication(client,key,input,bindings)))
+        const results = await Promise.all(clients.map(client=>createApplication(client,key,input,bindings,'PROCESS_2')))
         assert.equal(results[0].id,results[1].id)
         assert.deepEqual(results.map(result=>result.created).sort(),[false,true])
         assert.equal((await db.query('SELECT id FROM daechion_automation.outbox WHERE application_id=$1',[results[0].id])).rows.length,1)
       } finally { await Promise.all(clients.map(client=>client.end())) }
     })
     await t.test('legacy products, mismatched amounts, unknown inputs and missing consent are not accepted',async()=>{
-      for (const productId of ['12course','chuweol']) await assert.rejects(createApplication(client,randomUUID(),{...input,productId},[{productId,lectureIds:[10]}]),/product_not_enabled/)
+      for (const productId of ['12course','chuweol']) await assert.rejects(createApplication(client,randomUUID(),{...input,productId},[{productId,lectureIds:[10]}],'PROCESS_2'),/product_not_enabled/)
+      await assert.rejects(createApplication(client,randomUUID(),input,bindings),/product_not_enabled/)
       for (const data of [{...input,totalWon:1001},{...input,agreePrivacy:false},{...input,password:'not-a-real-password'}]) await assert.rejects(make(randomUUID(),data))
     })
     await t.test('an outbox failure rolls back the application and its registration targets',async()=>{
@@ -93,7 +94,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         return db.query(sql,values)
       } }
       const before = (await db.query('SELECT count(*) AS n FROM daechion_automation.registrations')).rows[0].n
-      await assert.rejects(createApplication(broken,key,input,bindings),/test queue failure/)
+      await assert.rejects(createApplication(broken,key,input,bindings,'PROCESS_2'),/test queue failure/)
       assert.equal((await db.query('SELECT id FROM daechion_automation.applications WHERE request_key=$1',[key])).rows.length,0)
       assert.equal((await db.query('SELECT count(*) AS n FROM daechion_automation.registrations')).rows[0].n,before)
     })
