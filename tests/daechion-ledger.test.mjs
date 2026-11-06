@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { PGlite } from '@electric-sql/pglite'
 import pg from 'pg'
 import ledger from '../.daechion-test-build/lib/daechion/ledger.js'
 import sheetView from '../.daechion-test-build/lib/daechion/sheets-view.js'
 import intake from '../.daechion-test-build/lib/daechion/intake.js'
+import billing from '../.daechion-test-build/lib/daechion/billing.js'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
@@ -80,7 +82,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         mode:'ONLINE',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
       const ports = {loadProduct:()=>product,bindings:[{productId:product.id,lectureIds:[30]}],withClient:run=>run(client)}
       const result = await intake.submitApplication(request,ports)
-      assert.equal(result.status,'RECEIVED'); assert.equal(result.invoiceStatus,'NOT_SENT')
+      assert.equal(result.status,'RECEIVED'); assert.equal(result.invoiceStatus,undefined)
       assert.deepEqual(await intake.submitApplication(request,ports),{...result,created:false})
       await assert.rejects(intake.submitApplication({...request,studentName:'다른학생'},ports),/REQUEST_CONFLICT/)
       const row = (await db.query('SELECT submission FROM daechion_automation.applications WHERE id=$1',[result.applicationId])).rows[0]
@@ -101,6 +103,98 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         assert.deepEqual(results.map(result=>result.created).sort(),[false,true])
         assert.equal((await db.query('SELECT id FROM daechion_automation.outbox WHERE application_id=$1',[results[0].id])).rows.length,1)
       } finally { await Promise.all(clients.map(client=>client.end())) }
+    })
+    await t.test('billing sends one persisted numeric invoice to the payer and records seven-day waiting only after acknowledgement',async()=>{
+      const created = await make(), calls = []
+      const provider = {accountId:'mock-account',send:async job=>{calls.push(job);return 'SENT'}}
+      const ports = {provider,withClient:run=>run(client)}
+      assert.deepEqual(await billing.sendApplicationBill(created.id,false,ports),{outcome:'DISABLED'})
+      assert.equal(calls.length,0)
+      assert.equal((await db.query('SELECT id FROM daechion_automation.bills WHERE application_id=$1',[created.id])).rows.length,0)
+      assert.deepEqual(await billing.sendApplicationBill(created.id,true,ports),{outcome:'SENT'})
+      assert.deepEqual(await billing.sendApplicationBill(created.id,true,ports),{outcome:'SKIPPED'})
+      assert.equal(calls.length,1)
+      assert.equal(calls[0].recipientPhone,'01000000003')
+      assert.match(calls[0].billId,/^9\d{19}$/)
+      assert.equal(calls[0].amountWon,1200)
+      assert.equal(calls[0].id,undefined)
+      const bill = (await db.query('SELECT * FROM daechion_automation.bills WHERE application_id=$1',[created.id])).rows[0]
+      assert.equal(bill.bill_id,calls[0].billId); assert.equal(bill.state,'SENT')
+      assert.equal(new Date(bill.due_at)-new Date(bill.sent_at),7*86400000)
+      assert.equal(await billing.recordBillSent(client,created.id,bill.id,'mock-account'),false)
+      const app = (await db.query('SELECT payment_state,notification_state,review_code FROM daechion_automation.applications WHERE id=$1',[created.id])).rows[0]
+      assert.deepEqual(app,{payment_state:'PENDING',notification_state:'NOT_READY',review_code:null})
+      assert.equal((await db.query('SELECT id FROM daechion_automation.outbox WHERE application_id=$1',[created.id])).rows.length,4)
+      assert.equal((await db.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE'",[created.id])).rows.length,0)
+    })
+    await t.test('timeouts and worker crashes leave a durable unknown state that is never automatically resent',async()=>{
+      const created = await make(); let calls = 0
+      const ports = {provider:{accountId:'mock-account',send:async()=>{calls++;throw Error('private network error')}},withClient:run=>run(client)}
+      assert.deepEqual(await billing.sendApplicationBill(created.id,true,ports),{outcome:'UNKNOWN'})
+      assert.deepEqual(await billing.sendApplicationBill(created.id,true,ports),{outcome:'SKIPPED'})
+      assert.equal(calls,1)
+      const unknown = (await db.query('SELECT state,sent_at,due_at FROM daechion_automation.bills WHERE application_id=$1',[created.id])).rows[0]
+      assert.deepEqual(unknown,{state:'SEND_UNKNOWN',sent_at:null,due_at:null})
+      assert.equal((await db.query('SELECT review_code FROM daechion_automation.applications WHERE id=$1',[created.id])).rows[0].review_code,'bill_send_unknown')
+      const crashed = await make()
+      await billing.reserveApplicationBill(client,crashed.id,'mock-account')
+      assert.ok(await billing.claimBillSend(client,crashed.id,'mock-account'))
+      assert.equal(await billing.claimBillSend(client,crashed.id,'mock-account'),null)
+      assert.deepEqual(await billing.sendApplicationBill(crashed.id,true,ports),{outcome:'SKIPPED'})
+      assert.equal(calls,1)
+    })
+    await t.test('a lost acknowledgement database write cannot cause a second provider send',async()=>{
+      const created = await make(); let sends = 0, connections = 0
+      const provider = {accountId:'mock-account',send:async()=>{sends++;return 'SENT'}}
+      await assert.rejects(billing.sendApplicationBill(created.id,true,{provider,withClient:async run=>{
+        connections++;if(connections===3) throw Error('simulated connection loss');return run(client)
+      }}),/BILLING_STORAGE_FAILED/)
+      assert.deepEqual(await billing.sendApplicationBill(created.id,true,{provider,withClient:run=>run(client)}),{outcome:'SKIPPED'})
+      assert.equal(sends,1)
+    })
+    await t.test('manual holds, paid applications and mismatched provider accounts cannot send a new bill',async()=>{
+      const provider = {accountId:'mock-account',send:async()=>{throw Error('Unexpected provider call')}}
+      for (const state of ["automation_state='HOLD'","payment_state='PAID'"]) {
+        const created = await make()
+        await db.query(`UPDATE daechion_automation.applications SET ${state} WHERE id=$1`,[created.id])
+        assert.deepEqual(await billing.sendApplicationBill(created.id,true,{provider,withClient:run=>run(client)}),{outcome:'SKIPPED'})
+      }
+      const created = await make()
+      await billing.reserveApplicationBill(client,created.id,'first-account')
+      await assert.rejects(billing.reserveApplicationBill(client,created.id,'other-account'),/BILLING_ACCOUNT_MISMATCH/)
+      await assert.rejects(billing.sendApplicationBill(created.id,true,{provider,withClient:run=>run(client)}),/BILLING_ACCOUNT_MISMATCH/)
+      assert.deepEqual((await db.query('SELECT automation_state,review_code FROM daechion_automation.applications WHERE id=$1',[created.id])).rows,[{automation_state:'HOLD',review_code:'billing_account_mismatch'}])
+    })
+    await t.test('a manual hold during provider send is preserved when acknowledgement arrives',async()=>{
+      const created = await make()
+      const provider = {accountId:'mock-account',send:async()=>{
+        await db.query("UPDATE daechion_automation.applications SET automation_state='HOLD',review_code='manual_hold' WHERE id=$1",[created.id]);return 'SENT'
+      }}
+      assert.deepEqual(await billing.sendApplicationBill(created.id,true,{provider,withClient:run=>run(client)}),{outcome:'SENT'})
+      assert.deepEqual((await db.query('SELECT automation_state,review_code FROM daechion_automation.applications WHERE id=$1',[created.id])).rows,[{automation_state:'HOLD',review_code:'manual_hold'}])
+    })
+    await t.test('parallel PostgreSQL billing workers obtain one send claim',{skip:!db.isPostgres},async()=>{
+      const created = await make();let sends = 0
+      const ports = {provider:{accountId:'mock-account',send:async()=>{sends++;return 'SENT'}},withClient:async run=>{
+        const separate = new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL});await separate.connect()
+        try{return await run(separate)}finally{await separate.end()}
+      }}
+      const results = await Promise.all([billing.sendApplicationBill(created.id,true,ports),billing.sendApplicationBill(created.id,true,ports)])
+      assert.deepEqual(results.map(result=>result.outcome).sort(),['SENT','SKIPPED'])
+      assert.equal(sends,1)
+    })
+    await t.test('compiled worker checks the real isolated PostgreSQL without sending or reserving a bill',{skip:!db.isPostgres},async()=>{
+      const before = (await db.query('SELECT count(*)::text AS n FROM daechion_automation.bills')).rows[0].n
+      const result = spawnSync(process.execPath,['workers/daechion/billing.cjs','--check','--once'],{
+        cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:20000,
+        env:{...process.env,DAECHION_DATABASE_URL:process.env.DAECHION_TEST_POSTGRES_URL,
+          DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_BILLING_SEND_ENABLED:'true',
+          PAYSSAM_API_KEY:'fake-test-key',PAYSSAM_MEMBER:'fake-member',PAYSSAM_MERCHANT:'fake-merchant',
+          DAECHION_BILLING_CALLBACK_URL:'https://web.invalid/api/daechion/billing/callback'},
+      })
+      assert.equal(result.status,0,result.stderr)
+      assert.deepEqual(JSON.parse(result.stdout),{ready:true,schema:'daechion_automation',sending:false})
+      assert.equal((await db.query('SELECT count(*)::text AS n FROM daechion_automation.bills')).rows[0].n,before)
     })
     await t.test('legacy products, mismatched amounts, unknown inputs and missing consent are not accepted',async()=>{
       for (const productId of ['12course','chuweol']) await assert.rejects(createApplication(client,randomUUID(),{...input,productId},[{productId,lectureIds:[10]}],'PROCESS_2'),/product_not_enabled/)

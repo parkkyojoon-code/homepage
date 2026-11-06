@@ -91,7 +91,9 @@ export async function submitApplication(raw: unknown, ports: IntakePorts) {
   try {
     const result = await ports.withClient(client => createApplication(client, prepared.requestKey,
       prepared.snapshot, [prepared.binding], 'PROCESS_2'))
-    return { applicationId: result.id, created: result.created, status: 'RECEIVED' as const, invoiceStatus: 'NOT_SENT' as const }
+    // A replay may occur after the asynchronous worker has sent a bill. Do not
+    // describe the current invoice status from this intake-only acknowledgement.
+    return { applicationId: result.id, created: result.created, status: 'RECEIVED' as const }
   } catch (error) {
     if (error instanceof LedgerError && error.code === 'request_key_conflict') throw new IntakeError('REQUEST_CONFLICT')
     throw error

@@ -1,12 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { daechionClient, DaechionError, normalizePhone, type DaechionStudent, type StudentPort } from '../lib/daechion/client'
 import { resolveStudent } from '../lib/daechion/identity'
 import { productBinding } from '../lib/daechion/product-policy'
 import { parsePurchaseProcess, purchaseProcessOf } from '../lib/purchase-process'
 import { prepareApplication, submitApplication, type IntakeProduct } from '../lib/daechion/intake'
 import { withAutomationClient } from '../lib/daechion/database'
+import { payssamBillingProvider, type BillSendJob } from '../lib/daechion/payssam'
+import { newBillId } from '../lib/daechion/billing'
 
 const key = 'unit-test-only-not-a-real-credential'
 const input = { name: '검수학생', studentPhone: '01000000001' }
@@ -203,5 +205,65 @@ test('automation database never falls back to the retired account database', asy
     else process.env.DAECHION_DATABASE_URL = original
     if (retired === undefined) delete process.env.LECTURES_DATABASE_URL
     else process.env.LECTURES_DATABASE_URL = retired
+  }
+})
+
+const billingJob: BillSendJob = { billId: '90000000000000000001', amountWon: 1200,
+  recipientName: '검수학생', recipientPhone: '01000000003', productName: '검수 단기 강의' }
+function billingMock(respond: (url: string, init: RequestInit) => Response | Promise<Response>) {
+  const calls: { url: string; init: RequestInit }[] = []
+  const fetcher = (async (url: string | URL | Request, init: RequestInit = {}) => {
+    calls.push({ url: String(url), init }); return respond(String(url), init)
+  }) as typeof fetch
+  return { calls, provider: payssamBillingProvider({ apiKey: 'fake-test-key', member: 'fake-member', merchant: 'fake-merchant',
+    callbackUrl: 'https://web.invalid/api/daechion/billing/callback', fetcher, now: () => new Date('2026-11-06T16:00:00Z') }) }
+}
+
+test('billing bridge uses the legacy V1 hash and payer only; seven-day waiting does not invalidate the bill', async () => {
+  const hash = createHash('sha256').update('90000000000000000001,01000000003,1200').digest('hex')
+  const { provider, calls } = billingMock(() => Response.json({ code: '0000', bill_id: billingJob.billId, hash }))
+  assert.equal(await provider.send(billingJob), 'SENT')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'https://erp-api.payssam.kr/if/bill/send')
+  assert.equal(calls[0].init.redirect, 'error')
+  const payload = JSON.parse(String(calls[0].init.body))
+  assert.equal(payload.bill.hash, hash)
+  assert.equal(payload.bill.price, '1200')
+  assert.equal(payload.bill.phone, '01000000003')
+  assert.equal(payload.bill.expire_dt, '2026-12-07')
+  assert.equal(JSON.stringify(payload).includes('notion'), false)
+  assert.match(provider.accountId, /^[a-f0-9]{64}$/)
+  assert.equal(provider.accountId.includes('fake-test-key'), false)
+})
+
+test('billing ambiguity never retries a POST or accepts the wrong bill/account/hash', async () => {
+  for (const response of [
+    { code: '0000', bill_id: '90000000000000000002' },
+    { code: '0000', bill_id: billingJob.billId, member: 'different-account' },
+    { code: '0000', bill_id: billingJob.billId, apikey: 'different-key' },
+    { code: '0000', bill_id: billingJob.billId, hash: 'wrong-hash' },
+    { code: 'duplicate', bill_id: billingJob.billId }, {},
+  ]) {
+    const { provider, calls } = billingMock(() => Response.json(response))
+    assert.equal(await provider.send(billingJob), 'UNKNOWN'); assert.equal(calls.length, 1)
+  }
+  for (const respond of [() => { throw Error('private provider detail') }, () => new Response('not json'),
+    () => new Response('', { status: 302 }), () => new Response('', { status: 503 })]) {
+    const { provider, calls } = billingMock(respond)
+    assert.equal(await provider.send(billingJob), 'UNKNOWN'); assert.equal(calls.length, 1)
+  }
+})
+
+test('invalid bill parameters fail before transport and billing IDs stay distinct from legacy date IDs', async () => {
+  const { provider, calls } = billingMock(() => { throw Error('Unexpected request') })
+  for (const change of [{ billId: '9'.repeat(21) }, { billId: 'L' + 'a'.repeat(19) }, { amountWon: 0 }, { recipientPhone: 'bad' }]) {
+    assert.equal(await provider.send({ ...billingJob, ...change }), 'UNKNOWN')
+  }
+  assert.equal(calls.length, 0)
+  const ids = Array.from({ length: 100 }, newBillId)
+  assert.equal(new Set(ids).size, ids.length)
+  assert.ok(ids.every(id => /^9\d{19}$/.test(id)))
+  for (const callbackUrl of ['http://web.invalid/callback', 'https://web.invalid/api/lectures/callback', 'https://name:password@web.invalid/callback']) {
+    assert.throws(() => payssamBillingProvider({ apiKey: 'test', member: 'test', merchant: 'test', callbackUrl }), /INVALID_BILLING_CALLBACK/)
   }
 })

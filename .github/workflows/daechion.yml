@@ -15,9 +15,12 @@ on:
       - 'tests/legacy-auth-http.integration.mjs'
       - 'tests/daechion.test.ts'
       - 'tests/daechion-ledger.test.mjs'
+      - 'tests/daechion-worker.test.mjs'
+      - 'workers/daechion/**'
       - 'db/daechion/**'
       - 'scripts/daechion-*.cjs'
       - 'tsconfig.daechion-tests.json'
+      - 'tsconfig.daechion-worker.json'
       - '.github/workflows/daechion.yml'
       - 'package*.json'
   workflow_dispatch:
@@ -48,5 +51,6 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - run: npm run build:daechion-worker
       - run: npm run test:daechion
       - run: npm run test:legacy-auth
