@@ -151,7 +151,7 @@ test('real browser captures refreshed credentials and a cold provider reloads th
       const context=await browser.newContext(options),newPage=context.newPage.bind(context)
       context.newPage=async()=>{
         const page=await newPage()
-        await page.route('**/*',route=>route.fulfill({contentType:'text/html',body:'<h3>같은 이름</h3><button onclick="window.actions=1">일괄 학생 추가</button><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
+          await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h3>같은 이름</h3><button onclick="window.actions=1">일괄 학생 추가</button><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
         browser.fixturePage=page;return page
       }
       return context
