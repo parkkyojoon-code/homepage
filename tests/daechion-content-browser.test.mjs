@@ -2,6 +2,7 @@ import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
 import provider from '../workers/daechion/browser/provider.cjs'
+import contentVerify from '../scripts/daechion-content-verify.cjs'
 const require=createRequire(import.meta.url)
 const env={DAECHION_CONTENT_BROWSER_ENABLED:'true',DAECHION_CONTENT_BROWSER_VERIFIED:'true',DAECHION_TENANT_ID:'116',
   DAECHION_BROWSER_STORAGE_STATE:JSON.stringify({cookies:[],origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'fixture',value:'synthetic-only'}]}]})}
@@ -9,6 +10,20 @@ const input={studentId:77,lectureId:10,weeklyLectureIds:[100],studentName:'검�
 const api={me:async()=>({tenantId:116}),student:async()=>({id:77,name:'검수학생',studentPhoneNumber:'010-0000-0001',active:false}),
   students:async()=>[{id:77}],
   lectures:async()=>[{id:10,name:'같은 이름',opened:true,weeklyLectures:[{id:100,name:'차시 A'}]}]}
+
+test('real acceptance CLI is limited to explicit test targets and never enables normal runtime flags',async()=>{
+  const argv=['--student-id','77','--lecture-id','10','--verify']
+  const settings={...env,DAECHION_API_KEY:'synthetic',DAECHION_CONTENT_TEST_ONLY:'true',DAECHION_CONTENT_TEST_STUDENT_ID:'77',DAECHION_CONTENT_TEST_LECTURE_ID:'10',
+    DAECHION_CONTENT_BROWSER_ENABLED:'false',DAECHION_CONTENT_BROWSER_VERIFIED:'false'}
+  let calls=0
+  const accessFactory=()=>({ensureContentAccess:async target=>{calls++;await target.beforeWrite();return {...target,verified:true}}})
+  for(const changes of [{DAECHION_CONTENT_TEST_ONLY:'false'},{DAECHION_CONTENT_TEST_STUDENT_ID:'78'},{DAECHION_CONTENT_TEST_LECTURE_ID:'11'}])
+    await assert.rejects(contentVerify.verifyContent(argv,{...settings,...changes},{api,accessFactory}),/CONTENT_TEST_CONFIGURATION_REQUIRED/)
+  await assert.rejects(contentVerify.verifyContent([],settings,{api,accessFactory}),/CONTENT_TEST_ARGUMENTS_REQUIRED/)
+  assert.equal(calls,0)
+  assert.deepEqual(await contentVerify.verifyContent(argv,settings,{api,accessFactory}),{testOnly:true,verified:true,studentId:77,lectureId:10,weeklyLectureCount:1})
+  assert.equal(settings.DAECHION_CONTENT_BROWSER_ENABLED,'false');assert.equal(settings.DAECHION_CONTENT_BROWSER_VERIFIED,'false')
+})
 
 test('browser credentials and flags fail closed without launching a browser or exposing secrets',()=>{
   for(const settings of [{},{...env,DAECHION_CONTENT_BROWSER_ENABLED:'false'},{...env,DAECHION_CONTENT_BROWSER_VERIFIED:'false'}])

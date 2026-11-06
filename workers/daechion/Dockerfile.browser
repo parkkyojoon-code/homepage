@@ -19,6 +19,7 @@ COPY workers/daechion/browser/provider.cjs ./workers/daechion/browser/provider.c
 COPY workers/daechion/billing.cjs ./workers/daechion/billing.cjs
 COPY scripts/daechion-db.cjs scripts/daechion-migrations.cjs scripts/daechion-api-check.cjs ./scripts/
 COPY scripts/daechion-sheets-verify.cjs ./scripts/
+COPY scripts/daechion-content-verify.cjs ./scripts/
 COPY db/daechion ./db/daechion
 # Deployment never starts external writes by default, including in this image.
 CMD ["node", "workers/daechion/billing.cjs", "--check"]
