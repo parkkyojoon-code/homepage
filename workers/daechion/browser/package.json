@@ -1,0 +1,8 @@
+{
+  "name": "pkjmath-daechion-content-access",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "playwright": "1.65.0"
+  }
+}

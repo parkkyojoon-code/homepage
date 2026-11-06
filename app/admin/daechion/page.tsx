@@ -8,7 +8,7 @@ import { reviewReasonLabel } from '@/lib/daechion/review-reasons'
 interface Row {id:string;product_title:string;student_name:string;student_phone:string;payment_state:string;automation_state:string;notification_state:string;review_code:string|null;identity_status:string;version:string}
 interface Detail {app:{id:string;current_version:string;product_title:string;payment_state:string;automation_state:string;notification_state:string;review_code:string|null;submission:{studentName:string;studentPhone:string;guardianName:string;guardianPhone:string;payerPhone:string;studentHistory?:string;totalWon:number}};
   bills:{bill_id:string;amount_won:number;state:string;is_current:boolean;sent_at:string|null;due_at:string|null}[];
-  registrations:{lecture_id:string;student_id:string|null;state:string}[];identity:{status:string;student_id:string|null;reason_code:string|null};
+  registrations:{lecture_id:string;student_id:string|null;state:string;access_state:string;access_checked_at:string|null}[];identity:{status:string;student_id:string|null;reason_code:string|null};
   actions:{action:string;operator_name:string;reason:string;created_at:string}[];messages:{phone:string;state:string}[];jobs:{kind:string;state:string;attempts:number}[]}
 const labels:Record<string,string>={PAID:'결제 완료',PENDING:'대기',CANCELLED:'취소',UNKNOWN:'확인 필요',ACTIVE:'자동 처리',HOLD:'보류',REVOKED:'수동 회수 기록',CLOSED:'대기 종료',PASSED:'통과',REVIEW:'확인 필요',WAITING:'조회 대기',NOT_READY:'등록 완료 후 안내',SENT:'발송 접수 완료',FAILED:'중단/실패',DONE:'등록 완료',RUNNING:'처리 중',STOPPED:'보류',NEW:'신규',EXISTING:'기존'}
 const actions={HOLD:'자동 처리 보류',RESUME:'학생 확인 후 자동 등록 재개',MANUAL_COMPLETE:'대치온 수동 등록 완료 기록',REVOKED:'대치온 수동 회수 완료 기록',CONFIRM_PAYMENT:'결제선생 수동 확인 기록'}
@@ -67,7 +67,7 @@ export default function ReviewPage(){
       <div className={styles.heading}><h2>{detail.app.submission.studentName} · {detail.app.product_title}</h2><button disabled={busy} onClick={()=>open(detail.app.id)}>새로 불러오기</button></div>
       <dl className={styles.summary}>{[['학생 전화번호',detail.app.submission.studentPhone],['학부모 이름',detail.app.submission.guardianName],['보호자 로그인 번호',detail.app.submission.guardianPhone],['결제 번호',detail.app.submission.payerPhone],['기존·신규 선택',label(detail.app.submission.studentHistory)],['총 청구 금액',detail.app.submission.totalWon.toLocaleString()+'원'],['확인 사유',reviewReasonLabel(detail.app.review_code??detail.identity?.reason_code)]].map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value||'—'}</dd></div>)}</dl>
       <h3>청구·등록 상태</h3>{detail.bills.map(bill=><p key={bill.bill_id}>청구서 {bill.bill_id} · {bill.amount_won.toLocaleString()}원 · {label(bill.state)}</p>)}
-      {detail.registrations.map(item=><p key={item.lecture_id}>강의 ID {item.lecture_id} · 학생 ID {item.student_id??'미확정'} · {label(item.state)}</p>)}
+      {detail.registrations.map(item=><p key={item.lecture_id}>강의 ID {item.lecture_id} · 학생 ID {item.student_id??'미확정'} · {label(item.state)} · 콘텐츠 권한: {item.access_state==='VERIFIED'?'확인 완료':item.access_state==='MANUAL'?'수동 확인 기록':item.access_state==='PENDING'?'적용·확인 대기':'미확인'}{item.access_checked_at&&` (${date(item.access_checked_at)})`}</p>)}
       {detail.messages.map(item=><p key={item.phone}>안내 {item.phone} · {label(item.state)}</p>)}{detail.jobs.map((item,index)=><p key={index}>{item.kind==='SHEETS'?'Sheets 반영':'안내 작업'} · {label(item.state)}</p>)}
       <form onSubmit={submit} className={styles.action}>
         <fieldset disabled={busy||uncertain}><legend>확인·처리 기록</legend>

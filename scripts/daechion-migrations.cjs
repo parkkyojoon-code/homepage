@@ -8,7 +8,7 @@ function loadMigration(name = '001_initial.sql') {
   return { name, checksum: createHash('sha256').update(sql).digest('hex'),
     body: sql.replace(/^BEGIN;\s*/, '').replace(/COMMIT;\s*$/, '') }
 }
-const loadMigrations = () => ['001_initial.sql','002_identity.sql','003_admin_messages.sql'].map(loadMigration)
+const loadMigrations = () => ['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql'].map(loadMigration)
 async function status(client, migrations = loadMigrations()) {
   if (!Array.isArray(migrations)) migrations = [migrations]
   const { rows } = await client.query("SELECT to_regclass('daechion_automation.schema_migrations') AS tracked, to_regnamespace('daechion_automation') AS namespace")
@@ -26,6 +26,7 @@ async function checkSchema(client) {
   await client.query('SELECT request_key,submission,payment_state,automation_state,notification_state,version FROM daechion_automation.applications LIMIT 0')
   await client.query('SELECT bill_id,provider_account,revision,amount_won,due_at FROM daechion_automation.bills LIMIT 0')
   await client.query('SELECT lecture_id,student_id,state,lease_token,lease_until FROM daechion_automation.registrations LIMIT 0')
+  await client.query('SELECT access_state,access_targets,access_checked_at FROM daechion_automation.registrations LIMIT 0')
   await client.query('SELECT kind,event_version,state,available_at FROM daechion_automation.outbox LIMIT 0')
   await client.query('SELECT kind,actor,created_at FROM daechion_automation.events LIMIT 0')
   await client.query('SELECT status,detected_type,student_id,origin,reason_code,checked_at FROM daechion_automation.identity_checks LIMIT 0')

@@ -46,6 +46,12 @@
 
 웹에는 /api/daechion/payssam/notification 수신 경로를 배포한다. web-env.example의 DAECHION_PAYSSAM_CALLBACK_ENABLED=true와 비공개 PAYSSAM_API_KEY 설정 후에만 수신 확인 응답을 제공한다. 작업자의 DAECHION_BILLING_CALLBACK_URL은 이 경로의 HTTPS 주소여야 하며 다른 경로를 거부한다. 위조/중복/잘못된 금액의 콜백으로 결제·수강 상태를 바꿀 수 없다. 결제선생의 알림에는 API 키·결제 정보가 포함되므로 프록시/APM/웹 로그에서 요청 본문을 수집하지 않는다.
 
+## 관리자 화면을 통한 콘텐츠 권한 보완
+
+API 등록 성공과 콘텐츠 권한 확인을 분리했다. 등록 후 `access_state=PENDING`을 기록하고 선택적인 브라우저 실행부가 세 권한 적용과 각 파일의 실제 권한을 확인한 뒤에만 `VERIFIED`로 완료한다. 미확인 상태에서는 안내를 예약하거나 발송하지 않는다. 관리자의 외부 수동 완료 기록은 `MANUAL`로 구분한다. 기존 등록 행을 자동으로 검증 완료로 바꾸지 않는다.
+
+브라우저 실행은 `Dockerfile.browser` 이미지 및 별도 비공개 관리자 인증 연결이 필요하다. 기본 경량 이미지와 `--check` 동작은 유지한다. 실제 서버 검수 전에는 브라우저/권한 검증 플래그를 활성화하지 않는다. 자세한 인증 준비·검증 범위·보류 처리는 [콘텐츠 권한 보완](../../docs/daechion-content-access.md)을 따른다.
+
 ## 근거와 검증
 
 ## 별도 Sheets 발행

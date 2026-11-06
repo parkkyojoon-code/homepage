@@ -40,7 +40,9 @@ function runtime(env) {
     if (env.DAECHION_IDENTITY_LOOKUP_VERIFIED !== 'true') throw Error('IDENTITY_LOOKUP_VERIFICATION_REQUIRED')
     if (!env.DAECHION_API_KEY || !env.DAECHION_TENANT_ID?.trim()) throw Error('DAECHION_TENANT_CONFIGURATION_REQUIRED')
     const { daechionClient } = require('../../.daechion-worker-build/lib/daechion/client.js')
-    daechion = daechionClient({ apiKey: env.DAECHION_API_KEY })
+    const api = daechionClient({ apiKey: env.DAECHION_API_KEY })
+    const {browserAccessProvider}=require('./browser/provider.cjs')
+    daechion = {...api,...browserAccessProvider(env,api)}
     return daechion
   }
   return {

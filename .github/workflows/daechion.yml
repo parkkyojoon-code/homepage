@@ -21,6 +21,7 @@ on:
       - 'tests/daechion.test.ts'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
+      - 'tests/daechion-content-browser.test.mjs'
       - 'tests/daechion-sheets-verify.test.mjs'
       - 'tests/daechion-http.integration.mjs'
       - 'tests/daechion-browser-preview.mjs'
@@ -74,3 +75,7 @@ jobs:
             exit 1
           fi
           test "$(cat worker-default.log)" = "DAECHION_BILLING_WORKER_FAILED"
+      - name: Build optional browser worker image
+        run: docker build --file workers/daechion/Dockerfile.browser --tag pkjmath-daechion-browser:ci .
+      - name: Verify content rights UI with Chromium and synthetic data only
+        run: docker run --rm -e DAECHION_BROWSER_FIXTURE_TEST=true -v "$PWD/tests:/app/tests:ro" --entrypoint node pkjmath-daechion-browser:ci --test tests/daechion-content-browser.test.mjs

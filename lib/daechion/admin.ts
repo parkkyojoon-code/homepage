@@ -70,7 +70,7 @@ export async function applyAdminAction(client:LedgerClient,raw:unknown,student?:
         origin=CASE WHEN student_id=$2 AND origin='CREATED' THEN origin ELSE 'EXISTING' END,reason_code=NULL,checked_at=now(),manual_review_id=$3 WHERE application_id=$1`,[data.applicationId,data.studentId,data.requestKey])
       await client.query('DELETE FROM daechion_automation.identity_phone_claims WHERE application_id=$1',[data.applicationId])
       if(data.action==='MANUAL_COMPLETE'){
-        await client.query("UPDATE daechion_automation.registrations SET state='DONE',student_id=$2,completed_at=COALESCE(completed_at,now()),lease_token=NULL,lease_until=NULL,version=version+1 WHERE application_id=$1",[data.applicationId,data.studentId])
+        await client.query("UPDATE daechion_automation.registrations SET state='DONE',student_id=$2,completed_at=COALESCE(completed_at,now()),access_state='MANUAL',access_checked_at=now(),lease_token=NULL,lease_until=NULL,version=version+1 WHERE application_id=$1",[data.applicationId,data.studentId])
         await client.query("UPDATE daechion_automation.applications SET automation_state='HOLD',review_code='manual_access_recorded',manual_access_action=$2 WHERE id=$1",[data.applicationId,data.requestKey])
       }else{
         await client.query("UPDATE daechion_automation.registrations SET state='PENDING',lease_token=NULL,lease_until=NULL WHERE application_id=$1 AND state IN ('REVIEW','STOPPED') AND completed_at IS NULL",[data.applicationId])
@@ -98,7 +98,7 @@ export async function adminApplicationDetail(client:LedgerClient,id:string){
   const app=(await client.query('SELECT *,version::text AS current_version FROM daechion_automation.applications WHERE id=$1',[id])).rows[0]
   if(!app)return null
   const bills=(await client.query('SELECT bill_id,amount_won,state,is_current,sent_at,due_at,last_payment_state,checked_at FROM daechion_automation.bills WHERE application_id=$1 ORDER BY revision',[id])).rows
-  const registrations=(await client.query('SELECT lecture_id::text,student_id::text,state,completed_at FROM daechion_automation.registrations WHERE application_id=$1 ORDER BY lecture_id',[id])).rows
+  const registrations=(await client.query('SELECT lecture_id::text,student_id::text,state,completed_at,access_state,access_checked_at FROM daechion_automation.registrations WHERE application_id=$1 ORDER BY lecture_id',[id])).rows
   const identity=(await client.query('SELECT status,detected_type,student_id::text,origin,reason_code,checked_at,manual_review_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows[0]
   const actions=(await client.query('SELECT action,operator_name,reason,evidence,created_at FROM daechion_automation.admin_actions WHERE application_id=$1 ORDER BY created_at DESC LIMIT 50',[id])).rows
   const messages=(await client.query('SELECT phone,state,provider_message_id,accepted_at FROM daechion_automation.ready_receipts WHERE application_id=$1 ORDER BY phone',[id])).rows

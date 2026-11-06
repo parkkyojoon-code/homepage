@@ -18,5 +18,6 @@ COPY scripts/daechion-db.cjs scripts/daechion-migrations.cjs scripts/daechion-ap
 COPY scripts/daechion-sheets-verify.cjs ./scripts/
 COPY db/daechion ./db/daechion
 COPY workers/daechion/billing.cjs ./workers/daechion/billing.cjs
+COPY workers/daechion/browser/provider.cjs ./workers/daechion/browser/provider.cjs
 # First deployment only checks the schema. No billing/enrollment loop by default.
 CMD ["node", "workers/daechion/billing.cjs", "--check"]

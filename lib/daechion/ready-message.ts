@@ -31,7 +31,7 @@ async function eligible(client:LedgerClient,id:string) {
     JOIN daechion_automation.identity_checks i ON i.application_id=a.id WHERE a.id=$1`,[id])).rows[0]
   if(!row||row.payment_state!=='PAID'||row.identity_status!=='PASSED'||row.automation_state==='REVOKED')return null
   if(!row.manual_access_action&&(row.automation_state!=='ACTIVE'||row.review_code!==null))return null
-  if((await client.query("SELECT lecture_id FROM daechion_automation.registrations WHERE application_id=$1 AND state<>'DONE'",[id])).rows.length)return null
+  if((await client.query("SELECT lecture_id FROM daechion_automation.registrations WHERE application_id=$1 AND (state<>'DONE' OR access_state NOT IN ('VERIFIED','MANUAL'))",[id])).rows.length)return null
   if(!(await client.query('SELECT lecture_id FROM daechion_automation.registrations WHERE application_id=$1',[id])).rows.length)return null
   return row
 }

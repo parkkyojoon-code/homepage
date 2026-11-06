@@ -60,9 +60,9 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     await db.exec('CREATE TABLE legacy_students(id integer PRIMARY KEY); INSERT INTO legacy_students VALUES(7);')
     const migrator = migrationClient(db)
     await t.test('migration status is read-only; tracked application is repeatable and checksum protected',async()=>{
-      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql','003_admin_messages.sql']})
+      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql']})
       assert.equal((await db.query("SELECT to_regnamespace('daechion_automation') AS name")).rows[0].name,null)
-      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql','003_admin_messages.sql'])
+      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql','003_admin_messages.sql','004_content_access.sql'])
       assert.deepEqual(await migrations.migrate(migrator),[])
       await assert.rejects(migrations.migrate(migrator,{...migrations.loadMigration(),checksum:'changed'}),/AUTOMATION_MIGRATION_HISTORY_MISMATCH/)
     })
@@ -222,6 +222,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     const student = {id:77,name:input.studentName,studentPhoneNumber:'01000000001',parentPhoneNumber:'01000000002',active:false}
     const fakeDaechion = (overrides={}) => ({students:async()=>[student],student:async()=>student,
       createStudent:async()=>{throw Error('unexpected create')},
+      ensureContentAccess:async({beforeWrite,...target})=>{await beforeWrite();return {verified:true,...target}},
       enroll:async(lectureId,studentId)=>({lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}),...overrides})
 
     await t.test('a changed worker tenant cannot create accounts or grant the same numeric lecture ID in another academy',async()=>{
@@ -309,6 +310,27 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       await db.query("UPDATE daechion_automation.registrations SET lease_until=now()-interval '1 second' WHERE application_id=$1 AND state='RUNNING'",[crashed])
       assert.equal(await enrollment.claimEnrollment(client,crashed),null)
       assert.equal((await appRow(crashed)).review_code,'enrollment_unknown')
+    })
+    await t.test('API success without confirmed file rights is held with durable targets and no ready message or blind replay',async()=>{
+      for(const access of [undefined,async()=>{throw Error('private browser login expired')},async target=>({...target,verified:false}),async target=>({...target,verified:true,studentId:999})]){
+        const id=await paymentFixture();await observe(id);let calls=0
+        const ports={daechion:fakeDaechion({ensureContentAccess:access,enroll:async(lectureId,studentId)=>{calls++;return {lectureId,studentId,enrolledWeeklyLectureIds:[],alreadyEnrolledWeeklyLectureIds:[100]}}}),withClient:run=>run(client)}
+        assert.equal(await enrollment.enrollApplication(id,true,ports),'REVIEW')
+        assert.equal(await enrollment.enrollApplication(id,true,ports),'SKIPPED');assert.equal(calls,1)
+        const row=(await db.query("SELECT student_id::text,access_state,access_targets,completed_at FROM daechion_automation.registrations WHERE application_id=$1 AND lecture_id=10",[id])).rows[0]
+        assert.equal(row.student_id,'77');assert.equal(row.access_state,'PENDING');assert.deepEqual(row.access_targets,[100]);assert.equal(row.completed_at,null)
+        assert.equal((await appRow(id)).review_code,'content_access_unverified');assert.equal((await appRow(id)).notification_state,'NOT_READY')
+        assert.equal((await db.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE'",[id])).rows.length,0)
+      }
+    })
+    await t.test('a hold during browser rights application blocks completion even if the browser returns success',async()=>{
+      const id=await paymentFixture();await observe(id)
+      const ports={daechion:fakeDaechion({ensureContentAccess:async({beforeWrite,...target})=>{
+        await beforeWrite();await db.query("UPDATE daechion_automation.applications SET automation_state='HOLD',review_code='manual_hold' WHERE id=$1",[id]);return {verified:true,...target}
+      }}),withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'REVIEW')
+      assert.equal((await appRow(id)).review_code,'manual_hold');assert.equal((await appRow(id)).notification_state,'NOT_READY')
+      assert.equal((await db.query("SELECT access_state FROM daechion_automation.registrations WHERE application_id=$1 AND lecture_id=10",[id])).rows[0].access_state,'PENDING')
     })
     await t.test('history mismatch is stored for Sheets and blocks both account creation and registration',async()=>{
       const id = await paymentFixture('NEW');await observe(id);let writes = 0
@@ -703,12 +725,12 @@ test('identity migration upgrades tracked 001 without rewriting submissions or o
     await db.exec('CREATE TABLE daechion_automation.schema_migrations(name text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())')
     await db.query('INSERT INTO daechion_automation.schema_migrations(name,checksum) VALUES($1,$2)',[initial.name,initial.checksum])
     await db.query('INSERT INTO daechion_automation.applications(id,request_key,request_fingerprint,product_id,product_title,tuition_won,textbook_won,total_won,submission) VALUES($1,$2,$3,$4,$5,1000,200,1200,$6::jsonb)',[id,randomUUID(),'0'.repeat(64),input.productId,input.productTitle,JSON.stringify(input)])
-    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql']})
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql','004_content_access.sql']})
     const second = migrations.loadMigration('002_identity.sql')
     await assert.rejects(migrations.migrate(migrationClient(db),[initial,{...second,body:second.body+'\nSELECT * FROM missing_upgrade_table;'}]))
     assert.equal((await db.query("SELECT to_regclass('daechion_automation.identity_checks') AS name")).rows[0].name,null)
-    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql']})
-    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql','003_admin_messages.sql'])
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql','004_content_access.sql']})
+    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql','003_admin_messages.sql','004_content_access.sql'])
     assert.deepEqual((await db.query('SELECT submission FROM daechion_automation.applications WHERE id=$1',[id])).rows[0].submission,input)
     assert.deepEqual((await db.query('SELECT status,student_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows,[{status:'WAITING',student_id:null}])
     assert.equal((await db.query("SELECT checksum FROM daechion_automation.schema_migrations WHERE name='001_initial.sql'")).rows[0].checksum,initial.checksum)
