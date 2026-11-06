@@ -63,18 +63,37 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
    const r=await request('/api/admin/login',{method:'POST',body:{password:adminPassword}});assert.equal(r.status,200);adminCookie=cookieOf(r,'admin_session');
    const list=await request('/api/admin/students',{cookie:adminCookie});assert.equal(list.status,200);assert.deepEqual((await list.json()).map(s=>s.id),[student.id]);
   });
-  await t.test('existing student and admin cookies grant no lecture access',async()=>{
+  await t.test('retired APIs stay closed with existing student and admin cookies',async()=>{
    for(const route of ['/api/lectures/me','/api/lectures/orders','/api/lectures/admin/orders','/api/lectures/admin/accounts'])
-    assert.equal((await request(route,{cookie:`${studentCookie}; ${adminCookie}`})).status,401,route);
+    assert.equal((await request(route,{cookie:`${studentCookie}; ${adminCookie}`})).status,410,route);
   });
   await t.test('lecture cookie names grant no existing student or admin access',async()=>{
    const cookie='lectures_session=isolated-test; lectures_admin_session=isolated-test';
    for(const route of ['/api/my/profile','/api/admin/students'])assert.equal((await request(route,{cookie})).status,401,route);
   });
   await t.test('lecture logout does not clear existing login cookies',async()=>{
-   const cookie=`${studentCookie}; ${adminCookie}`;const r=await request('/api/lectures/auth/logout',{method:'POST',cookie,body:{}});assert.equal(r.status,200);
-   assert.deepEqual(r.headers.getSetCookie().map(s=>s.split('=')[0]),['lectures_session']);
+   const cookie=`${studentCookie}; ${adminCookie}`;const r=await request('/api/lectures/auth/logout',{method:'POST',cookie,body:{}});assert.equal(r.status,410);
+   assert.deepEqual(r.headers.getSetCookie(),[]);
    assert.equal((await request('/api/my/profile',{cookie})).status,200);assert.equal((await request('/api/admin/students',{cookie})).status,200);
+  });
+  await t.test('retirement blocks pages and all API methods without a database',async()=>{
+   for(const route of ['/lectures','/lectures/login','/lectures/checkout','/lectures/classroom','/admin/lectures','/admin/lectures/login']) {
+    const r=await request(route);assert.equal(r.status,410,route);
+    assert.equal(r.headers.get('Cache-Control'),'no-store');assert.match(r.headers.get('X-Robots-Tag'),/noindex/);
+    assert.match(await r.text(),/href="\/classes"/);
+   }
+   for(const method of ['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD']) {
+    for(const route of ['/api/lectures/catalog','/api/lectures/auth/register','/api/lectures/orders','/api/lectures/internal/billing/claim','/api/lectures/payssam/notification','/api/lectures/admin/catalog']) {
+     const r=await request(route,{method});assert.equal(r.status,410,`${method} ${route}`);
+     assert.deepEqual(r.headers.getSetCookie(),[]);
+     if(method!=='HEAD')assert.equal((await r.json()).code,'LECTURE_SERVICE_RETIRED');
+    }
+   }
+  });
+  await t.test('legacy public pages and class management work without lecture DB',async()=>{
+   for(const route of ['/','/classes','/my','/api/classes'])assert.equal((await request(route)).status,200,route);
+   const r=await request('/api/admin/classes',{cookie:adminCookie});assert.equal(r.status,200);assert.ok(Array.isArray(await r.json()));
+   const r2=await request('/api/apply',{method:'POST',body:{}});assert.equal(r2.status,400,'legacy application validation remains reachable');
   });
   await t.test('existing student logout clears only its own cookie',async()=>{
    const r=await request('/api/my/logout',{method:'POST',cookie:`${studentCookie}; ${adminCookie}`});assert.equal(r.status,200);

@@ -1,9 +1,10 @@
 name: Lecture service checks
 on:
   push:
-    branches: ['codex/lecture-service']
+    branches: ['codex/lecture-service', 'codex/retire-lecture-service']
   pull_request:
     paths:
+      - 'middleware.ts'
       - 'app/lectures/**'
       - 'app/admin/lectures/**'
       - 'app/api/lectures/**'
