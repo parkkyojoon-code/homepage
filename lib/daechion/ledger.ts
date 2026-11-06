@@ -14,6 +14,7 @@ export const applicationSnapshotSchema = z.object({
   studentName: z.string().trim().min(1), guardianName: z.string().trim().default(''),
   studentPhone: phone, payerPhone: phone, guardianPhone: optionalPhone,
   applicantType: z.enum(['STUDENT','GUARDIAN']),
+  studentHistory: z.enum(['EXISTING','NEW']).optional(),
   mode: z.enum(['ONLINE','OFFLINE']).default('ONLINE'), campus: z.string().trim().default(''),
   selectedSubjects: z.array(z.string().trim().min(1)).default([]),
   additionalInputs: z.array(z.object({ label: z.string().trim().min(1), value: z.string() })).default([]),
@@ -52,6 +53,7 @@ export async function createApplication(client: LedgerClient, requestKey: string
     for (const lectureId of binding.lectureIds) {
       await client.query('INSERT INTO daechion_automation.registrations(application_id,lecture_id) VALUES($1,$2)', [id, lectureId])
     }
+    await client.query('INSERT INTO daechion_automation.identity_checks(application_id) VALUES($1)', [id])
     await client.query("INSERT INTO daechion_automation.outbox(id,application_id,kind,event_version) VALUES($1,$2,'SHEETS',1)", [randomUUID(), id])
     await client.query("INSERT INTO daechion_automation.events(application_id,kind,actor) VALUES($1,'application_created','SYSTEM')", [id])
     await client.query('COMMIT')

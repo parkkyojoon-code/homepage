@@ -2,17 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { daechionClient, DaechionError, normalizePhone, type DaechionStudent, type StudentPort } from '../lib/daechion/client'
-import { resolveStudent } from '../lib/daechion/identity'
+import { resolveStudent as resolveDeclaredStudent } from '../lib/daechion/identity'
 import { productBinding } from '../lib/daechion/product-policy'
 import { parsePurchaseProcess, purchaseProcessOf } from '../lib/purchase-process'
 import { prepareApplication, submitApplication, type IntakeProduct } from '../lib/daechion/intake'
 import { withAutomationClient } from '../lib/daechion/database'
 import { payssamBillingProvider, approvalTimestamp, type BillSendJob } from '../lib/daechion/payssam'
 import { newBillId } from '../lib/daechion/billing'
+import { identityConditionalFormatting, SHEET_HEADERS } from '../lib/daechion/sheets-view'
 
 const key = 'unit-test-only-not-a-real-credential'
 const input = { name: '검수학생', studentPhone: '01000000001' }
 const existing: DaechionStudent = { id: 100, name: input.name, studentPhoneNumber: input.studentPhone, active: false }
+const resolveStudent = (port: StudentPort, raw: import('../lib/daechion/client').StudentInput, history: 'NEW'|'EXISTING' = 'EXISTING') => resolveDeclaredStudent(port, raw, {history})
 function mock(respond: (url: string, init: RequestInit) => Response | Promise<Response>) {
   const calls: { url: string; init: RequestInit }[] = []
   const fetcher = (async (url: string | URL | Request, init: RequestInit = {}) => {
@@ -83,18 +85,16 @@ test('a parent-only phone match does not enroll a different child', async () => 
 })
 test('multiple matches or an unlinked requested guardian require review', async () => {
   await assert.rejects(resolveStudent(port({ students: async () => [existing, { ...existing, id: 101 }] }), input), /student_identity_review/)
-  await assert.rejects(resolveStudent(port({ students: async () => [existing] }), { ...input, guardianPhone: '01000000002' }), /guardian_identity_review/)
+  await assert.rejects(resolveStudent(port({ students: async phone => phone === input.studentPhone ? [existing] : [] }), { ...input, guardianPhone: '01000000002' }), /guardian_identity_review/)
 })
-test('a create conflict is re-read and checked before reuse', async () => {
+test('a create conflict contradicts a NEW declaration and never silently reuses another account', async () => {
   let readId = 0
-  const result = await resolveStudent(port({ createStudent: async () => { throw new DaechionError('student_exists', 409, 100) },
-    student: async id => { readId = id; return existing } }), input)
-  assert.equal(readId, 100); assert.equal(result.created, false)
   await assert.rejects(resolveStudent(port({ createStudent: async () => { throw new DaechionError('student_exists', 409, 100) },
-    student: async () => ({ ...existing, name: '다른학생' }) }), input), /student_identity_review/)
+    student: async id => { readId = id; return existing } }), input, 'NEW'), /identity_declaration_mismatch/)
+  assert.equal(readId, 0)
 })
 test('a newly created matching student is marked as newly created', async () => {
-  assert.equal((await resolveStudent(port({ createStudent: async () => ({ ...existing, active: true }) }), input)).created, true)
+  assert.equal((await resolveStudent(port({ createStudent: async () => ({ ...existing, active: true }) }), input, 'NEW')).created, true)
 })
 test('registration uses current course sessions without dates or per-student permission changes', async () => {
   const { client, calls } = mock(() => Response.json({ lectureId: 10, studentId: 100, enrolledWeeklyLectureIds: [], alreadyEnrolledWeeklyLectureIds: [20] }))
@@ -133,6 +133,7 @@ const intakeProduct: IntakeProduct = {
 }
 const intakeBindings = [{ productId: intakeProduct.id, lectureIds: [10] }]
 const intakeInput = {
+  studentHistory: 'NEW',
   requestKey: randomUUID(), productId: intakeProduct.id, applicantType: 'STUDENT',
   studentName: ' 검수학생 ', guardianName: '검수보호자', studentPhone: '010-0000-0001',
   guardianPhone: '010-0000-0002', payerPhone: '010-0000-0003', mode: 'ONLINE',
@@ -300,4 +301,34 @@ test('identity lookup does not hide a differently named existing phone behind a 
     return Response.json([])
   })
   await transport.client.students(input.studentPhone,'')
+})
+
+test('either student or guardian phone makes a NEW declaration require review without creating an account', async () => {
+  const student = {...existing,parentPhoneNumber:'01000000002'}
+  for(const matching of ['student','guardian']) {
+    let creates = 0
+    const service = port({students:async phone => phone === (matching==='student'?input.studentPhone:'01000000002') ? [student] : [],
+      createStudent:async()=>{creates++;return student}})
+    await assert.rejects(resolveDeclaredStudent(service,{...input,guardianPhone:'01000000002'},{history:'NEW'}),/identity_declaration_mismatch/)
+    assert.equal(creates,0)
+  }
+  await assert.rejects(resolveDeclaredStudent(port(),input,{history:'EXISTING'}),/identity_declaration_mismatch/)
+  await assert.rejects(resolveDeclaredStudent(port(),input),/identity_declaration_missing/)
+})
+
+test('same ID from both phones is deduplicated; siblings sharing a guardian are never selected automatically', async () => {
+  const student = {...existing,parentPhoneNumber:'01000000002'}
+  const raw = {...input,guardianPhone:'01000000002'}
+  assert.equal((await resolveDeclaredStudent(port({students:async()=>[student]}),raw,{history:'EXISTING'})).student.id,student.id)
+  const sibling = {...student,id:101,name:'다른자녀',studentPhoneNumber:'01000000009'}
+  await assert.rejects(resolveDeclaredStudent(port({students:async phone=>phone===raw.studentPhone?[student]:[student,sibling]}),raw,{history:'EXISTING'}),/student_identity_review/)
+  await assert.rejects(resolveDeclaredStudent(port({students:async()=>{throw Error('network detail')}}),raw,{history:'NEW'}),/identity_lookup_failed/)
+})
+
+test('intake requires exactly one history declaration and Sheets colors follow exact status text', () => {
+  for(const value of [undefined,['NEW','EXISTING'],'',true]) assert.throws(()=>prepareApplication({...intakeInput,studentHistory:value},intakeProduct,intakeBindings),/INVALID_APPLICATION/)
+  const rules = identityConditionalFormatting(123)
+  assert.deepEqual(rules.map(row=>row.addConditionalFormatRule.rule.booleanRule.condition.values[0].userEnteredValue),['통과','확인 필요','조회 대기'])
+  assert.equal(rules[0].addConditionalFormatRule.rule.ranges[0].startColumnIndex,SHEET_HEADERS.indexOf('중복 수강생 확인'))
+  assert.equal(rules[1].addConditionalFormatRule.rule.booleanRule.format.textFormat.foregroundColor.red,1)
 })

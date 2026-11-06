@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { applicationSnapshotSchema, type LedgerClient, type ApplicationSnapshot } from './ledger'
 import { DaechionError, type StudentPort, type DaechionEnrollment } from './client'
-import { resolveStudent } from './identity'
+import { resolveStudent, IdentityReview } from './identity'
+import { claimIdentityPhones, releaseIdentityPhones, identityBinding, saveIdentity } from './identity-store'
 import { automationChanged, automationTransaction } from './automation-store'
 
 export interface EnrollmentPort extends StudentPort {
@@ -54,19 +55,20 @@ export async function claimEnrollment(client: LedgerClient, applicationId: strin
 
 // Check immediately before each external write. A provider operation cannot be
 // atomic with our DB; cancellation during the call is surfaced for manual review.
-export async function enrollmentFence(client: LedgerClient, job: EnrollmentJob) {
+export async function enrollmentFence(client: LedgerClient, job: EnrollmentJob, identityRequired = false) {
   const rows = await client.query(`SELECT r.application_id FROM daechion_automation.registrations r
     JOIN daechion_automation.applications a ON a.id=r.application_id
     WHERE a.id=$1 AND r.lecture_id=$2 AND r.lease_token=$3 AND r.state='RUNNING' AND r.lease_until>now()
     AND a.payment_state='PAID' AND a.automation_state='ACTIVE' AND a.review_code IS NULL
-    AND EXISTS(SELECT 1 FROM daechion_automation.bills b WHERE b.application_id=a.id AND b.is_current AND b.state='SENT' AND b.last_payment_state='PAID')`,
-  [job.applicationId, job.lectureId, job.token])
+    AND EXISTS(SELECT 1 FROM daechion_automation.bills b WHERE b.application_id=a.id AND b.is_current AND b.state='SENT' AND b.last_payment_state='PAID')
+    AND (NOT $4::boolean OR EXISTS(SELECT 1 FROM daechion_automation.identity_checks i WHERE i.application_id=a.id AND i.status='PASSED' AND i.student_id IS NOT NULL))`,
+  [job.applicationId, job.lectureId, job.token, identityRequired])
   return rows.rows.length > 0
 }
 
 export async function reviewEnrollment(client: LedgerClient, job: EnrollmentJob, reason: string) {
   const allowed = ['student_identity_review', 'guardian_identity_review', 'enrollment_unknown', 'enrollment_fence_changed']
-  const code = allowed.includes(reason) ? reason : 'enrollment_unknown'
+  const code = allowed.includes(reason) || /^identity_[a-z_]{1,48}$/.test(reason) ? reason : 'enrollment_unknown'
   return automationTransaction(client, async () => {
     const app = await lockApplication(client, job.applicationId)
     if (!app) return
@@ -84,7 +86,7 @@ export async function finishEnrollment(client: LedgerClient, job: EnrollmentJob,
   safeId(studentId)
   return automationTransaction(client, async () => {
     const app = await lockApplication(client, job.applicationId)
-    if (!app || !await enrollmentFence(client, job)) return false
+    if (!app || !await enrollmentFence(client, job, true)) return false
     const updated = await client.query(`UPDATE daechion_automation.registrations SET state='DONE',student_id=$4,completed_at=now(),
       lease_token=NULL,lease_until=NULL,version=version+1 WHERE application_id=$1 AND lecture_id=$2 AND state='RUNNING' AND lease_token=$3 RETURNING application_id`,
     [job.applicationId, job.lectureId, job.token, studentId])
@@ -104,17 +106,25 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
   if (!enabled) return 'DISABLED'
   const job = await ports.withClient(client => claimEnrollment(client, applicationId))
   if (!job) return 'SKIPPED'
-  const fence = async () => {
-    if (!await ports.withClient(client => enrollmentFence(client, job))) throw new DaechionError('enrollment_fence_changed')
+  const fence = async (identityRequired = false) => {
+    if (!await ports.withClient(client => enrollmentFence(client, job, identityRequired))) throw new DaechionError('enrollment_fence_changed')
   }
+  let createStarted = false, identitySaved = false
   try {
+    await ports.withClient(client => claimIdentityPhones(client, applicationId, job.snapshot))
+    const binding = await ports.withClient(client => identityBinding(client, applicationId))
     const guarded: StudentPort = {
       students: (phone, name) => ports.daechion.students(phone, name), student: id => ports.daechion.student(id),
-      createStudent: async input => { await fence(); return ports.daechion.createStudent(input) },
+      createStudent: async input => { await fence(); createStarted = true; return ports.daechion.createStudent(input) },
     }
     const resolved = await resolveStudent(guarded, { name: job.snapshot.studentName, studentPhone: job.snapshot.studentPhone,
-      ...(job.snapshot.guardianPhone ? { guardianPhone: job.snapshot.guardianPhone } : {}) })
-    await fence()
+      ...(job.snapshot.guardianPhone ? { guardianPhone: job.snapshot.guardianPhone } : {}) }, {
+      history: job.snapshot.studentHistory, knownCreatedId: binding?.origin === 'CREATED' ? binding.id : undefined,
+    })
+    await ports.withClient(client => saveIdentity(client, applicationId, {status:'PASSED', detected:resolved.detected, studentId:resolved.student.id, created:resolved.created}))
+    identitySaved = true
+    await ports.withClient(client => releaseIdentityPhones(client, applicationId))
+    await fence(true)
     const result = await ports.daechion.enroll(job.lectureId, resolved.student.id)
     if (result.lectureId !== job.lectureId || result.studentId !== resolved.student.id ||
       (!result.enrolledWeeklyLectureIds.length && !result.alreadyEnrolledWeeklyLectureIds.length)) throw new DaechionError('enrollment_result_mismatch')
@@ -122,6 +132,12 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
     await ports.withClient(client => reviewEnrollment(client, job, 'enrollment_fence_changed'))
     return 'REVIEW'
   } catch (error) {
+    if (error instanceof IdentityReview) {
+      await ports.withClient(client => saveIdentity(client, applicationId, {status:'REVIEW',detected:error.detected,reason:error.code}))
+    } else if (!identitySaved) {
+      await ports.withClient(client => saveIdentity(client, applicationId, {status:'REVIEW',detected:'UNKNOWN',reason:createStarted?'identity_create_unknown':'identity_lookup_failed'}))
+    }
+    if (!createStarted || identitySaved) await ports.withClient(client => releaseIdentityPhones(client, applicationId))
     // No blind retry after an unknown create/enroll. Claim expiry is also review,
     // so a lost DB acknowledgement cannot replay an external write.
     await ports.withClient(client => reviewEnrollment(client, job, error instanceof DaechionError ? error.code : 'enrollment_unknown'))

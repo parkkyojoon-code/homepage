@@ -10,11 +10,13 @@ import intake from '../.daechion-test-build/lib/daechion/intake.js'
 import billing from '../.daechion-test-build/lib/daechion/billing.js'
 import payment from '../.daechion-test-build/lib/daechion/payment.js'
 import enrollment from '../.daechion-test-build/lib/daechion/enrollment.js'
+import identityStore from '../.daechion-test-build/lib/daechion/identity-store.js'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
 const { applicationSheetRow, SHEET_HEADERS, sheetsDestination } = sheetView
 const input = {
+  studentHistory:'EXISTING',
   productId: 'new-short-course', productTitle: '신규 단기 강의', tuitionWon: 1000, textbookWon: 200, totalWon: 1200,
   studentName: '검수학생', guardianName: '검수학부모', studentPhone: '010-0000-0001', payerPhone: '010-0000-0003',
   guardianPhone: '010-0000-0002', applicantType: 'GUARDIAN', mode: 'ONLINE', campus: '', selectedSubjects: ['미적'],
@@ -52,9 +54,9 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     await db.exec('CREATE TABLE legacy_students(id integer PRIMARY KEY); INSERT INTO legacy_students VALUES(7);')
     const migrator = migrationClient(db)
     await t.test('migration status is read-only; tracked application is repeatable and checksum protected',async()=>{
-      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql']})
+      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql']})
       assert.equal((await db.query("SELECT to_regnamespace('daechion_automation') AS name")).rows[0].name,null)
-      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql'])
+      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql'])
       assert.deepEqual(await migrations.migrate(migrator),[])
       await assert.rejects(migrations.migrate(migrator,{...migrations.loadMigration(),checksum:'changed'}),/AUTOMATION_MIGRATION_HISTORY_MISMATCH/)
     })
@@ -79,7 +81,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     await t.test('intake persists server-derived application and targets atomically without claiming billing success',async()=>{
       const product = {id:'intake-course',name:'신규 접수 검수',visible:true,purchaseProcess:'PROCESS_2',
         modes:{online:{enabled:true,price:1000},offline:{enabled:false,price:0}},textbook:{included:true,price:200}}
-      const request = {requestKey:randomUUID(),productId:product.id,applicantType:'STUDENT',studentName:'검수학생',
+      const request = {requestKey:randomUUID(),productId:product.id,applicantType:'STUDENT',studentHistory:'NEW',studentName:'검수학생',
         guardianName:'검수학부모',studentPhone:'01000000001',payerPhone:'01000000003',guardianPhone:'01000000002',
         mode:'ONLINE',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
       const ports = {loadProduct:()=>product,bindings:[{productId:product.id,lectureIds:[30]}],withClient:run=>run(client)}
@@ -191,7 +193,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:20000,
         env:{...process.env,DAECHION_DATABASE_URL:process.env.DAECHION_TEST_POSTGRES_URL,
           DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_BILLING_SEND_ENABLED:'true',
-          DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_API_KEY:'fake-key',DAECHION_TENANT_ID:'fake-tenant',
+          DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_API_KEY:'fake-key',DAECHION_TENANT_ID:'fake-tenant',
           PAYSSAM_API_KEY:'fake-test-key',PAYSSAM_MEMBER:'fake-member',PAYSSAM_MERCHANT:'fake-merchant',
           DAECHION_BILLING_CALLBACK_URL:'https://web.invalid/api/daechion/billing/callback'},
       })
@@ -199,8 +201,8 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.deepEqual(JSON.parse(result.stdout),{ready:true,schema:'daechion_automation',sending:false})
       assert.equal((await db.query('SELECT count(*)::text AS n FROM daechion_automation.bills')).rows[0].n,before)
     })
-    const paymentFixture = async () => {
-      const result = await make()
+    const paymentFixture = async (studentHistory='EXISTING') => {
+      const result = await make(undefined,{...input,studentHistory})
       await billing.sendApplicationBill(result.id,true,{provider:{accountId:'payment-test',send:async()=> 'SENT'},withClient:run=>run(client)})
       return result.id
     }
@@ -261,7 +263,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       const unpaid = (await make()).id
       const forbidden = fakeDaechion({students:async()=>{throw Error('must not lookup unpaid')}})
       assert.equal(await enrollment.enrollApplication(unpaid,true,{daechion:forbidden,withClient:run=>run(client)}),'SKIPPED')
-      const id = await paymentFixture();await observe(id)
+      const id = await paymentFixture('NEW');await observe(id)
       let created = null, createCalls = 0, enrollCalls = 0
       const daechion = fakeDaechion({students:async()=>created?[created]:[],createStudent:async data=>{
         createCalls++;assert.deepEqual(data,{name:input.studentName,studentPhone:'01000000001',guardianPhone:'01000000002'});created=student;return student
@@ -290,6 +292,54 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       await db.query("UPDATE daechion_automation.registrations SET lease_until=now()-interval '1 second' WHERE application_id=$1 AND state='RUNNING'",[crashed])
       assert.equal(await enrollment.claimEnrollment(client,crashed),null)
       assert.equal((await appRow(crashed)).review_code,'enrollment_unknown')
+    })
+    await t.test('history mismatch is stored for Sheets and blocks both account creation and registration',async()=>{
+      const id = await paymentFixture('NEW');await observe(id);let writes = 0
+      const ports = {daechion:fakeDaechion({createStudent:async()=>{writes++;return student},enroll:async()=>{writes++;throw Error('must not enroll')}}),withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'REVIEW');assert.equal(writes,0)
+      const check = (await db.query('SELECT status,detected_type,reason_code FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows[0]
+      assert.deepEqual(check,{status:'REVIEW',detected_type:'EXISTING',reason_code:'identity_declaration_mismatch'})
+      const view = {id,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),snapshot:applicationSnapshotSchema.parse({...input,studentHistory:'NEW'}),
+        billingState:'SENT',allBillIds:[],paymentState:'PAID',lectureIds:[10],registrationState:'REVIEW',notificationState:'NOT_READY',
+        identity:{status:check.status,detected:check.detected_type,reason:check.reason_code}}
+      const row = Object.fromEntries(SHEET_HEADERS.map((key,index)=>[key,applicationSheetRow(view)[index]]))
+      assert.equal(row['중복 수강생 확인'],'확인 필요');assert.match(row['중복 확인 사유'],/다름/)
+      assert.throws(()=>applicationSheetRow({...view,identity:{status:'PASSED',detected:'NEW'}}),/Invalid identity pass/)
+    })
+    await t.test('phone claims prevent overlapping applications and a failed multi-phone claim rolls back fully',async()=>{
+      const first = await make(),second = await make()
+      await identityStore.claimIdentityPhones(client,first.id,applicationSnapshotSchema.parse(input))
+      await assert.rejects(identityStore.claimIdentityPhones(client,second.id,applicationSnapshotSchema.parse({...input,studentPhone:'01000000000'})),/identity_phone_busy/)
+      assert.equal((await db.query('SELECT phone FROM daechion_automation.identity_phone_claims WHERE application_id=$1',[second.id])).rows.length,0)
+      await identityStore.releaseIdentityPhones(client,first.id)
+      await identityStore.claimIdentityPhones(client,second.id,applicationSnapshotSchema.parse(input))
+      await identityStore.releaseIdentityPhones(client,second.id)
+    })
+    await t.test('unknown student creation keeps phone claims and makes another overlapping application require review',async()=>{
+      const first = await paymentFixture('NEW');await observe(first);let creates = 0
+      const ports = {daechion:fakeDaechion({students:async()=>[],createStudent:async()=>{creates++;throw Error('unknown creation')}}),withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(first,true,ports),'REVIEW')
+      const second = await paymentFixture('NEW');await observe(second)
+      assert.equal(await enrollment.enrollApplication(second,true,ports),'REVIEW');assert.equal(creates,1)
+      assert.equal((await db.query('SELECT status,reason_code FROM daechion_automation.identity_checks WHERE application_id=$1',[first])).rows[0].reason_code,'identity_create_unknown')
+      assert.equal((await db.query('SELECT reason_code FROM daechion_automation.identity_checks WHERE application_id=$1',[second])).rows[0].reason_code,'identity_phone_busy')
+      assert.equal((await db.query('SELECT phone FROM daechion_automation.identity_phone_claims WHERE application_id=$1',[first])).rows.length,2)
+      // Test cleanup only. Production must reconcile the unknown write before releasing.
+      await identityStore.releaseIdentityPhones(client,first)
+    })
+    await t.test('parallel PostgreSQL applications cannot both claim the same login numbers',{skip:!db.isPostgres},async()=>{
+      const apps = [await make(),await make()]
+      const clients = apps.map(()=>new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL}))
+      try {
+        await Promise.all(clients.map(item=>item.connect()))
+        const results = await Promise.allSettled(clients.map((item,index)=>identityStore.claimIdentityPhones(item,apps[index].id,applicationSnapshotSchema.parse(input))))
+        assert.equal(results.filter(item=>item.status==='fulfilled').length,1)
+        assert.equal(results.filter(item=>item.status==='rejected').length,1)
+        assert.equal((await db.query('SELECT DISTINCT application_id FROM daechion_automation.identity_phone_claims WHERE application_id=ANY($1::uuid[])',[apps.map(item=>item.id)])).rows.length,1)
+      } finally {
+        await Promise.all(clients.map(item=>item.end()))
+        for(const app of apps) await identityStore.releaseIdentityPhones(client,app.id)
+      }
     })
     await t.test('cancellation during external enrollment suppresses completion and preserves manual revocation policy',async()=>{
       const id = await paymentFixture();await observe(id)
@@ -386,4 +436,24 @@ test('migration failure rolls back new DDL and preserves legacy data',{timeout:9
     await assert.rejects(migrations.migrate(migrationClient(db)),/UNTRACKED_AUTOMATION_SCHEMA/)
     assert.ok((await db.query("SELECT to_regclass('daechion_automation.existing_record') AS name")).rows[0].name)
   } finally { await db.close() }
+})
+
+test('identity migration upgrades tracked 001 without rewriting submissions or old schema checksums',{timeout:90000},async()=>{
+  const db = await database()
+  try {
+    const initial = migrations.loadMigration(),id = randomUUID()
+    await db.exec(initial.body)
+    await db.exec('CREATE TABLE daechion_automation.schema_migrations(name text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())')
+    await db.query('INSERT INTO daechion_automation.schema_migrations(name,checksum) VALUES($1,$2)',[initial.name,initial.checksum])
+    await db.query('INSERT INTO daechion_automation.applications(id,request_key,request_fingerprint,product_id,product_title,tuition_won,textbook_won,total_won,submission) VALUES($1,$2,$3,$4,$5,1000,200,1200,$6::jsonb)',[id,randomUUID(),'0'.repeat(64),input.productId,input.productTitle,JSON.stringify(input)])
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql']})
+    const second = migrations.loadMigration('002_identity.sql')
+    await assert.rejects(migrations.migrate(migrationClient(db),[initial,{...second,body:second.body+'\nSELECT * FROM missing_upgrade_table;'}]))
+    assert.equal((await db.query("SELECT to_regclass('daechion_automation.identity_checks') AS name")).rows[0].name,null)
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql']})
+    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql'])
+    assert.deepEqual((await db.query('SELECT submission FROM daechion_automation.applications WHERE id=$1',[id])).rows[0].submission,input)
+    assert.deepEqual((await db.query('SELECT status,student_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows,[{status:'WAITING',student_id:null}])
+    assert.equal((await db.query("SELECT checksum FROM daechion_automation.schema_migrations WHERE name='001_initial.sql'")).rows[0].checksum,initial.checksum)
+  } finally {await db.close()}
 })

@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'lib/daechion/**'
+      - 'components/daechion/**'
       - 'lib/purchase-process.ts'
       - 'lib/classes.ts'
       - 'app/admin/classes/**'

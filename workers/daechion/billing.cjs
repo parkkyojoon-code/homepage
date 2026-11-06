@@ -12,6 +12,7 @@ function runtime(env) {
   let daechion, tenantChecked = false
   if (env.DAECHION_ENROLLMENT_ENABLED === 'true') {
     if (env.DAECHION_PAYMENT_READ_ENABLED !== 'true') throw Error('PAYMENT_READ_REQUIRED_FOR_ENROLLMENT')
+    if (env.DAECHION_IDENTITY_LOOKUP_VERIFIED !== 'true') throw Error('IDENTITY_LOOKUP_VERIFICATION_REQUIRED')
     if (!env.DAECHION_API_KEY || !env.DAECHION_TENANT_ID?.trim()) throw Error('DAECHION_TENANT_CONFIGURATION_REQUIRED')
     const { daechionClient } = require('../../.daechion-worker-build/lib/daechion/client.js')
     daechion = daechionClient({ apiKey: env.DAECHION_API_KEY })
