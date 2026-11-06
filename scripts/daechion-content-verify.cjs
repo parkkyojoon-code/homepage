@@ -1,4 +1,5 @@
-// Explicit, single-target acceptance check. No DB, billing, SMS or worker loop.
+// Explicit single-target content check. DB stores encrypted authentication only;
+// no application/payment mutations, billing, SMS or worker loop.
 async function verifyContent(argv,env,{api,accessFactory,onStage=()=>{}}={}){
   onStage('CONFIGURATION')
   if(argv.length!==5||argv[0]!=='--student-id'||argv[2]!=='--lecture-id'||argv[4]!=='--verify'||

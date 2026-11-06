@@ -42,18 +42,19 @@ export async function queueReadyMessage(client:LedgerClient,id:string,version:st
   await client.query("UPDATE daechion_automation.applications SET notification_state='PENDING' WHERE id=$1",[id])
   await client.query("INSERT INTO daechion_automation.outbox(id,application_id,kind,event_version) VALUES($1,$2,'READY_MESSAGE',$3)",[randomUUID(),id,version])
 }
-export async function sendOneReadyMessage(ports:{provider:ReadyMessageProvider;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
+export async function sendOneReadyMessage(ports:{applicationId?:string;provider:ReadyMessageProvider;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
+  if(ports.applicationId!==undefined)z.string().uuid().parse(ports.applicationId)
   const job=await ports.withClient(client=>automationTransaction(client,async()=>{
-    const stale=(await client.query("SELECT application_id FROM daechion_automation.outbox WHERE kind='READY_MESSAGE' AND state='RUNNING' AND lease_until<=now() ORDER BY application_id")).rows
+    const stale=(await client.query("SELECT application_id FROM daechion_automation.outbox WHERE kind='READY_MESSAGE' AND state='RUNNING' AND lease_until<=now() AND ($1::uuid IS NULL OR application_id=$1) ORDER BY application_id",[ports.applicationId??null])).rows
     for(const item of stale){
       await client.query('SELECT id FROM daechion_automation.applications WHERE id=$1 FOR UPDATE',[item.application_id])
       const changed=await client.query("UPDATE daechion_automation.outbox SET state='UNKNOWN',lease_token=NULL,lease_until=NULL WHERE application_id=$1 AND kind='READY_MESSAGE' AND state='RUNNING' AND lease_until<=now() RETURNING id",[item.application_id])
       if(changed.rows.length){await client.query("UPDATE daechion_automation.applications SET notification_state='UNKNOWN' WHERE id=$1",[item.application_id]);await automationChanged(client,String(item.application_id),'ready_message_unknown','ENROLLMENT_WORKER')}
     }
-    const app=(await client.query(`SELECT a.id FROM daechion_automation.applications a WHERE a.notification_state='PENDING'
+    const app=(await client.query(`SELECT a.id FROM daechion_automation.applications a WHERE a.notification_state='PENDING' AND ($1::uuid IS NULL OR a.id=$1)
       AND EXISTS(SELECT 1 FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='READY_MESSAGE' AND o.state='PENDING')
       AND NOT EXISTS(SELECT 1 FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='READY_MESSAGE' AND o.state IN ('RUNNING','UNKNOWN','DONE'))
-      ORDER BY a.updated_at,a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED`)).rows[0]
+      ORDER BY a.updated_at,a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED`,[ports.applicationId??null])).rows[0]
     if(!app)return null
     const allowed=await eligible(client,String(app.id))
     if(!allowed){await client.query("UPDATE daechion_automation.outbox SET state='FAILED' WHERE application_id=$1 AND kind='READY_MESSAGE' AND state='PENDING'",[app.id]);await client.query("UPDATE daechion_automation.applications SET notification_state='FAILED' WHERE id=$1",[app.id]);await automationChanged(client,String(app.id),'ready_message_stopped','ENROLLMENT_WORKER');return null}

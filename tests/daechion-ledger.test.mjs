@@ -19,6 +19,7 @@ import adminHttp from '../.daechion-test-build/lib/daechion/admin-http.js'
 import readyMessage from '../.daechion-test-build/lib/daechion/ready-message.js'
 import sessionStore from '../workers/daechion/browser/session-store.cjs'
 import migrations from '../scripts/daechion-migrations.cjs'
+import acceptanceWorker from '../workers/daechion/billing.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
 const { applicationSheetRow, SHEET_HEADERS, sheetsDestination } = sheetView
@@ -587,6 +588,62 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       const cross=new Request(request.url,{method:'POST',headers:{Origin:'https://wrong.invalid','Content-Type':'application/json'},body:'{}'})
       assert.equal((await adminHttp.adminPost(cross,{...ports,authed:async()=>true})).status,403);assert.equal(connections,0)
     })
+    await t.test('scoped acceptance validates the immutable recipient, amount and exact lecture targets before execution',async()=>{
+      const {id}=await make(),row=await appRow(id)
+      const env={DAECHION_ACCEPTANCE_TEST_ONLY:'true',DAECHION_ACCEPTANCE_APPLICATION_ID:id,DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:row.request_fingerprint,
+        DAECHION_ACCEPTANCE_LECTURE_IDS:JSON.stringify(bindings[0].lectureIds)}
+      await acceptanceWorker.checkAcceptanceTarget(id,env,run=>run(client))
+      await assert.rejects(acceptanceWorker.checkAcceptanceTarget(id,{...env,DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:'a'.repeat(64)},run=>run(client)),/ACCEPTANCE_TARGET_MISMATCH/)
+      await assert.rejects(acceptanceWorker.checkAcceptanceTarget(id,{...env,DAECHION_ACCEPTANCE_LECTURE_IDS:'[999]'},run=>run(client)),/ACCEPTANCE_TARGET_MISMATCH/)
+      await db.query("UPDATE daechion_automation.applications SET submission=jsonb_set(submission,'{payerPhone}','\"01099999999\"') WHERE id=$1",[id])
+      await assert.rejects(acceptanceWorker.checkAcceptanceTarget(id,env,run=>run(client)),/ACCEPTANCE_TARGET_MISMATCH/)
+      await db.query('UPDATE daechion_automation.applications SET submission=$2 WHERE id=$1',[id,JSON.stringify(row.submission)])
+      await db.query('UPDATE daechion_automation.registrations SET lecture_id=999 WHERE application_id=$1 AND lecture_id=$2',[id,bindings[0].lectureIds[0]])
+      await assert.rejects(acceptanceWorker.checkAcceptanceTarget(id,env,run=>run(client)),/ACCEPTANCE_TARGET_MISMATCH/)
+    })
+    await t.test('single-application worker drives billing, payment, grants and messaging without processing older applications',async()=>{
+      const pending=await make(),paid=await paymentFixture();await observe(paid)
+      const target=await make(),row=await appRow(target.id),calls={send:0,read:0,enroll:0,message:0}
+      const env={DAECHION_ACCEPTANCE_TEST_ONLY:'true',DAECHION_ACCEPTANCE_APPLICATION_ID:target.id,DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:row.request_fingerprint,
+        DAECHION_ACCEPTANCE_LECTURE_IDS:JSON.stringify(bindings[0].lectureIds),DAECHION_ACCESS_POLICY_VERIFIED:'true',DAECHION_PAYMENT_READ_ENABLED:'true',
+        DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_TENANT_ID:'test-only',DAECHION_API_KEY:'synthetic-only',DAECHION_CONTENT_TEST_LECTURE_ID:'10'}
+      const providers={payment:{accountId:'payment-test',send:async job=>{calls.send++;assert.equal(job.recipientPhone,'01000000003');return 'SENT'},read:async billId=>{
+        calls.read++;const bill=(await db.query('SELECT application_id,sent_at FROM daechion_automation.bills WHERE bill_id=$1',[billId])).rows[0]
+        assert.equal(bill.application_id,target.id);return {state:'F',billId,amountWon:1200,paidAt:new Date(new Date(bill.sent_at).getTime()+1000).toISOString()}
+      }},daechion:fakeDaechion({me:async()=>({tenantId:'test-only'}),refreshSession:async()=>({refreshed:true}),enroll:async(lectureId,studentId)=>{
+        calls.enroll++;return {lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}
+      }}),message:{send:async value=>{calls.message++;return {accepted:true,messageId:'pipeline-'+value.receiptId}}}}
+      const service=acceptanceWorker.runtime(env,{withClient:run=>run(client),providers})
+      const options={applicationId:target.id,paymentsEnabled:true,enrollmentEnabled:true,readyMessagesEnabled:true}
+      const before=(await db.query('SELECT * FROM daechion_automation.applications WHERE id IN ($1,$2) ORDER BY id',[pending.id,paid])).rows
+      await service.cycle(true,options);await service.cycle(true,options)
+      assert.equal((await appRow(target.id)).payment_state,'PAID');assert.equal((await appRow(target.id)).notification_state,'SENT')
+      assert.deepEqual(calls,{send:1,read:2,enroll:2,message:2})
+      assert.deepEqual((await db.query('SELECT * FROM daechion_automation.applications WHERE id IN ($1,$2) ORDER BY id',[pending.id,paid])).rows,before)
+      assert.equal(Number((await db.query('SELECT count(*) AS n FROM daechion_automation.bills WHERE application_id=$1',[pending.id])).rows[0].n),0)
+      assert.equal(Number((await db.query('SELECT count(*) AS n FROM daechion_automation.ready_receipts WHERE application_id=$1',[paid])).rows[0].n),0)
+      const prior={...calls}
+      const wrong=acceptanceWorker.runtime({...env,DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:'a'.repeat(64)},{withClient:run=>run(client),providers})
+      await assert.rejects(wrong.cycle(true,options),/ACCEPTANCE_TARGET_MISMATCH/)
+      await assert.rejects(service.cycle(true),/ACCEPTANCE_TARGET_REQUIRED|Invalid/)
+      assert.deepEqual(calls,prior)
+    })
+    await t.test('targeted LMS processing leaves unrelated pending and expired jobs untouched',async()=>{
+      const first=await paymentFixture(),target=await paymentFixture(),expired=await paymentFixture()
+      const ports={daechion:fakeDaechion(),withClient:run=>run(client)}
+      for(const id of [first,target,expired]){await observe(id);await enrollment.enrollApplication(id,true,ports);await enrollment.enrollApplication(id,true,ports)}
+      await db.query("UPDATE daechion_automation.outbox SET state='RUNNING',lease_token=$2,lease_until=now()-interval '1 minute' WHERE application_id=$1 AND kind='READY_MESSAGE'",[expired,randomUUID()])
+      const before=(await db.query("SELECT id,state,lease_token,lease_until FROM daechion_automation.outbox WHERE application_id IN ($1,$2) AND kind='READY_MESSAGE' ORDER BY id",[first,expired])).rows
+      const calls=[]
+      const sms={applicationId:target,withClient:run=>run(client),provider:{send:async value=>{calls.push(value);return {accepted:true,messageId:'scoped-'+value.receiptId}}}}
+      assert.equal(await readyMessage.sendOneReadyMessage(sms),'SENT')
+      assert.equal(await readyMessage.sendOneReadyMessage(sms),'SKIPPED');assert.equal(calls.length,2)
+      assert.equal((await appRow(first)).notification_state,'PENDING')
+      assert.deepEqual((await db.query("SELECT id,state,lease_token,lease_until FROM daechion_automation.outbox WHERE application_id IN ($1,$2) AND kind='READY_MESSAGE' ORDER BY id",[first,expired])).rows,before)
+      let opened=0
+      await assert.rejects(readyMessage.sendOneReadyMessage({...sms,applicationId:'',withClient:async()=>{opened++;throw Error('Must not query')}}))
+      assert.equal(opened,0)
+    })
     await t.test('LMS sends only after all grants, only to student/guardian, and never twice',async()=>{
       await db.query("UPDATE daechion_automation.outbox SET state='FAILED',lease_token=NULL,lease_until=NULL WHERE kind='READY_MESSAGE' AND state IN ('PENDING','RUNNING')")
       await db.query("UPDATE daechion_automation.applications SET notification_state='FAILED' WHERE notification_state='PENDING'")
@@ -696,6 +753,19 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED')
       assert.equal((await appRow(created.id)).payment_state,'PENDING')
       assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[created.id])).rows[0].state,'UNKNOWN')
+    })
+    await t.test('targeted Sheets publication does not claim or expire another application',async()=>{
+      const first=await make(),target=await make(),expired=await make()
+      await db.query("UPDATE daechion_automation.outbox SET state='RUNNING',lease_token=$2,lease_until=now()-interval '1 minute' WHERE application_id=$1 AND kind='SHEETS'",[expired.id,randomUUID()])
+      const before=(await db.query('SELECT id,state,lease_token,lease_until FROM daechion_automation.outbox WHERE application_id IN ($1,$2) ORDER BY id',[first.id,expired.id])).rows
+      let reads=0
+      const ports={applicationId:target.id,api:{call:async()=>{reads++;throw Error('SHEETS_HTTP_403')}},target:{spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7},withClient:run=>run(client)}
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'UNKNOWN')
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED');assert.equal(reads,1)
+      assert.deepEqual((await db.query('SELECT id,state,lease_token,lease_until FROM daechion_automation.outbox WHERE application_id IN ($1,$2) ORDER BY id',[first.id,expired.id])).rows,before)
+      let opened=0
+      await assert.rejects(sheetsWorker.syncOneApplication({...ports,applicationId:'',withClient:async()=>{opened++;throw Error('Must not query')}}))
+      assert.equal(opened,0)
     })
     await t.test('transient Sheets reads retry after a delay without touching financial state or repeating a write',async()=>{
       await db.query("UPDATE daechion_automation.outbox SET state='DONE',lease_token=NULL,lease_until=NULL WHERE kind='SHEETS'")

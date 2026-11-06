@@ -4,6 +4,25 @@ import { spawnSync } from 'node:child_process'
 import worker from '../workers/daechion/billing.cjs'
 import apiCheck from '../scripts/daechion-api-check.cjs'
 
+test('single-application acceptance refuses unapproved targets and cannot fall back to the global loop',async()=>{
+  const id='10000000-0000-4000-8000-000000000001'
+  const env={DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_ACCEPTANCE_TEST_ONLY:'true',DAECHION_ACCEPTANCE_APPLICATION_ID:id,
+    DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:'a'.repeat(64),DAECHION_ACCEPTANCE_LECTURE_IDS:'[10]'}
+  let calls=0
+  const makeRuntime=()=>{calls++;return {check:async()=>{},cycle:async(send,options)=>{assert.equal(send,false);assert.equal(options.applicationId,id);return {}}}}
+  for(const argv of [[],['--once'],['--application-id',id],['--once','--application-id',id,'--check'],
+    ['--once','--application-id','10000000-0000-4000-8000-000000000002'],['--once','--application-id',id,'--application-id',id]]){
+    await assert.rejects(worker.main({argv,env,makeRuntime,write:()=>{}}))
+  }
+  for(const changed of [{DAECHION_ACCEPTANCE_TEST_ONLY:'false'},{DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:''},{DAECHION_ACCEPTANCE_LECTURE_IDS:'[]'},
+    {DAECHION_ACCEPTANCE_LECTURE_IDS:'[10,10]'},{DAECHION_ACCEPTANCE_LECTURE_IDS:'["10"]'}]){
+    await assert.rejects(worker.main({argv:['--once','--application-id',id],env:{...env,...changed},makeRuntime,write:()=>{}}))
+  }
+  assert.equal(calls,0)
+  await worker.main({argv:['--once','--application-id',id],env,makeRuntime,write:()=>{}})
+  assert.equal(calls,1)
+})
+
 test('disabled provider phases do not require billing, SMS, Daechion or Google credentials',async()=>{
   const service=worker.runtime({DAECHION_SHEETS_ENABLED:'true',DAECHION_READY_MESSAGE_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',GOOGLE_SERVICE_ACCOUNT_JSON:'not valid JSON'})
   const result=await service.cycle(false)
