@@ -25,12 +25,12 @@ export interface LedgerClient {
   query<Row extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: Row[] }>
 }
 export class LedgerError extends Error {
-  constructor(public readonly code: 'product_not_enabled' | 'request_key_conflict' | 'bill_not_reserved') { super(code) }
+  constructor(public readonly code: 'product_not_enabled' | 'request_key_conflict' | 'bill_not_reserved' | 'intake_throttled') { super(code) }
 }
 
 // The caller must supply server-resolved product/prices and a dedicated DB connection.
 // Do not pass the browser body directly or use a shared Pool as a transaction client.
-export async function createApplication(client: LedgerClient, requestKey: string, raw: unknown, bindings: readonly ProductBinding[], process: PurchaseProcess = 'PROCESS_1') {
+export async function createApplication(client: LedgerClient, requestKey: string, raw: unknown, bindings: readonly ProductBinding[], process: PurchaseProcess = 'PROCESS_1', publicIntake = false) {
   z.string().uuid().parse(requestKey)
   const snapshot = applicationSnapshotSchema.parse(raw)
   const binding = productBinding(snapshot.productId, bindings, process)
@@ -39,6 +39,10 @@ export async function createApplication(client: LedgerClient, requestKey: string
   const id = randomUUID()
   await client.query('BEGIN')
   try {
+    if (publicIntake) {
+      await client.query('SELECT pg_advisory_xact_lock(61107,hashtext($1))',[snapshot.studentPhone+'|'+snapshot.productId])
+      await client.query('SELECT pg_advisory_xact_lock(61108,hashtext($1))',[snapshot.payerPhone])
+    }
     const inserted = await client.query<{ id: string }>(`INSERT INTO daechion_automation.applications
       (id,request_key,request_fingerprint,product_id,product_title,tuition_won,textbook_won,total_won,submission)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) ON CONFLICT(request_key) DO NOTHING RETURNING id`,
@@ -49,6 +53,14 @@ export async function createApplication(client: LedgerClient, requestKey: string
       if (previous.rows[0]?.request_fingerprint !== fingerprint) throw new LedgerError('request_key_conflict')
       await client.query('COMMIT')
       return { id: previous.rows[0].id, created: false }
+    }
+    if (publicIntake) {
+      const duplicates = await client.query(`SELECT id FROM daechion_automation.applications WHERE id<>$1 AND
+        ((product_id=$2 AND submission->>'studentPhone'=$3 AND created_at>now()-interval '5 minutes') OR
+         (submission->>'payerPhone'=$4 AND created_at>now()-interval '15 minutes'))`,[id,snapshot.productId,snapshot.studentPhone,snapshot.payerPhone])
+      const sameStudent = await client.query(`SELECT id FROM daechion_automation.applications WHERE id<>$1 AND product_id=$2
+        AND submission->>'studentPhone'=$3 AND created_at>now()-interval '5 minutes' LIMIT 1`,[id,snapshot.productId,snapshot.studentPhone])
+      if (sameStudent.rows.length || duplicates.rows.length >= 10) throw new LedgerError('intake_throttled')
     }
     for (const lectureId of binding.lectureIds) {
       await client.query('INSERT INTO daechion_automation.registrations(application_id,lecture_id) VALUES($1,$2)', [id, lectureId])

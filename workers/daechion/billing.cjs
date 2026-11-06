@@ -6,10 +6,21 @@ function runtime(env) {
   const { payssamBillingProvider } = require('../../.daechion-worker-build/lib/daechion/payssam.js')
   const { checkApplicationPayment } = require('../../.daechion-worker-build/lib/daechion/payment.js')
   const { enrollApplication } = require('../../.daechion-worker-build/lib/daechion/enrollment.js')
+  const { syncOneApplication } = require('../../.daechion-worker-build/lib/daechion/sheets-worker.js')
+  const { setupApplicationSheet } = require('../../.daechion-worker-build/lib/daechion/sheets-publisher.js')
   const migrations = require('../../scripts/daechion-migrations.cjs')
   const provider = payssamBillingProvider({ apiKey: env.PAYSSAM_API_KEY, member: env.PAYSSAM_MEMBER,
     merchant: env.PAYSSAM_MERCHANT, callbackUrl: env.DAECHION_BILLING_CALLBACK_URL })
   let daechion, tenantChecked = false
+  let sheetApi, sheetTarget
+  if(env.DAECHION_SHEETS_ENABLED==='true') {
+    const {googleSheetsApi}=require('../../.daechion-worker-build/lib/daechion/google-sheets.js')
+    const {sheetsDestination}=require('../../.daechion-worker-build/lib/daechion/sheets-view.js')
+    sheetsDestination(env.DAECHION_SHEETS_SPREADSHEET_ID,env.GOOGLE_SHEET_ID)
+    if(!/^\d+$/.test(env.DAECHION_SHEETS_SHEET_ID??''))throw Error('NEW_SHEET_TAB_REQUIRED')
+    sheetTarget={spreadsheetId:env.DAECHION_SHEETS_SPREADSHEET_ID,legacySpreadsheetId:env.GOOGLE_SHEET_ID,sheetId:Number(env.DAECHION_SHEETS_SHEET_ID)}
+    sheetApi=googleSheetsApi(env.GOOGLE_SERVICE_ACCOUNT_JSON??'')
+  }
   if (env.DAECHION_ENROLLMENT_ENABLED === 'true') {
     if (env.DAECHION_PAYMENT_READ_ENABLED !== 'true') throw Error('PAYMENT_READ_REQUIRED_FOR_ENROLLMENT')
     if (env.DAECHION_IDENTITY_LOOKUP_VERIFIED !== 'true') throw Error('IDENTITY_LOOKUP_VERIFICATION_REQUIRED')
@@ -25,8 +36,12 @@ function runtime(env) {
         await migrations.checkSchema(client)
       })
     },
-    async cycle(sendEnabled, { paymentsEnabled = false, enrollmentEnabled = false } = {}) {
-      const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0 }
+    async setupSheets() {
+      if(!sheetApi||!sheetTarget)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
+      await setupApplicationSheet(sheetApi,sheetTarget)
+    },
+    async cycle(sendEnabled, { paymentsEnabled = false, enrollmentEnabled = false, sheetsEnabled = false } = {}) {
+      const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0 }
       if (enrollmentEnabled && !tenantChecked) {
         if (!daechion || String((await daechion.me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
         tenantChecked = true
@@ -77,6 +92,16 @@ function runtime(env) {
           } catch { outcomes.failed++ }
         }
       }
+      if(sheetsEnabled) {
+        if(!sheetApi||!sheetTarget)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
+        for(let i=0;i<5;i++) {
+          try {
+            const result=await syncOneApplication({api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
+            if(result==='SKIPPED')break
+            if(result==='DONE')outcomes.sheets++;else outcomes.unknown++
+          }catch{outcomes.failed++;break}
+        }
+      }
       return outcomes
     },
   }
@@ -84,7 +109,7 @@ function runtime(env) {
 
 async function main({ argv = process.argv.slice(2), env = process.env, makeRuntime = runtime,
   write = value => console.log(JSON.stringify(value)) } = {}) {
-  if (argv.some(value => !['--check', '--once'].includes(value))) throw Error('INVALID_WORKER_ARGUMENT')
+  if (argv.some(value => !['--check', '--once','--setup-sheets'].includes(value))) throw Error('INVALID_WORKER_ARGUMENT')
   if (env.DAECHION_BILLING_WORKER_ENABLED !== 'true') {
     if (argv.includes('--check')) throw Error('DAECHION_BILLING_WORKER_DISABLED')
     write({ enabled: false }); return
@@ -96,6 +121,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     await service.check(); write({ ready: true, schema: 'daechion_automation', sending: false }); return
   }
   await service.check()
+  if(argv.includes('--setup-sheets')) {await service.setupSheets();write({sheetInitialized:true});return}
   let stopping = false
   const stop = () => { stopping = true }
   process.once('SIGTERM', stop); process.once('SIGINT', stop)
@@ -104,6 +130,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
       write({ ...await service.cycle(sendEnabled, {
         paymentsEnabled: env.DAECHION_PAYMENT_READ_ENABLED === 'true',
         enrollmentEnabled: env.DAECHION_ENROLLMENT_ENABLED === 'true',
+        sheetsEnabled: env.DAECHION_SHEETS_ENABLED === 'true',
       }), sending: sendEnabled })
       if (argv.includes('--once') || stopping) break
       await sleep(30000)

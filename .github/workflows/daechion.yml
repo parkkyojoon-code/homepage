@@ -12,6 +12,7 @@ on:
       - 'app/api/admin/classes/**'
       - 'app/api/classes/**'
       - 'app/api/apply/**'
+      - 'app/api/daechion/**'
       - 'app/apply/**'
       - 'tests/legacy-auth-http.integration.mjs'
       - 'tests/daechion.test.ts'

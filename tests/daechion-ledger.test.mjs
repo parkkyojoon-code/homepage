@@ -11,6 +11,9 @@ import billing from '../.daechion-test-build/lib/daechion/billing.js'
 import payment from '../.daechion-test-build/lib/daechion/payment.js'
 import enrollment from '../.daechion-test-build/lib/daechion/enrollment.js'
 import identityStore from '../.daechion-test-build/lib/daechion/identity-store.js'
+import intakeHttp from '../.daechion-test-build/lib/daechion/intake-http.js'
+import publisher from '../.daechion-test-build/lib/daechion/sheets-publisher.js'
+import sheetsWorker from '../.daechion-test-build/lib/daechion/sheets-worker.js'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
@@ -47,7 +50,7 @@ function migrationClient(db) {
 
 test('isolated ledger and separate Sheets projection',{timeout:90000},async t => {
   const db = await database()
-  const client = { query: (sql, values) => db.query(sql, values) }
+  const client = { query: (sql, values) => !db.isPostgres && /^SELECT pg_advisory_xact_lock\(6110[78],/.test(sql) ? Promise.resolve({rows:[]}) : db.query(sql, values) }
   const make = (key = randomUUID(), data = input) => createApplication(client, key, data, bindings, 'PROCESS_2')
   let applicationId
   try {
@@ -420,6 +423,90 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.throws(()=>sheetsDestination(fresh,''))
       assert.throws(()=>sheetsDestination('https://example.com',legacy))
       assert.deepEqual(sheetsDestination(fresh,legacy),{spreadsheetId:fresh,valueInputOption:'RAW'})
+    })
+    await t.test('public intake enforces origin, size, required history, durable replay and recent duplicate protection',async()=>{
+      const product={id:'public-http-intake',name:'공개 접수 검수',visible:true,purchaseProcess:'PROCESS_2',modes:{online:{enabled:true,price:1200},offline:{enabled:false,price:0}},textbook:{included:false,price:0}}
+      const bindings=[{productId:product.id,lectureIds:[10]}],origin='https://test.invalid'
+      const ports={settings:{origins:[origin],bindings},bindings,loadProduct:()=>product,withClient:run=>run(client),ready:async()=>{}}
+      const body={requestKey:randomUUID(),productId:product.id,studentHistory:'NEW',applicantType:'STUDENT',studentName:'접수검수',studentPhone:'01000000777',payerPhone:'01000000888',mode:'ONLINE',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
+      const request=(value,site=origin)=>new Request(origin+'/api/daechion/applications',{method:'POST',headers:{Origin:site,'Content-Type':'application/json'},body:JSON.stringify(value)})
+      assert.equal((await intakeHttp.intakePost(request(body),{...ports,settings:null})).status,503)
+      assert.equal((await intakeHttp.intakePost(request(body,'https://other.invalid'),ports)).status,403)
+      assert.equal((await intakeHttp.intakePost(request({...body,studentHistory:undefined}),ports)).status,400)
+      assert.equal((await intakeHttp.intakePost(request({...body,studentName:'x'.repeat(9000)}),ports)).status,413)
+      const first=await intakeHttp.intakePost(request(body),ports);assert.equal(first.status,201)
+      const receipt=await first.json();assert.equal(receipt.status,'RECEIVED')
+      const retry=await intakeHttp.intakePost(request(body),ports);assert.equal(retry.status,200);assert.equal((await retry.json()).applicationId,receipt.applicationId)
+      assert.equal((await intakeHttp.intakePost(request({...body,requestKey:randomUUID()}),ports)).status,429)
+      assert.equal((await db.query('SELECT id FROM daechion_automation.bills WHERE application_id=$1',[receipt.applicationId])).rows.length,0)
+      const failed=await intakeHttp.intakePost(request({...body,requestKey:randomUUID()}),{...ports,ready:async()=>{throw Error('private database detail')}})
+      assert.equal(failed.status,503);assert.equal((await failed.text()).includes('private'),false)
+    })
+    await t.test('parallel PostgreSQL public intake rejects a second UUID for the same recent student/product',{skip:!db.isPostgres},async()=>{
+      const connections=[new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL}),new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL})]
+      const snapshot={...input,productId:'public-concurrent',studentPhone:'01000000666',payerPhone:'01000000555'}
+      try{
+        await Promise.all(connections.map(item=>item.connect()))
+        const results=await Promise.allSettled(connections.map(item=>createApplication(item,randomUUID(),snapshot,[{productId:snapshot.productId,lectureIds:[10]}],'PROCESS_2',true)))
+        assert.equal(results.filter(item=>item.status==='fulfilled').length,1)
+        assert.match(results.find(item=>item.status==='rejected').reason.message,/intake_throttled/)
+      }finally{await Promise.all(connections.map(item=>item.end()))}
+    })
+    await t.test('Sheets uses ID metadata after sorting, literal values and managed columns only',async()=>{
+      const target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}
+      const view={id:randomUUID(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),snapshot:applicationSnapshotSchema.parse({...input,studentName:'=not-a-formula'}),billingState:'NOT_CREATED',allBillIds:[],paymentState:'PENDING',lectureIds:[10],registrationState:'PENDING',notificationState:'NOT_READY'}
+      const calls=[]
+      const api={call:async(method,path,body)=>{
+        calls.push({method,path,body})
+        if(path.includes('developerMetadata:search')){
+          const key=body.dataFilters[0].developerMetadataLookup.metadataKey
+          return {matchedDeveloperMetadata:[{developerMetadata:key==='pkjmath_application_id'?{metadataId:45,location:{dimensionRange:{sheetId:7,dimension:'ROWS',startIndex:19,endIndex:20}}}:{metadataId:1,location:{sheetId:7}}}]}
+        }
+        if(path.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'신규 신청'}}]}
+        if(method==='GET')return {values:[SHEET_HEADERS]}
+        return {spreadsheetId:target.spreadsheetId,totalUpdatedRows:1}
+      }}
+      await publisher.publishApplication(api,target,view)
+      const update=calls.find(item=>item.path.endsWith('values:batchUpdateByDataFilter')).body
+      assert.equal(update.valueInputOption,'RAW');assert.equal(update.data[0].dataFilter.developerMetadataLookup.metadataId,45)
+      assert.equal(update.data[0].values[0].length,SHEET_HEADERS.length);assert.ok(update.data[0].values[0].includes('=not-a-formula'))
+      const before=calls.length
+      await assert.rejects(publisher.publishApplication(api,{...target,spreadsheetId:target.legacySpreadsheetId},view))
+      assert.equal(calls.length,before)
+    })
+    await t.test('unconfirmed Sheets writes block only that application publication instead of repeating inserts',async()=>{
+      await db.query("UPDATE daechion_automation.outbox SET state='DONE',lease_token=NULL,lease_until=NULL WHERE kind='SHEETS'")
+      const created=await make()
+      const api={call:async(method,path,body)=>{
+        if(path.includes('developerMetadata:search'))return body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_process2_sheet_v1'?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:1,location:{sheetId:7}}}]}:{}
+        if(path.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'신규 신청'}}]}
+        if(method==='GET')return {values:[SHEET_HEADERS]}
+        throw Error('simulated lost insert response')
+      }}
+      const ports={api,target:{spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7},withClient:run=>run(client)}
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'UNKNOWN')
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED')
+      assert.equal((await appRow(created.id)).payment_state,'PENDING')
+      assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[created.id])).rows[0].state,'UNKNOWN')
+    })
+    await t.test('Sheets setup initializes an empty separate tab and refuses hidden existing data',async()=>{
+      const target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:7}
+      const calls=[]
+      let populated=false
+      const api={call:async(method,path,body)=>{
+        calls.push({method,path,body})
+        if(path.includes('?fields='))return {sheets:[{properties:{sheetId:7,title:'신규 신청',gridProperties:{columnCount:26}}}]}
+        if(path.includes('developerMetadata:search'))return {}
+        if(method==='GET')return populated&&!decodeURIComponent(path).endsWith('!1:1')?{values:[[],['existing staff data']]}:{}
+        return {spreadsheetId:target.spreadsheetId,replies:body.requests.map(()=>({}))}
+      }}
+      await publisher.setupApplicationSheet(api,target)
+      const setup=calls.find(item=>item.path.endsWith(':batchUpdate')).body.requests
+      assert.equal(setup.filter(item=>item.addConditionalFormatRule).length,3)
+      assert.equal(setup.find(item=>item.updateCells).updateCells.rows[0].values.at(-1).userEnteredValue.stringValue,'직원 메모')
+      calls.length=0;populated=true
+      await assert.rejects(publisher.setupApplicationSheet(api,target),/NEW_SHEET_TAB_NOT_EMPTY/)
+      assert.equal(calls.some(item=>item.path.endsWith(':batchUpdate')),false)
     })
   } finally { await db.close() }
 })

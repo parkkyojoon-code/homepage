@@ -1,0 +1,6 @@
+DAECHION_INTAKE_ENABLED=false
+DAECHION_DATABASE_URL=
+DAECHION_APP_ORIGIN=https://pkjmath.com
+DAECHION_ADDITIONAL_ORIGINS=https://www.pkjmath.com
+# Explicit server-owned product -> lecture mapping. No original product IDs.
+DAECHION_PRODUCT_BINDINGS_JSON=[]

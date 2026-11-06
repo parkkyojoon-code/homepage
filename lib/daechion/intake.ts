@@ -84,15 +84,15 @@ export interface IntakePorts {
   withClient<T>(run: (client: LedgerClient) => Promise<T>): Promise<T>
 }
 
-// Internal service only: no public route is enabled until billing and its recovery
-// path are connected. RECEIVED means durable intake, never invoice sent or paid.
+// The public route is default-off and validates origin/readiness before calling.
+// RECEIVED means durable intake, never invoice sent or paid.
 export async function submitApplication(raw: unknown, ports: IntakePorts) {
   const parsed = intakeRequestSchema.safeParse(raw)
   if (!parsed.success) throw new IntakeError('INVALID_APPLICATION')
   const prepared = prepareApplication(parsed.data, await ports.loadProduct(parsed.data.productId), ports.bindings)
   try {
     const result = await ports.withClient(client => createApplication(client, prepared.requestKey,
-      prepared.snapshot, [prepared.binding], 'PROCESS_2'))
+      prepared.snapshot, [prepared.binding], 'PROCESS_2', true))
     // A replay may occur after the asynchronous worker has sent a bill. Do not
     // describe the current invoice status from this intake-only acknowledgement.
     return { applicationId: result.id, created: result.created, status: 'RECEIVED' as const }

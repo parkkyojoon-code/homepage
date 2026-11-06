@@ -44,5 +44,14 @@ test('payment reads and enrollment have separate default-off controls', async ()
     await worker.main({argv:['--once'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',...env},
       makeRuntime:()=>({check:async()=>{},cycle:async(_send,options)=>{flags.push(options);return {}}}),write:()=>{}})
   }
-  assert.deepEqual(flags,[{paymentsEnabled:false,enrollmentEnabled:false},{paymentsEnabled:true,enrollmentEnabled:false},{paymentsEnabled:true,enrollmentEnabled:true}])
+  assert.deepEqual(flags,[{paymentsEnabled:false,enrollmentEnabled:false,sheetsEnabled:false},{paymentsEnabled:true,enrollmentEnabled:false,sheetsEnabled:false},{paymentsEnabled:true,enrollmentEnabled:true,sheetsEnabled:false}])
+})
+
+test('explicit Sheets setup never enters the financial cycle and --check takes precedence',async()=>{
+  for(const check of [false,true]){
+    const calls=[]
+    await worker.main({argv:check?['--setup-sheets','--check']:['--setup-sheets'],env:{DAECHION_BILLING_WORKER_ENABLED:'true'},
+      makeRuntime:()=>({check:async()=>{calls.push('check')},setupSheets:async()=>{calls.push('setup')},cycle:async()=>{calls.push('financial')}}),write:()=>{}})
+    assert.deepEqual(calls,check?['check']:['check','setup'])
+  }
 })

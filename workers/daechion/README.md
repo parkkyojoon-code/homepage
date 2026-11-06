@@ -42,6 +42,16 @@
 
 ## 근거와 검증
 
+## 별도 Sheets 발행
+
+DAECHION_SHEETS_ENABLED 기본값은 false다. DAECHION_SHEETS_SPREADSHEET_ID(새 파일), DAECHION_SHEETS_SHEET_ID(숫자 탭 ID), GOOGLE_SHEET_ID(기존 파일 비교용), GOOGLE_SERVICE_ACCOUNT_JSON을 비공개 환경변수로 설정한다. 기존 파일은 쓰기 대상으로 거부한다. 사용 중인 파일에 직접 초기화하지 않는다.
+
+빈 새 탭을 준비하고 `node workers/daechion/billing.cjs --setup-sheets`를 명시적으로 실행하면 헤더·직원 메모 열·조건부 색상을 초기화한다. 기존 데이터가 있으면 실패하며 지우지 않는다. --check는 --setup-sheets가 함께 있어도 읽기 전용 점검만 한다. 이후 일반 작업 주기에 SHEETS 작업 최대 5개를 동기화한다.
+
+행 UUID metadata와 헤더를 검증한 뒤 관리 대상 열만 RAW/명시적 stringValue·numberValue로 기록한다. 메모 열은 보존한다. 외부 쓰기 결과가 불명인 작업은 UNKNOWN이며 같은 신청의 추가 발행을 중단한다. 이 경우 기존 행/metadata를 대조한 뒤 관리자 복구가 필요하며 임의 재삽입하지 않는다. Sheets 실패가 결제나 수강 상태를 바꾸지는 않는다.
+
+실제 새 파일 생성·접근 권한·초기화/정렬 검수는 아직 하지 않았다. 웹 접수 설정은 web-env.example에 분리돼 있으며 기본 비활성이다.
+
 현재 운영 소스 apply_checker.py의 send_bill 구현과 대조했다. 공식 V1 명세도 확인했다.
 
 - https://developers.payssam.kr/api/api-v1/send.md
