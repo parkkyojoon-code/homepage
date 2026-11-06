@@ -11,7 +11,7 @@ function targetPath(target:SheetTarget) {
   if(target.spreadsheetId==='1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g'||!Number.isSafeInteger(target.sheetId)||target.sheetId<0)throw Error('INVALID_NEW_SHEET_TARGET')
   return `/spreadsheets/${target.spreadsheetId}`
 }
-type Metadata = {metadataId:number;location:{sheetId?:number;dimensionRange?:{sheetId:number;dimension:string;startIndex:number;endIndex:number}}}
+type Metadata = {metadataId:number;location:{sheetId?:number;dimensionRange?:{sheetId?:number;dimension:string;startIndex:number;endIndex:number}}}
 async function findMetadata(api:SheetsApi,target:SheetTarget,key:string,value:string):Promise<Metadata[]> {
   const response=await api.call('POST',targetPath(target)+'/developerMetadata:search',{dataFilters:[{developerMetadataLookup:{
     metadataKey:key,metadataValue:value,visibility:'DOCUMENT',metadataLocation:{sheetId:target.sheetId},locationMatchingStrategy:'INTERSECTING_LOCATION',
@@ -54,7 +54,7 @@ export async function setupApplicationSheet(api:SheetsApi,target:SheetTarget) {
 
 // Call with an exclusive per-application publish claim. If a write times out,
 // keep that claim UNKNOWN and reconcile by metadata before any further insert.
-export async function publishApplication(api:SheetsApi,target:SheetTarget,view:ApplicationView) {
+export async function publishApplication(api:SheetsApi,target:SheetTarget,view:ApplicationView,options:{existingOnly?:boolean}={}) {
   const base=targetPath(target)
   if((await findMetadata(api,target,marker,'1')).length!==1)throw Error('NEW_SHEET_NOT_INITIALIZED')
   const document=await api.call('GET',base+'?fields=sheets.properties')
@@ -67,12 +67,29 @@ export async function publishApplication(api:SheetsApi,target:SheetTarget,view:A
   if(rows.length>1)throw Error('DUPLICATE_SHEET_APPLICATION')
   if(rows.length===1) {
     const row=rows[0],range=row.location.dimensionRange
-    if(!Number.isSafeInteger(row.metadataId)||!range||range.sheetId!==target.sheetId||range.dimension!=='ROWS'||range.endIndex-range.startIndex!==1||range.startIndex<1)throw Error('INVALID_SHEET_ROW_METADATA')
+    // Google omits the protobuf default sheetId=0 from row metadata responses.
+    // The search is already restricted to this target tab. A missing ID must
+    // still fail for every nonzero target; explicit null is never a valid ID.
+    const rowSheetId=range?.sheetId===undefined?0:range.sheetId
+    if(!Number.isSafeInteger(row.metadataId)||!range||!Number.isSafeInteger(rowSheetId)||rowSheetId!==target.sheetId||range.dimension!=='ROWS'||range.endIndex-range.startIndex!==1||range.startIndex<1)throw Error('INVALID_SHEET_ROW_METADATA')
+    const readBoundRow=async()=>{
+      const read=await api.call('POST',base+'/values:batchGetByDataFilter',{dataFilters:[{developerMetadataLookup:{metadataId:row.metadataId}}],majorDimension:'ROWS',valueRenderOption:'UNFORMATTED_VALUE'})
+      const ranges=read.valueRanges as {valueRange?:{values?:unknown[][]}}[]|undefined
+      const data=ranges?.[0]?.valueRange?.values
+      if(read.spreadsheetId!==target.spreadsheetId||ranges?.length!==1||data?.length!==1||data[0][0]!==view.id)throw Error('SHEET_RECONCILIATION_ROW_UNCONFIRMED')
+      return data[0]
+    }
+    if(options.existingOnly)await readBoundRow()
     const result=await api.call('POST',base+'/values:batchUpdateByDataFilter',{valueInputOption:'RAW',data:[{
       dataFilter:{developerMetadataLookup:{metadataId:row.metadataId}},majorDimension:'ROWS',values:[values],
     }]})
     if(result.spreadsheetId!==target.spreadsheetId||result.totalUpdatedRows!==1)throw Error('SHEET_ROW_UPDATE_UNCONFIRMED')
+    if(options.existingOnly){
+      const saved=await readBoundRow()
+      if(JSON.stringify(values.map((_,index)=>saved[index]??''))!==JSON.stringify(values))throw Error('SHEET_RECONCILIATION_VALUES_UNCONFIRMED')
+    }
   } else {
+    if(options.existingOnly)throw Error('SHEET_RECONCILIATION_ROW_REQUIRED')
     // The row, literal cell values and ID metadata are created atomically.
     // Inserting at row 2 also shifts previously attached row metadata.
     const result=await api.call('POST',base+':batchUpdate',{requests:[

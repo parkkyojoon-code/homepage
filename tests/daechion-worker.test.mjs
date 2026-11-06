@@ -30,6 +30,18 @@ test('disabled provider phases do not require billing, SMS, Daechion or Google c
   await assert.rejects(service.setupSheets(),/separate new spreadsheet/)
 })
 
+test('explicit scoped Sheets reconciliation cannot run financial phases even with their flags enabled',async()=>{
+  const id='10000000-0000-4000-8000-000000000001',calls=[]
+  const env={DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_ACCEPTANCE_TEST_ONLY:'true',DAECHION_ACCEPTANCE_APPLICATION_ID:id,
+    DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT:'a'.repeat(64),DAECHION_ACCEPTANCE_LECTURE_IDS:'[10]',DAECHION_BILLING_SEND_ENABLED:'true',DAECHION_PAYMENT_READ_ENABLED:'true',
+    DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_READY_MESSAGE_ENABLED:'true'}
+  await worker.main({argv:['--once','--application-id',id,'--reconcile-sheets'],env,makeRuntime:()=>({check:async()=>calls.push('check'),
+    reconcileSheets:async target=>{assert.equal(target,id);calls.push('reconcile');return 'DONE'},cycle:async()=>{throw Error('must not run financial phase')}}),
+    write:value=>calls.push(value)})
+  assert.deepEqual(calls,['check','reconcile',{sheetReconciliation:true,result:'DONE',sending:false}])
+  await assert.rejects(worker.main({argv:['--once','--reconcile-sheets'],env,makeRuntime:()=>{throw Error('must not construct')}}),/ACCEPTANCE_TARGET_REQUIRED/)
+})
+
 test('API preflight checks configuration, tenant and scopes before listing or any student reads',async()=>{
   const env={DAECHION_API_KEY:'fake-only',DAECHION_TENANT_ID:'test-tenant'}
   const scopes=['students:read','students:write','lectures:read','enrollments:write']

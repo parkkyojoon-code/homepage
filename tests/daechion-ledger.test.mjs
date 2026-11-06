@@ -739,6 +739,44 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       await assert.rejects(publisher.publishApplication(api,{...target,spreadsheetId:target.legacySpreadsheetId},view))
       assert.equal(calls.length,before)
     })
+    await t.test('Google row metadata may omit sheetId zero but cannot identify a different tab or a null tab',async()=>{
+      const base={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:0}
+      const view={id:randomUUID(),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),snapshot:applicationSnapshotSchema.parse(input),billingState:'NOT_CREATED',allBillIds:[],paymentState:'PENDING',lectureIds:[10],registrationState:'PENDING',notificationState:'NOT_READY'}
+      for(const [targetId,responseId,valid] of [[0,undefined,true],[0,0,true],[7,undefined,false],[0,null,false],[0,7,false]]){
+        let writes=0
+        const api={call:async(method,path,body)=>{
+          if(path.includes('developerMetadata:search'))return {matchedDeveloperMetadata:[{developerMetadata:body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_application_id'?{metadataId:45,location:{locationType:'ROW',dimensionRange:{...(responseId===undefined?{}:{sheetId:responseId}),dimension:'ROWS',startIndex:1,endIndex:2}}}:{metadataId:1,location:{sheetId:targetId}}}]}
+          if(path.includes('?fields='))return {sheets:[{properties:{sheetId:targetId,title:'검수'}}]}
+          if(method==='GET')return {values:[SHEET_HEADERS]}
+          writes++;return {spreadsheetId:base.spreadsheetId,totalUpdatedRows:1}
+        }}
+        const attempt=publisher.publishApplication(api,{...base,sheetId:targetId},view)
+        if(valid){await attempt;assert.equal(writes,1)}else{await assert.rejects(attempt,/INVALID_SHEET_ROW_METADATA/);assert.equal(writes,0)}
+      }
+    })
+    await t.test('explicit Sheets reconciliation updates only the existing bound row and verifies it before acknowledging UNKNOWN',async()=>{
+      const target={spreadsheetId:'new-spreadsheet-test-1234567',legacySpreadsheetId:'old-spreadsheet-test-1234567',sheetId:0}
+      const first=await make(),selected=await make()
+      await db.query("UPDATE daechion_automation.outbox SET state='UNKNOWN' WHERE application_id IN ($1,$2) AND kind='SHEETS'",[first.id,selected.id])
+      let saved=[selected.id],writes=0,reads=0,mode='missing'
+      const api={call:async(method,path,body)=>{
+        if(path.includes('developerMetadata:search'))return {matchedDeveloperMetadata:body.dataFilters[0].developerMetadataLookup.metadataKey==='pkjmath_application_id'?(mode==='missing'?[]:[{developerMetadata:{metadataId:45,location:{dimensionRange:{dimension:'ROWS',startIndex:1,endIndex:2}}}}]):[{developerMetadata:{metadataId:1,location:{sheetId:0}}}]}
+        if(path.includes('?fields='))return {sheets:[{properties:{sheetId:0,title:'검수'}}]}
+        if(method==='GET')return {values:[SHEET_HEADERS]}
+        if(path.endsWith('values:batchGetByDataFilter')){reads++;return {spreadsheetId:target.spreadsheetId,valueRanges:[{valueRange:{values:[[mode==='wrong'?first.id:selected.id,...(mode==='stale'&&writes?['stale-row']:saved.slice(1))]]}}]}}
+        assert.ok(path.endsWith('values:batchUpdateByDataFilter'),'reconciliation must never insert')
+        writes++;saved=body.data[0].values[0];return {spreadsheetId:target.spreadsheetId,totalUpdatedRows:1}
+      }}
+      const ports={applicationId:selected.id,reconcileUnknown:true,api,target,withClient:run=>run(client)}
+      assert.equal(await sheetsWorker.syncOneApplication({...ports,reconcileUnknown:false}),'SKIPPED')
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'UNKNOWN');assert.equal(writes,0)
+      mode='wrong';assert.equal(await sheetsWorker.syncOneApplication(ports),'UNKNOWN');assert.equal(writes,0)
+      mode='stale';assert.equal(await sheetsWorker.syncOneApplication(ports),'UNKNOWN');assert.equal(writes,1)
+      mode='success';assert.equal(await sheetsWorker.syncOneApplication(ports),'DONE');assert.equal(writes,2);assert.equal(reads,5)
+      assert.equal(await sheetsWorker.syncOneApplication(ports),'SKIPPED');assert.equal(writes,2)
+      assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[first.id])).rows[0].state,'UNKNOWN')
+      assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS'",[selected.id])).rows[0].state,'DONE')
+    })
     await t.test('unconfirmed Sheets writes block only that application publication instead of repeating inserts',async()=>{
       await db.query("UPDATE daechion_automation.outbox SET state='DONE',lease_token=NULL,lease_until=NULL WHERE kind='SHEETS'")
       const created=await make()

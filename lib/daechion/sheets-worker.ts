@@ -7,16 +7,18 @@ import type { ApplicationView } from './sheets-view'
 
 const timestamp=(value:unknown)=>value?new Date(value as string).toISOString():undefined
 const numberId=(value:unknown)=>{const id=Number(value);if(!Number.isSafeInteger(id)||id<=0)throw Error('INVALID_SHEET_STUDENT_ID');return id}
-export async function claimSheetJob(client:LedgerClient,applicationId?:string) {
+export async function claimSheetJob(client:LedgerClient,applicationId?:string,reconcileUnknown=false) {
   if(applicationId!==undefined)z.string().uuid().parse(applicationId)
+  if(reconcileUnknown&&applicationId===undefined)throw Error('SHEET_RECONCILIATION_TARGET_REQUIRED')
   return automationTransaction(client,async()=>{
-    await client.query("UPDATE daechion_automation.outbox SET state='UNKNOWN',lease_token=NULL,lease_until=NULL WHERE kind='SHEETS' AND state='RUNNING' AND lease_until<=now() AND ($1::uuid IS NULL OR application_id=$1)",[applicationId??null])
+    if(!reconcileUnknown)await client.query("UPDATE daechion_automation.outbox SET state='UNKNOWN',lease_token=NULL,lease_until=NULL WHERE kind='SHEETS' AND state='RUNNING' AND lease_until<=now() AND ($1::uuid IS NULL OR application_id=$1)",[applicationId??null])
     const app=(await client.query(`SELECT a.*,a.version::text AS snapshot_version FROM daechion_automation.applications a
-      WHERE ($1::uuid IS NULL OR a.id=$1) AND EXISTS(SELECT 1 FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='SHEETS' AND o.state='PENDING' AND o.available_at<=now())
-      AND NOT EXISTS(SELECT 1 FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='SHEETS' AND o.state IN ('RUNNING','UNKNOWN'))
-      ORDER BY a.updated_at,a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED`,[applicationId??null])).rows[0]
+      WHERE ($1::uuid IS NULL OR a.id=$1) AND EXISTS(SELECT 1 FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='SHEETS' AND o.state=$2 AND ($3::boolean OR o.available_at<=now()))
+      AND NOT EXISTS(SELECT 1 FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='SHEETS' AND (o.state='RUNNING' OR (NOT $3::boolean AND o.state='UNKNOWN')))
+      AND (NOT $3::boolean OR (SELECT count(*) FROM daechion_automation.outbox o WHERE o.application_id=a.id AND o.kind='SHEETS' AND o.state='UNKNOWN')=1)
+      ORDER BY a.updated_at,a.id LIMIT 1 FOR UPDATE OF a SKIP LOCKED`,[applicationId??null,reconcileUnknown?'UNKNOWN':'PENDING',reconcileUnknown])).rows[0]
     if(!app)return null
-    const queue=(await client.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS' AND state='PENDING' AND available_at<=now() ORDER BY event_version LIMIT 1",[app.id])).rows[0]
+    const queue=(await client.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='SHEETS' AND state=$2 AND ($3::boolean OR available_at<=now()) ORDER BY event_version LIMIT 1",[app.id,reconcileUnknown?'UNKNOWN':'PENDING',reconcileUnknown])).rows[0]
     const token=randomUUID()
     await client.query("UPDATE daechion_automation.outbox SET state='RUNNING',attempts=attempts+1,lease_token=$2,lease_until=now()+interval '120 seconds' WHERE id=$1",[queue.id,token])
     const bills=(await client.query('SELECT * FROM daechion_automation.bills WHERE application_id=$1 ORDER BY revision',[app.id])).rows
@@ -60,19 +62,20 @@ async function deferUnwrittenSheetJob(client:LedgerClient,job:SheetJob) {
     return changed.rows[0]?.state==='PENDING'?'DEFERRED':'UNKNOWN'
   })
 }
-export async function syncOneApplication(ports:{applicationId?:string;api:SheetsApi;target:SheetTarget;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
+export async function syncOneApplication(ports:{applicationId?:string;reconcileUnknown?:boolean;api:SheetsApi;target:SheetTarget;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
   if(ports.applicationId!==undefined)z.string().uuid().parse(ports.applicationId)
-  const job=await ports.withClient(client=>claimSheetJob(client,ports.applicationId))
+  if(ports.reconcileUnknown&&ports.applicationId===undefined)throw Error('SHEET_RECONCILIATION_TARGET_REQUIRED')
+  const job=await ports.withClient(client=>claimSheetJob(client,ports.applicationId,ports.reconcileUnknown))
   if(!job)return 'SKIPPED'
   let writeAttempted=false
   const trackedApi:SheetsApi={call(method,path,body){
     // developerMetadata search uses POST but is a documented read operation.
-    if(method!=='GET'&&!(method==='POST'&&path.endsWith('/developerMetadata:search')))writeAttempted=true
+    if(method!=='GET'&&!(method==='POST'&&(path.endsWith('/developerMetadata:search')||path.endsWith('/values:batchGetByDataFilter'))))writeAttempted=true
     return ports.api.call(method,path,body)
   }}
-  try {await publishApplication(trackedApi,ports.target,job.view)}catch(error){
+  try {await publishApplication(trackedApi,ports.target,job.view,{existingOnly:ports.reconcileUnknown})}catch(error){
     const transientRead=error instanceof Error&&/^(SHEETS_REQUEST_UNCONFIRMED|SHEETS_HTTP_(429|500|502|503|504))$/.test(error.message)
-    if(!writeAttempted&&transientRead)return ports.withClient(client=>deferUnwrittenSheetJob(client,job))
+    if(!ports.reconcileUnknown&&!writeAttempted&&transientRead)return ports.withClient(client=>deferUnwrittenSheetJob(client,job))
     await ports.withClient(client=>finishSheetJob(client,job,false));return 'UNKNOWN'
   }
   return await ports.withClient(client=>finishSheetJob(client,job,true))?'DONE':'UNKNOWN'

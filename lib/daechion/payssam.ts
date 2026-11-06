@@ -71,7 +71,7 @@ export function payssamBillingProvider(settings: {
         })
         if (response.status !== 200) return { state: 'UNKNOWN' }
         const parsed = z.object({ code: z.literal('0000').optional(), bill_id: z.literal(billId),
-          appr_state: z.enum(['F', 'W', 'C', 'D']), appr_price: z.string().optional(), appr_dt: z.string().max(40).nullable().optional(),
+          appr_state: z.enum(['F', 'W', 'C', 'D']), appr_price: z.string().nullable().optional(), appr_dt: z.string().max(40).nullable().optional(),
           apikey: z.string().optional(), member: z.string().optional(), merchant: z.string().optional(),
         }).safeParse(await response.json())
         if (!parsed.success || Object.entries(account).some(([key, value]) =>

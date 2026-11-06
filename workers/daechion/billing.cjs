@@ -12,7 +12,8 @@ function workerArguments(argv,env){
       !/^[a-f0-9]{64}$/.test(env.DAECHION_ACCEPTANCE_SNAPSHOT_FINGERPRINT??''))throw Error('ACCEPTANCE_TARGET_REQUIRED')
     acceptanceLectures(env)
   }
-  if(options.some(value=>!['--check','--once','--setup-sheets','--session-only'].includes(value)))throw Error('INVALID_WORKER_ARGUMENT')
+  if(options.some(value=>!['--check','--once','--setup-sheets','--session-only','--reconcile-sheets'].includes(value)))throw Error('INVALID_WORKER_ARGUMENT')
+  if(options.includes('--reconcile-sheets')&&!applicationId)throw Error('ACCEPTANCE_TARGET_REQUIRED')
   if(env.DAECHION_ACCEPTANCE_TEST_ONLY==='true'&&!applicationId&&!options.includes('--check')&&!options.includes('--session-only'))throw Error('ACCEPTANCE_TARGET_REQUIRED')
   return {options,applicationId}
 }
@@ -98,6 +99,11 @@ function runtime(env,{withClient,providers={}}={}) {
   }
   return {
     maintainSession,
+    async reconcileSheets(applicationId){
+      await checkAcceptanceTarget(applicationId,env,withAutomationClient)
+      const {sheetApi,sheetTarget}=sheetRuntime()
+      return syncOneApplication({applicationId,reconcileUnknown:true,api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
+    },
     async check() {
       await withAutomationClient(async client => {
         const state = await migrations.status(client)
@@ -212,6 +218,10 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     await service.check(); write({ ready: true, schema: 'daechion_automation', sending: false }); return
   }
   await service.check()
+  if(argv.includes('--reconcile-sheets')){
+    const result=await service.reconcileSheets(parsed.applicationId)
+    write({sheetReconciliation:true,result,sending:false});return
+  }
   if(argv.includes('--session-only')){
     if(env.DAECHION_SESSION_MAINTENANCE_ENABLED!=='true')throw Error('SESSION_MAINTENANCE_DISABLED')
     const controller=new AbortController()

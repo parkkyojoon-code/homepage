@@ -333,11 +333,15 @@ test('payment read verifies account/bill/amount and discards unrelated provider 
   assert.deepEqual(await provider.read(billingJob.billId), { state: 'F', billId: billingJob.billId, amountWon: 1200, paidAt: '2026-11-07T03:00:00.000Z' })
   assert.equal(calls[0].url, 'https://erp-api.payssam.kr/if/bill/read')
   assert.equal(JSON.parse(String(calls[0].init.body)).bill_id, billingJob.billId)
-  for (const change of [{ bill_id: 'wrong' }, { member: 'wrong' }, { appr_price: '1,200' }, { appr_price: '0' }, { code: 'bad' }]) {
+  for (const change of [{ bill_id: 'wrong' }, { member: 'wrong' }, { appr_price: '1,200' }, { appr_price: '0' }, { appr_price:null }, { code: 'bad' }]) {
     const fake = billingMock(() => Response.json({ bill_id: billingJob.billId, appr_state: 'F', appr_price: '1200', ...change }))
     assert.deepEqual(await fake.provider.read(billingJob.billId), { state: 'UNKNOWN' })
   }
   assert.deepEqual(await billingMock(() => { throw Error('private') }).provider.read(billingJob.billId), { state: 'UNKNOWN' })
+  for(const state of ['W','C','D']){
+    const pending=billingMock(()=>Response.json({bill_id:billingJob.billId,appr_state:state,appr_price:null,appr_dt:null}))
+    assert.deepEqual(await pending.provider.read(billingJob.billId),{state,billId:billingJob.billId,amountWon:null,paidAt:null})
+  }
 })
 
 test('approval time requires a known timezone and a real calendar date', () => {
