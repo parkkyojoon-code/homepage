@@ -7,6 +7,7 @@ const env={DAECHION_CONTENT_BROWSER_ENABLED:'true',DAECHION_CONTENT_BROWSER_VERI
   DAECHION_BROWSER_STORAGE_STATE:JSON.stringify({cookies:[],origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'fixture',value:'synthetic-only'}]}]})}
 const input={studentId:77,lectureId:10,weeklyLectureIds:[100],studentName:'검수학생',studentPhone:'01000000001',beforeWrite:async()=>{}}
 const api={me:async()=>({tenantId:116}),student:async()=>({id:77,name:'검수학생',studentPhoneNumber:'010-0000-0001',active:false}),
+  students:async()=>[{id:77}],
   lectures:async()=>[{id:10,name:'같은 이름',opened:true,weeklyLectures:[{id:100,name:'차시 A'}]}]}
 
 test('browser credentials and flags fail closed without launching a browser or exposing secrets',()=>{
@@ -47,7 +48,7 @@ if(path.endsWith('/participants')){button('일괄 학생 추가',picker);const b
 test('real browser grants only the selected student, clears attendance copying and verifies persisted video/material rights',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:90000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
-  for(const mode of ['success','wrong','missing','hold']){
+  for(const mode of ['success','wrong','missing','hold','identity-changed']){
     let fences=0,writes=0,closed=false
     const launch=async options=>{
       const browser=await chromium.launch(options)
@@ -70,7 +71,11 @@ test('real browser grants only the selected student, clears attendance copying a
         await browser.close()
       }}
     }
-    const service=provider.browserAccessProvider(env,api,{launch})
+    let identityReads=0
+    const guardedApi=mode==='identity-changed'?{...api,student:async()=>{
+      const row=await api.student();return ++identityReads===1?row:{...row,studentPhoneNumber:'01099999999'}
+    }}:api
+    const service=provider.browserAccessProvider(env,guardedApi,{launch})
     const promise=service.ensureContentAccess({...input,beforeWrite:async()=>{fences++;if(mode==='hold'&&fences===2)throw Error('Hold')}})
     if(mode==='success'){assert.deepEqual(await promise,{verified:true,lectureId:10,studentId:77,weeklyLectureIds:[100]});assert.equal(writes,1);assert.equal(fences,2)}
     else {await assert.rejects(promise,/CONTENT_ACCESS_UNCONFIRMED/);assert.equal(writes,mode==='missing'?1:0)}

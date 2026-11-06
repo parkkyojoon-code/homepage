@@ -332,6 +332,14 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.equal((await appRow(id)).review_code,'manual_hold');assert.equal((await appRow(id)).notification_state,'NOT_READY')
       assert.equal((await db.query("SELECT access_state FROM daechion_automation.registrations WHERE application_id=$1 AND lecture_id=10",[id])).rows[0].access_state,'PENDING')
     })
+    await t.test('an older DONE record without content evidence cannot send an already queued ready message',async()=>{
+      const id=await paymentFixture();await observe(id)
+      const ports={daechion:fakeDaechion(),withClient:run=>run(client)}
+      await enrollment.enrollApplication(id,true,ports);await enrollment.enrollApplication(id,true,ports)
+      await db.query("UPDATE daechion_automation.registrations SET access_state='NOT_VERIFIED',access_checked_at=NULL WHERE application_id=$1",[id])
+      assert.equal(await readyMessage.sendOneReadyMessage({provider:{send:async()=>{throw Error('Must not announce unverified access')}},withClient:run=>run(client)}),'SKIPPED')
+      assert.equal((await appRow(id)).notification_state,'FAILED')
+    })
     await t.test('history mismatch is stored for Sheets and blocks both account creation and registration',async()=>{
       const id = await paymentFixture('NEW');await observe(id);let writes = 0
       const ports = {daechion:fakeDaechion({createStudent:async()=>{writes++;return student},enroll:async()=>{writes++;throw Error('must not enroll')}}),withClient:run=>run(client)}

@@ -34,11 +34,10 @@
 cd workers/daechion/browser
 npm ci
 npx playwright install chromium
-New-Item -ItemType Directory -Force .auth
-npx playwright codegen --save-storage=.auth/admin.storage-state.json https://parkkyojoon.daechion.com/login
+npm run auth -- --lecture-id 6006577
 ```
 
-먼저 `.auth` 폴더를 생성한다. 생성한 JSON은 별도 검증 작업자의 Railway 비공개 변수에 직접 입력한다. 현재 일반 Chrome의 로그인 상태가 서버에 자동 전달되는 것은 아니다. 세션 만료 때는 재인증이 필요하며 자동 우회나 비밀번호 초기화는 하지 않는다. 공식 API가 동등한 권한 기능을 제공하면 이 브라우저 어댑터를 교체할 수 있다.
+마지막 명령은 검수 강의를 열고 직접 관리자 로그인을 마칠 때까지 기다린다. 로그인 후 터미널에서 Enter를 누르면 관리자 화면 접근을 확인하고 `.auth/admin.storage-state.json`에 저장한다. 이 파일은 Git과 Docker 빌드에서 제외한다. 생성한 JSON은 별도 검증 작업자의 Railway 비공개 변수에 직접 입력한다. 현재 일반 Chrome의 로그인 상태가 서버에 자동 전달되는 것은 아니다. 세션 만료 때는 재인증이 필요하며 자동 우회나 비밀번호 초기화는 하지 않는다. 공식 API가 동등한 권한 기능을 제공하면 이 브라우저 어댑터를 교체할 수 있다.
 
 ## 검증 범위와 남은 일
 

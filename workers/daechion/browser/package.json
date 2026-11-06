@@ -2,6 +2,7 @@
   "name": "pkjmath-daechion-content-access",
   "private": true,
   "version": "1.0.0",
+  "scripts": { "auth": "node auth.cjs" },
   "dependencies": {
     "playwright": "1.65.0"
   }

@@ -93,6 +93,7 @@ async function applyAndVerify(page,input,lecture) {
   await weeks.waitFor({state:'visible'})
   const count=await weeks.getByRole('checkbox').count()
   if(count!==lecture.weeklyLectures.length&&count!==lecture.weeklyLectures.length+1)fail()
+  if(count===lecture.weeklyLectures.length+1&&await weeks.getByRole('checkbox',{name:'전체 선택',exact:true}).count()!==1)fail()
   for(const week of lecture.weeklyLectures){
     const checkbox=weeks.getByRole('checkbox',{name:week.name,exact:true})
     if(await checkbox.count()!==1)fail()
@@ -154,8 +155,14 @@ function browserAccessProvider(env,api,{launch}={}) {
       const page=await context.newPage()
       // Closing the browser on the deadline also stops an in-flight UI action;
       // a DB lease alone must never race a still-running browser.
+      const guardedInput={...input,beforeWrite:async()=>{
+        const current=await api.student(input.studentId),matches=await api.students(input.studentPhone,'')
+        if(current.id!==input.studentId||phone(current.studentPhoneNumber)!==input.studentPhone||current.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim()||
+          matches.length!==1||matches[0].id!==input.studentId)fail()
+        await input.beforeWrite()
+      }}
       let timer
-      try{return await Promise.race([applyAndVerify(page,input,lecture),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])}
+      try{return await Promise.race([applyAndVerify(page,guardedInput,lecture),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])}
       finally{clearTimeout(timer)}
     } catch {throw Error('CONTENT_ACCESS_UNCONFIRMED')}
     finally{if(browser)await browser.close().catch(()=>{})}
