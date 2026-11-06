@@ -88,7 +88,7 @@ function runtime(env) {
           ORDER BY a.updated_at,a.id LIMIT 5`)).rows)
         for (const row of applications) {
           try {
-            const result = await enrollApplication(row.id, true, { daechion, withClient: withAutomationClient })
+            const result = await enrollApplication(row.id, true, { daechion,tenantId:env.DAECHION_TENANT_ID.trim(), withClient: withAutomationClient })
             if (result === 'DONE') outcomes.enrolled++
             else if (result === 'REVIEW') outcomes.review++
             else outcomes.skipped++

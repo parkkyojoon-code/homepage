@@ -10,6 +10,7 @@ const money = z.number().int().min(0).max(2147483647)
 export const applicationSnapshotSchema = z.object({
   productId: z.string().trim().min(1), productTitle: z.string().trim().min(1),
   purchaseProcess: z.literal('PROCESS_2').default('PROCESS_2'),
+  daechionTenantId:z.string().trim().min(1).max(120).optional(),
   tuitionWon: money, textbookWon: money, totalWon: money.positive(),
   studentName: z.string().trim().min(1), guardianName: z.string().trim().default(''),
   studentPhone: phone, payerPhone: phone, guardianPhone: optionalPhone,

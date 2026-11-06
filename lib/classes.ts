@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import type { SubjectSelection } from './subjectPricing'
 import type { PurchaseProcess } from './purchase-process'
+import type { StoredLectureBinding } from './daechion/product-policy'
 
 const DATA_DIR   = process.env.DATA_DIR || '/app/data'
 const CLASSES_FILE = path.join(DATA_DIR, 'classes.json')
@@ -19,6 +20,7 @@ export interface ClassMode {
 export interface ClassData {
   id: string
   purchaseProcess?: PurchaseProcess
+  daechionBinding?: StoredLectureBinding|null
   visible: boolean
   name: string
   category: '수리논술' | '수능수학' | string

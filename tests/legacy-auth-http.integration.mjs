@@ -83,6 +83,22 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
    const invalid=await request('/api/admin/classes',{method:'POST',cookie:adminCookie,body:{...baseClass,id:'invalid-process',purchaseProcess:['PROCESS_1','PROCESS_2']}});
    assert.equal(invalid.status,400);
   });
+  await t.test('lecture catalog is admin-only and forged course bindings cannot bypass server validation',async()=>{
+   assert.equal((await request('/api/admin/daechion/lectures')).status,401);
+   assert.equal((await request('/api/admin/daechion/lectures',{cookie:studentCookie})).status,401);
+   assert.equal((await request('/api/admin/daechion/lectures',{cookie:adminCookie})).status,503);
+   const forged={tenantId:'forged',lectures:[{id:999,name:'forged'}],verifiedAt:'2026-11-06T00:00:00Z'};
+   const response=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionBinding:forged}});
+   assert.equal(response.status,200);assert.equal((await response.json()).daechionBinding,undefined);
+   const bad=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[999]}});
+   assert.equal(bad.status,400);
+   const stale=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[],expectedDaechionBindingAt:'outdated'}});
+   assert.equal(stale.status,409);
+   const cleared=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[]}});
+   assert.equal(cleared.status,200);assert.equal((await cleared.json()).daechionBinding,null);
+   const original=await request('/api/admin/classes/12course',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[999],daechionBinding:forged}});
+   assert.equal(original.status,200);assert.equal((await original.json()).daechionBinding,undefined);
+  });
   await t.test('original classes stay on process 1 and process 2 cannot enter legacy application intake',async()=>{
    for(const id of ['12course','chuweol']) {
     assert.equal((await (await request(`/api/classes/${id}`)).json()).purchaseProcess,'PROCESS_1');

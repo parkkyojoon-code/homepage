@@ -5,5 +5,6 @@ DAECHION_TENANT_ID=
 DAECHION_DATABASE_URL=
 DAECHION_APP_ORIGIN=https://pkjmath.com
 DAECHION_ADDITIONAL_ORIGINS=https://www.pkjmath.com
-# Explicit server-owned product -> lecture mapping. No original product IDs.
+# Legacy fallback for products without an admin-saved binding. Admin selection takes precedence.
+# An explicit admin removal blocks this fallback. No original product IDs.
 DAECHION_PRODUCT_BINDINGS_JSON=[]

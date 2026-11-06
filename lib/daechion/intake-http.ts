@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { IntakeError, submitApplication, type IntakePorts } from './intake'
 import { LedgerError } from './ledger'
-import { productBinding, type ProductBinding } from './product-policy'
+import { productBinding, configuredProductBinding, type ProductBinding } from './product-policy'
 
 export function intakeSettings(env: Record<string,string|undefined>) {
   if (env.DAECHION_INTAKE_ENABLED !== 'true') return null
@@ -9,7 +9,7 @@ export function intakeSettings(env: Record<string,string|undefined>) {
   if (!origins.every(value => { try { const url=new URL(value);return url.origin === value && (url.protocol==='https:' || (url.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) } catch { return false } })) return null
   if (!env.DAECHION_DATABASE_URL || (env.DAECHION_PRODUCT_BINDINGS_JSON?.length ?? 0) > 32768) return null
   try {
-    const bindings = z.array(z.object({productId:z.string().trim().min(1).max(100),lectureIds:z.array(z.number().int().positive().safe()).min(1).max(30)}).strict()).max(500).parse(JSON.parse(env.DAECHION_PRODUCT_BINDINGS_JSON ?? ''))
+    const bindings = z.array(z.object({productId:z.string().trim().min(1).max(100),lectureIds:z.array(z.number().int().positive().safe()).min(1).max(30)}).strict()).max(500).parse(JSON.parse(env.DAECHION_PRODUCT_BINDINGS_JSON ?? '[]'))
     for (const binding of bindings) if (!productBinding(binding.productId, bindings, 'PROCESS_2')) return null
     return { origins, bindings }
   } catch { return null }
@@ -25,7 +25,7 @@ export async function intakeAvailability(productId: string, ports: IntakeHttpPor
   if (!ports.settings) return json({available:false})
   try {
     const product = await ports.loadProduct(productId)
-    const binding = product && productBinding(product.id,ports.bindings,product.purchaseProcess)
+    const binding = product && configuredProductBinding(product,ports.bindings,ports.tenantId)
     if (!product?.visible || !binding || product.subjectSelection != null) return json({available:false})
     await ports.ready()
     return json({available:true})

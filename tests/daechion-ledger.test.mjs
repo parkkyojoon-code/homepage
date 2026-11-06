@@ -224,6 +224,16 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       createStudent:async()=>{throw Error('unexpected create')},
       enroll:async(lectureId,studentId)=>({lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}),...overrides})
 
+    await t.test('a changed worker tenant cannot create accounts or grant the same numeric lecture ID in another academy',async()=>{
+      const {id}=await make(undefined,{...input,studentHistory:'EXISTING',daechionTenantId:'tenant-original'})
+      await billing.sendApplicationBill(id,true,{provider:{accountId:'payment-test',send:async()=> 'SENT'},withClient:run=>run(client)})
+      await observe(id)
+      let calls=0
+      const service=fakeDaechion({students:async()=>{calls++;return [student]},enroll:async()=>{calls++;throw Error('wrong tenant must not call provider')}})
+      assert.equal(await enrollment.enrollApplication(id,true,{tenantId:'tenant-other',daechion:service,withClient:run=>run(client)}),'REVIEW')
+      assert.equal(calls,0);assert.equal((await appRow(id)).review_code,'enrollment_tenant_mismatch')
+      assert.equal((await appRow(id)).submission.daechionTenantId,'tenant-original')
+    })
     await t.test('verified timely payments are replay-safe and stale unpaid responses cannot undo them',async()=>{
       const id = await paymentFixture(), target = await payment.paymentTarget(client,id,'payment-test')
       assert.equal(await observe(id),'PAID')

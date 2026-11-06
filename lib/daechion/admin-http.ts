@@ -4,6 +4,7 @@ import type { LedgerClient } from './ledger'
 import type { DaechionStudent } from './client'
 
 export interface AdminPorts {
+  tenantId?:string
   authed():Promise<boolean>;enabled:boolean;origins:string[]
   withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>
   student(id:number):Promise<DaechionStudent>
@@ -37,7 +38,7 @@ export async function adminPost(request:Request,ports:AdminPorts){
     const data=adminActionSchema.parse(raw)
     if(await ports.withClient(client=>adminActionReplay(client,data)))return json({success:true,replayed:true})
     const student=data.action==='RESUME'||data.action==='MANUAL_COMPLETE'?await ports.student(data.studentId??0):undefined
-    return json({success:true,...await ports.withClient(client=>applyAdminAction(client,data,student))})
+    return json({success:true,...await ports.withClient(client=>applyAdminAction(client,data,student,ports.tenantId))})
   }catch(error){
     if(error instanceof z.ZodError||error instanceof SyntaxError)return json({error:'담당자·사유·확인 항목과 입력 내용을 확인해주세요.'},400)
     if(error instanceof AdminReviewError)return json({error:error.code==='STALE'?'다른 작업으로 내용이 변경되었습니다. 새로 불러온 뒤 확인해주세요.':'학생·청구 정보와 확인 근거가 일치하지 않습니다.'},409)

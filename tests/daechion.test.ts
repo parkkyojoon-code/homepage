@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { daechionClient, DaechionError, normalizePhone, type DaechionStudent, type StudentPort } from '../lib/daechion/client'
 import { resolveStudent as resolveDeclaredStudent } from '../lib/daechion/identity'
-import { productBinding } from '../lib/daechion/product-policy'
+import { productBinding,configuredProductBinding } from '../lib/daechion/product-policy'
+import { lectureCatalog,resolveClassBinding } from '../lib/daechion/class-binding'
 import { parsePurchaseProcess, purchaseProcessOf } from '../lib/purchase-process'
 import { prepareApplication, submitApplication, type IntakeProduct } from '../lib/daechion/intake'
 import { withAutomationClient } from '../lib/daechion/database'
@@ -13,6 +14,31 @@ import { identityConditionalFormatting, SHEET_HEADERS } from '../lib/daechion/sh
 import { solapiReadyProvider,lmsText } from '../lib/daechion/ready-message'
 
 const key = 'unit-test-only-not-a-real-credential'
+
+test('lecture bindings use unique IDs despite identical names and revalidate the tenant on save',async()=>{
+  const env={DAECHION_ADMIN_ENABLED:'true',DAECHION_API_KEY:key,DAECHION_TENANT_ID:'tenant-test'}
+  const calls:string[]=[]
+  const fetcher=(async(url,init)=>{
+    calls.push(String(url));assert.equal(init?.method,'GET')
+    if(String(url).endsWith('/v1/me'))return Response.json({tenantId:'tenant-test',keyId:'test',scopes:[]})
+    return Response.json([{id:10,name:'동일 강의명',opened:true,weeklyLectures:[{id:101,name:'1차시'}]},{id:11,name:'동일 강의명',opened:true,weeklyLectures:[{id:111,name:'1차시'}]},{id:12,name:'종료',opened:false,weeklyLectures:[{id:121,name:'차시'}]},{id:13,name:'빈 강의',opened:true,weeklyLectures:[]}])
+  }) as typeof fetch
+  assert.equal((await lectureCatalog(env,fetcher)).lectures.length,4)
+  const stored=await resolveClassBinding({daechionLectureIds:[11],daechionBinding:{tenantId:'forged'}},'PROCESS_2',undefined,env,fetcher)
+  assert.deepEqual(stored?.lectures,[{id:11,name:'동일 강의명'}]);assert.equal(stored?.tenantId,'tenant-test')
+  const product={id:'new-course',purchaseProcess:'PROCESS_2' as const,daechionBinding:stored}
+  assert.deepEqual(configuredProductBinding(product,[{productId:product.id,lectureIds:[10]}],'tenant-test')?.lectureIds,[11])
+  assert.equal(configuredProductBinding(product,[],'wrong-tenant'),null)
+  assert.equal(configuredProductBinding({...product,daechionBinding:null},[{productId:product.id,lectureIds:[10]}],'tenant-test'),null)
+  for(const ids of [[10,10],[-1],[1.1],['10'],[99],[12],[13]])await assert.rejects(resolveClassBinding({daechionLectureIds:ids},'PROCESS_2',undefined,env,fetcher))
+  const previousCalls=calls.length
+  assert.equal(await resolveClassBinding({daechionLectureIds:[99]},'PROCESS_1',stored,env,fetcher),undefined)
+  assert.equal(calls.length,previousCalls)
+  assert.equal(await resolveClassBinding({},'PROCESS_2',stored,env,fetcher),stored)
+  assert.equal(await resolveClassBinding({daechionLectureIds:[]},'PROCESS_2',stored,env,fetcher),null)
+  await assert.rejects(resolveClassBinding({daechionLectureIds:[10]},'PROCESS_2',undefined,{...env,DAECHION_TENANT_ID:'wrong'},fetcher))
+  await assert.rejects(lectureCatalog({...env,DAECHION_ADMIN_ENABLED:'false'},fetcher))
+})
 const input = { name: '검수학생', studentPhone: '01000000001' }
 const existing: DaechionStudent = { id: 100, name: input.name, studentPhoneNumber: input.studentPhone, active: false }
 const resolveStudent = (port: StudentPort, raw: import('../lib/daechion/client').StudentInput, history: 'NEW'|'EXISTING' = 'EXISTING') => resolveDeclaredStudent(port, raw, {history})
@@ -140,6 +166,16 @@ const intakeInput = {
   guardianPhone: '010-0000-0002', payerPhone: '010-0000-0003', mode: 'ONLINE',
   expectedTotalWon: 1200, confirmPayment: true, agreePrivacy: true,
 }
+
+test('intake freezes server-owned lecture IDs and tenant, never applicant-selected grant targets',()=>{
+  const product={...intakeProduct,daechionBinding:{tenantId:'tenant-test',lectures:[{id:11,name:'동일 강의명'}],verifiedAt:'2026-11-06T00:00:00Z'}}
+  const prepared=prepareApplication(intakeInput,product,intakeBindings,'tenant-test')
+  assert.deepEqual(prepared.binding.lectureIds,[11]);assert.equal(prepared.snapshot.daechionTenantId,'tenant-test')
+  product.daechionBinding.lectures=[{id:12,name:'변경된 강의'}]
+  assert.deepEqual(prepared.binding.lectureIds,[11])
+  assert.throws(()=>prepareApplication({...intakeInput,lectureIds:[999]},product,intakeBindings,'tenant-test'),/INVALID_APPLICATION/)
+  assert.throws(()=>prepareApplication(intakeInput,product,intakeBindings,'other-tenant'),/PRODUCT_NOT_CONFIGURED/)
+})
 
 test('intake derives prices and targets from the server and keeps payer separate from login', () => {
   const { snapshot, binding } = prepareApplication(intakeInput, intakeProduct, intakeBindings)

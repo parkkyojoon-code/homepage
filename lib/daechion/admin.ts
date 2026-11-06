@@ -31,7 +31,7 @@ function verifyStudent(student:DaechionStudent|undefined,data:AdminAction,snapsh
   const same=(value:string|null|undefined,phone:string)=>{try{return Boolean(value)&&normalizePhone(value!)===phone}catch{return false}}
   if(!same(student.studentPhoneNumber,snapshot.studentPhone)||snapshot.guardianPhone&&![student.parentPhoneNumber,student.parentPhoneNumber2].some(value=>same(value,snapshot.guardianPhone)))throw new AdminReviewError('INVALID_EVIDENCE')
 }
-export async function applyAdminAction(client:LedgerClient,raw:unknown,student?:DaechionStudent){
+export async function applyAdminAction(client:LedgerClient,raw:unknown,student?:DaechionStudent,tenantId?:string){
   const data=adminActionSchema.parse(raw),fingerprint=createHash('sha256').update(JSON.stringify(data)).digest('hex')
   return automationTransaction(client,async()=>{
     const app=(await client.query('SELECT *,version::text AS current_version FROM daechion_automation.applications WHERE id=$1 FOR UPDATE',[data.applicationId])).rows[0]
@@ -40,7 +40,10 @@ export async function applyAdminAction(client:LedgerClient,raw:unknown,student?:
     if(previous){if(previous.application_id!==data.applicationId||previous.fingerprint!==fingerprint)throw new AdminReviewError('STALE');return {replayed:true}}
     if(app.current_version!==data.expectedVersion)throw new AdminReviewError('STALE')
     const snapshot=applicationSnapshotSchema.parse(app.submission)
-    if(data.action==='RESUME'||data.action==='MANUAL_COMPLETE')verifyStudent(student,data,snapshot)
+    if(data.action==='RESUME'||data.action==='MANUAL_COMPLETE'){
+      if(snapshot.daechionTenantId&&snapshot.daechionTenantId!==tenantId)throw new AdminReviewError('INVALID_EVIDENCE')
+      verifyStudent(student,data,snapshot)
+    }
     if((data.action==='RESUME'||data.action==='MANUAL_COMPLETE')&&!(await client.query('SELECT lecture_id FROM daechion_automation.registrations WHERE application_id=$1',[data.applicationId])).rows.length)throw new AdminReviewError('INVALID_EVIDENCE')
     const before={payment:app.payment_state,automation:app.automation_state,review:app.review_code,notification:app.notification_state}
     await client.query(`INSERT INTO daechion_automation.admin_actions(id,application_id,fingerprint,action,operator_name,reason,evidence)

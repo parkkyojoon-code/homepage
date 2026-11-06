@@ -101,6 +101,7 @@ export async function finishEnrollment(client: LedgerClient, job: EnrollmentJob,
 }
 
 export async function enrollApplication(applicationId: string, enabled: boolean, ports: {
+  tenantId?:string
   daechion: EnrollmentPort; withClient<T>(run: (client: LedgerClient) => Promise<T>): Promise<T>
 }) {
   if (!enabled) return 'DISABLED'
@@ -111,6 +112,7 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
   }
   let createStarted = false, identitySaved = false
   try {
+    if(job.snapshot.daechionTenantId&&job.snapshot.daechionTenantId!==ports.tenantId)throw new DaechionError('enrollment_tenant_mismatch')
     await ports.withClient(client => claimIdentityPhones(client, applicationId, job.snapshot))
     const binding = await ports.withClient(client => identityBinding(client, applicationId))
     const guarded: StudentPort = {

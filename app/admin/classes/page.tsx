@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { isOriginalProduct, purchaseProcessOf, type PurchaseProcess } from '@/lib/purchase-process'
+import LectureBindingPicker from '@/components/daechion/LectureBindingPicker'
+import type { StoredLectureBinding } from '@/lib/daechion/product-policy'
 
 interface MediaItem { type: 'image' | 'youtube'; value: string }
 interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
@@ -11,6 +13,8 @@ interface SubjectSelection { subjects: string[]; tiers: SubjectPricingTier[] }
 interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
   purchaseProcess?: PurchaseProcess
+  daechionBinding?:StoredLectureBinding|null
+  daechionLectureIds?:number[]
   image: string | null
   duration: string
   modes: { online: ClassMode; offline: ClassMode }
@@ -26,6 +30,7 @@ const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후
 const EMPTY_CLASS = {
   customId: '', visible: false, name: '', category: '수리논술', badge: '',
   purchaseProcess: 'PROCESS_1' as PurchaseProcess,
+  daechionLectureIds:[] as number[],
   image: null,
   duration: '',
   modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
@@ -98,7 +103,7 @@ export default function AdminClassesPage() {
   }
 
   function openEdit(cls: ClassData) {
-    setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls) })
+    setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls),daechionLectureIds:cls.daechionBinding?.lectures.map(item=>item.id)??[] })
     setIsNew(false)
   }
 
@@ -109,9 +114,7 @@ export default function AdminClassesPage() {
     setSaving(true); setMsg(null)
     const method = isNew ? 'POST' : 'PUT'
     const url    = isNew ? '/api/admin/classes' : `/api/admin/classes/${editTarget.id}`
-    const body   = isNew
-      ? { ...editTarget, id: (editTarget as any).customId || undefined }
-      : editTarget
+    const body={...editTarget,...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||undefined}:{})}
     const res = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
@@ -120,7 +123,7 @@ export default function AdminClassesPage() {
     if (res.ok) {
       const saved = await res.json()
       setMsg({ type: 'success', text: '저장됐습니다.' })
-      if (isNew) { setEditTarget(saved); setIsNew(false) }
+      setEditTarget({...saved,daechionLectureIds:saved.daechionBinding?.lectures.map((item:{id:number})=>item.id)??[]});setIsNew(false)
       load()
     } else {
       const d = await res.json()
@@ -474,6 +477,7 @@ export default function AdminClassesPage() {
                 </label>
               ))}
             </div>
+            {e.purchaseProcess==='PROCESS_2'&&<LectureBindingPicker key={isNew?'new':e.id} ids={e.daechionLectureIds??[]} saved={e.daechionBinding?.lectures} onChange={ids=>upd(['daechionLectureIds'],ids)}/>}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <label style={lbl}>수업 ID <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>URL에 사용됨</span></label>
