@@ -163,8 +163,9 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
   }
 }
 
-if (require.main === module) main().then(() => process.exit(0)).catch(() => {
+if (require.main === module) main().then(() => process.exit(0)).catch(error => {
   // No connection strings, applicant IDs/phones, provider bodies or credentials.
-  console.error('DAECHION_BILLING_WORKER_FAILED'); process.exit(1)
+  const safe = /^(?:SHEETS_HTTP_(?:400|401|403|404|409|429|500|502|503|504)|SHEETS_CREDENTIALS_REQUIRED|SHEETS_REQUEST_UNCONFIRMED|NEW_SHEET_(?:CONFIGURATION_REQUIRED|TAB_REQUIRED|TAB_NOT_FOUND|TAB_NOT_EMPTY|HEADERS_CHANGED)|SHEET_SETUP_UNCONFIRMED|INVALID_SHEET_METADATA|INVALID_NEW_SHEET_TARGET)$/.test(error?.message??'') ? error.message : undefined
+  console.error('DAECHION_BILLING_WORKER_FAILED' + (safe ? ':' + safe : '')); process.exit(1)
 })
 module.exports = { main, runtime }

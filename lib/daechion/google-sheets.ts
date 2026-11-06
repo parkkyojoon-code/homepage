@@ -15,6 +15,10 @@ export function googleSheetsApi(credentialsJson:string):SheetsApi {
     try {
       const client=await auth.getClient()
       return (await client.request({url:'https://sheets.googleapis.com/v4'+requestPath,method,data:body,timeout:15000,retry:false,maxRedirects:0})).data
-    } catch {throw Error('SHEETS_REQUEST_UNCONFIRMED')}
+    } catch(error) {
+      const status=(error as {response?:{status?:number}})?.response?.status
+      // Only HTTP status is safe to report; response bodies can contain credentials or cells.
+      throw Error([400,401,403,404,409,429,500,502,503,504].includes(status??0)?`SHEETS_HTTP_${status}`:'SHEETS_REQUEST_UNCONFIRMED')
+    }
   }}
 }
