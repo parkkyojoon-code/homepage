@@ -14,7 +14,7 @@ function targetPath(target:SheetTarget) {
 type Metadata = {metadataId:number;location:{sheetId?:number;dimensionRange?:{sheetId:number;dimension:string;startIndex:number;endIndex:number}}}
 async function findMetadata(api:SheetsApi,target:SheetTarget,key:string,value:string):Promise<Metadata[]> {
   const response=await api.call('POST',targetPath(target)+'/developerMetadata:search',{dataFilters:[{developerMetadataLookup:{
-    metadataKey:key,metadataValue:value,visibility:'DOCUMENT',metadataLocation:{sheetId:target.sheetId},locationMatchingStrategy:'INTERSECTING',
+    metadataKey:key,metadataValue:value,visibility:'DOCUMENT',metadataLocation:{sheetId:target.sheetId},locationMatchingStrategy:'INTERSECTING_LOCATION',
   }}]})
   if(response.matchedDeveloperMetadata===undefined)return []
   if(!Array.isArray(response.matchedDeveloperMetadata))throw Error('INVALID_SHEET_METADATA')

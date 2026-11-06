@@ -569,6 +569,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       const api={call:async(method,path,body)=>{
         calls.push({method,path,body})
         if(path.includes('developerMetadata:search')){
+          assert.equal(body.dataFilters[0].developerMetadataLookup.locationMatchingStrategy,'INTERSECTING_LOCATION')
           const key=body.dataFilters[0].developerMetadataLookup.metadataKey
           return {matchedDeveloperMetadata:[{developerMetadata:key==='pkjmath_application_id'?{metadataId:45,location:{dimensionRange:{sheetId:7,dimension:'ROWS',startIndex:19,endIndex:20}}}:{metadataId:1,location:{sheetId:7}}}]}
         }
