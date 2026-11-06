@@ -32,7 +32,7 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
   const port=reservation.address().port;await new Promise((resolve,reject)=>reservation.close(e=>e?reject(e):resolve()));
   const origin=`http://127.0.0.1:${port}`;
   const env={...process.env,NODE_ENV:'production',DATA_DIR:temp,ADMIN_PASSWORD:adminPassword,ADMIN_SECRET:randomBytes(32).toString('hex'),
-   DAECHION_INTAKE_ENABLED:'false',DAECHION_DATABASE_URL:'',
+   DAECHION_INTAKE_ENABLED:'false',DAECHION_ADMIN_ENABLED:'false',DAECHION_DATABASE_URL:'',
    LECTURES_DATABASE_URL:'',LECTURES_APP_ORIGIN:origin,LECTURES_ADDITIONAL_ORIGINS:'',LECTURES_WORKER_ENABLED:'false',LECTURES_WORKER_TOKEN:'',
    GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:'',PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',SOLAPI_API_KEY:'',SOLAPI_API_SECRET:'',
    LECTURES_BOOTSTRAP_USERNAME:'',LECTURES_BOOTSTRAP_NAME:'',LECTURES_BOOTSTRAP_PASSWORD:''};
@@ -98,6 +98,12 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
   await t.test('new process-2 API is closed by default and does not fall through to legacy billing',async()=>{
    const availability=await request('/api/daechion/applications?productId=test-process-two');assert.equal(availability.status,200);assert.deepEqual(await availability.json(),{available:false});
    const receipt=await request('/api/daechion/applications',{method:'POST',body:{productId:'test-process-two'}});assert.equal(receipt.status,503);assert.equal((await receipt.json()).success,false);
+  });
+  await t.test('new management API requires the existing admin session and remains disabled without its DB',async()=>{
+   assert.equal((await request('/api/admin/daechion/applications')).status,401);
+   assert.equal((await request('/api/admin/daechion/applications',{cookie:studentCookie})).status,401);
+   assert.equal((await request('/api/admin/daechion/applications',{cookie:adminCookie})).status,503);
+   assert.equal((await request('/api/admin/daechion/applications',{method:'POST',body:{action:'HOLD'}})).status,401);
   });
   await t.test('retired APIs stay closed with existing student and admin cookies',async()=>{
    for(const route of ['/api/lectures/me','/api/lectures/orders','/api/lectures/admin/orders','/api/lectures/admin/accounts'])

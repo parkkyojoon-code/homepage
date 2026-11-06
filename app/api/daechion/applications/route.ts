@@ -10,6 +10,8 @@ function ports() {
     ready:async()=>withAutomationClient(async client=>{
       await client.query('SELECT id,submission FROM daechion_automation.applications LIMIT 0')
       await client.query('SELECT status,origin FROM daechion_automation.identity_checks LIMIT 0')
+      await client.query('SELECT manual_access_action FROM daechion_automation.applications LIMIT 0')
+      await client.query('SELECT state FROM daechion_automation.ready_receipts LIMIT 0')
     }),
   }
 }

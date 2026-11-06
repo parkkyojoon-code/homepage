@@ -8,10 +8,13 @@ function runtime(env) {
   const { enrollApplication } = require('../../.daechion-worker-build/lib/daechion/enrollment.js')
   const { syncOneApplication } = require('../../.daechion-worker-build/lib/daechion/sheets-worker.js')
   const { setupApplicationSheet } = require('../../.daechion-worker-build/lib/daechion/sheets-publisher.js')
+  const { sendOneReadyMessage,solapiReadyProvider } = require('../../.daechion-worker-build/lib/daechion/ready-message.js')
   const migrations = require('../../scripts/daechion-migrations.cjs')
   const provider = payssamBillingProvider({ apiKey: env.PAYSSAM_API_KEY, member: env.PAYSSAM_MEMBER,
     merchant: env.PAYSSAM_MERCHANT, callbackUrl: env.DAECHION_BILLING_CALLBACK_URL })
   let daechion, tenantChecked = false
+  let messageProvider
+  if(env.DAECHION_READY_MESSAGE_ENABLED==='true')messageProvider=solapiReadyProvider({apiKey:env.SOLAPI_API_KEY,apiSecret:env.SOLAPI_API_SECRET,sender:env.SOLAPI_SENDER})
   let sheetApi, sheetTarget
   if(env.DAECHION_SHEETS_ENABLED==='true') {
     const {googleSheetsApi}=require('../../.daechion-worker-build/lib/daechion/google-sheets.js')
@@ -40,8 +43,8 @@ function runtime(env) {
       if(!sheetApi||!sheetTarget)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
       await setupApplicationSheet(sheetApi,sheetTarget)
     },
-    async cycle(sendEnabled, { paymentsEnabled = false, enrollmentEnabled = false, sheetsEnabled = false } = {}) {
-      const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0 }
+    async cycle(sendEnabled, { paymentsEnabled = false, enrollmentEnabled = false, sheetsEnabled = false,readyMessagesEnabled=false } = {}) {
+      const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0,messages:0 }
       if (enrollmentEnabled && !tenantChecked) {
         if (!daechion || String((await daechion.me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
         tenantChecked = true
@@ -92,6 +95,12 @@ function runtime(env) {
           } catch { outcomes.failed++ }
         }
       }
+      if(readyMessagesEnabled){
+        if(!messageProvider)throw Error('READY_MESSAGE_CONFIGURATION_REQUIRED')
+        for(let i=0;i<5;i++){
+          try{const result=await sendOneReadyMessage({provider:messageProvider,withClient:withAutomationClient});if(result==='SKIPPED')break;if(result==='SENT')outcomes.messages++;else outcomes.unknown++}catch{outcomes.failed++;break}
+        }
+      }
       if(sheetsEnabled) {
         if(!sheetApi||!sheetTarget)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
         for(let i=0;i<5;i++) {
@@ -131,6 +140,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
         paymentsEnabled: env.DAECHION_PAYMENT_READ_ENABLED === 'true',
         enrollmentEnabled: env.DAECHION_ENROLLMENT_ENABLED === 'true',
         sheetsEnabled: env.DAECHION_SHEETS_ENABLED === 'true',
+        readyMessagesEnabled:env.DAECHION_READY_MESSAGE_ENABLED==='true',
       }), sending: sendEnabled })
       if (argv.includes('--once') || stopping) break
       await sleep(30000)

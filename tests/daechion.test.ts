@@ -10,6 +10,7 @@ import { withAutomationClient } from '../lib/daechion/database'
 import { payssamBillingProvider, approvalTimestamp, type BillSendJob } from '../lib/daechion/payssam'
 import { newBillId } from '../lib/daechion/billing'
 import { identityConditionalFormatting, SHEET_HEADERS } from '../lib/daechion/sheets-view'
+import { solapiReadyProvider,lmsText } from '../lib/daechion/ready-message'
 
 const key = 'unit-test-only-not-a-real-credential'
 const input = { name: '검수학생', studentPhone: '01000000001' }
@@ -331,4 +332,20 @@ test('intake requires exactly one history declaration and Sheets colors follow e
   assert.deepEqual(rules.map(row=>row.addConditionalFormatRule.rule.booleanRule.condition.values[0].userEnteredValue),['통과','확인 필요','조회 대기'])
   assert.equal(rules[0].addConditionalFormatRule.rule.ranges[0].startColumnIndex,SHEET_HEADERS.indexOf('중복 수강생 확인'))
   assert.equal(rules[1].addConditionalFormatRule.rule.booleanRule.format.textFormat.foregroundColor.red,1)
+})
+
+test('new LMS message uses a dedicated signed provider request and confirms one matching receipt',async()=>{
+  const receiptId=randomUUID(),calls:{url:string;body:Record<string,unknown>}[]=[]
+  const service=solapiReadyProvider({apiKey:'test-key',apiSecret:'test-secret',sender:'01000000999',fetcher:(async(url,init)=>{
+    const body=JSON.parse(String(init?.body));calls.push({url:String(url),body})
+    assert.equal(init?.redirect,'error');assert.match(new Headers(init?.headers).get('Authorization')??'',/^HMAC-SHA256 /)
+    return Response.json({groupInfo:{count:{registeredSuccess:1,registeredFailed:0}},failedMessageList:[],messageList:[{messageId:'test-message',statusCode:'2000',customFields:{pkjmathReceiptId:receiptId}}]})
+  }) as typeof fetch})
+  const text=lmsText('검수학생','검수 강의')
+  assert.deepEqual(await service.send({receiptId,phone:'01000000001',text}),{accepted:true,messageId:'test-message'})
+  assert.equal(calls[0].url,'https://api.solapi.com/messages/v4/send-many/detail')
+  assert.equal(/notion|discord/i.test(text),false);assert.ok(text.includes('https://parkkyojoon.daechion.com'))
+  assert.ok(text.includes('기존 계정은 사용하던 비밀번호'))
+  const unknown=solapiReadyProvider({apiKey:'test-key',apiSecret:'test-secret',sender:'01000000999',fetcher:(async()=>Response.json({groupInfo:{count:{registeredSuccess:1,registeredFailed:0}},messageList:[{messageId:'wrong',statusCode:'2000',customFields:{pkjmathReceiptId:randomUUID()}}]})) as typeof fetch})
+  assert.deepEqual(await unknown.send({receiptId,phone:'01000000001',text}),{accepted:false})
 })

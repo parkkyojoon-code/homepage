@@ -32,8 +32,11 @@ export async function applyPaymentObservation(client: LedgerClient, target: Paym
     const old = JSON.stringify([app.payment_state, app.automation_state, app.review_code, bill.state, bill.last_payment_state, app.paid_at])
     let payment = String(app.payment_state), automation = String(app.automation_state), review = app.review_code as string | null
     let paidAt = app.paid_at, billState = String(bill.state), last = 'UNKNOWN'
+    let manualAccess = app.manual_access_action
     const clearTransient = () => { if (review && recoverableReviews.has(review)) review = null }
     const hold = (reason: string) => {
+      if(manualAccess&&['late_payment','payment_time_unknown','bill_send_unknown'].includes(reason))return
+      if(manualAccess){manualAccess=null;review=reason}
       if (automation === 'ACTIVE' || (automation === 'CLOSED' && review === 'unpaid_wait_closed')) automation = 'HOLD'
       if (!review || recoverableReviews.has(review)) review = reason
     }
@@ -73,13 +76,16 @@ export async function applyPaymentObservation(client: LedgerClient, target: Paym
     }
     await client.query(`UPDATE daechion_automation.bills SET state=$2,last_payment_state=$3,
       checked_at=GREATEST(now(),COALESCE(checked_at+interval '1 microsecond',now())) WHERE id=$1`, [target.recordId, billState, last])
-    await client.query(`UPDATE daechion_automation.applications SET payment_state=$2,automation_state=$3,review_code=$4,paid_at=$5 WHERE id=$1`,
-      [target.applicationId, payment, automation, review, paidAt])
+    await client.query(`UPDATE daechion_automation.applications SET payment_state=$2,automation_state=$3,review_code=$4,paid_at=$5,manual_access_action=$6 WHERE id=$1`,
+      [target.applicationId, payment, automation, review, paidAt, manualAccess])
     if (automation !== 'ACTIVE' || payment === 'CANCELLED') {
       await client.query("UPDATE daechion_automation.registrations SET state='STOPPED' WHERE application_id=$1 AND state='PENDING'", [target.applicationId])
       await client.query("UPDATE daechion_automation.registrations SET state='REVIEW',lease_token=NULL,lease_until=NULL WHERE application_id=$1 AND state='RUNNING'", [target.applicationId])
-      await client.query("UPDATE daechion_automation.outbox SET state='FAILED',lease_token=NULL,lease_until=NULL WHERE application_id=$1 AND kind='READY_MESSAGE' AND state='PENDING'", [target.applicationId])
-      await client.query("UPDATE daechion_automation.applications SET notification_state='FAILED' WHERE id=$1 AND notification_state='PENDING'", [target.applicationId])
+      if(!manualAccess){
+        const running=await client.query("SELECT id FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE' AND state='RUNNING'",[target.applicationId])
+        await client.query("UPDATE daechion_automation.outbox SET state=CASE WHEN state='RUNNING' THEN 'UNKNOWN' ELSE 'FAILED' END,lease_token=NULL,lease_until=NULL WHERE application_id=$1 AND kind='READY_MESSAGE' AND state IN ('PENDING','RUNNING')", [target.applicationId])
+        await client.query("UPDATE daechion_automation.applications SET notification_state=$2 WHERE id=$1 AND notification_state='PENDING'", [target.applicationId,running.rows.length?'UNKNOWN':'FAILED'])
+      }
     } else if (payment === 'PAID' && review === null && app.automation_state === 'CLOSED' && app.review_code === 'unpaid_wait_closed') {
       await client.query("UPDATE daechion_automation.registrations SET state='PENDING' WHERE application_id=$1 AND state='STOPPED'", [target.applicationId])
     }

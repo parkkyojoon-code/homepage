@@ -15,7 +15,7 @@ export interface ApplicationView {
   paymentState: string; paidAt?: string; studentId?: number; lectureIds: number[];
   registrationState: string; notificationState: string; reviewReason?: string;
   identity?: { status: 'WAITING' | 'PASSED' | 'REVIEW'; detected: 'NEW' | 'EXISTING' | 'UNKNOWN';
-    studentId?: number; origin?: 'CREATED' | 'EXISTING'; reason?: string }
+    studentId?: number; origin?: 'CREATED' | 'EXISTING'; reason?: string;manualReviewed?:boolean }
 }
 function koreanTime(value?: string): string {
   if (!value) return ''
@@ -28,7 +28,7 @@ const labels: Record<string, Record<string, string>> = {
   billing: { NOT_CREATED:'미발송',RESERVED:'청구 준비',SEND_UNKNOWN:'발송 결과 확인 필요',SENT:'발송 완료',CANCELLED:'취소',DESTROYED:'파기' },
   payment: { PENDING:'미납',PAID:'결제 완료',CANCELLED:'취소',UNKNOWN:'확인 필요' },
   registration: { PENDING:'등록 대기',RUNNING:'등록 중',DONE:'등록 완료',REVIEW:'관리자 확인',STOPPED:'보류' },
-  notification: { NOT_READY:'등록 완료 후 발송',PENDING:'발송 대기',SENT:'발송 완료',UNKNOWN:'발송 결과 확인 필요',FAILED:'발송 실패' },
+  notification: { NOT_READY:'등록 완료 후 발송',PENDING:'발송 대기',SENT:'발송 접수 완료',UNKNOWN:'발송 결과 확인 필요',FAILED:'발송 중단/실패' },
 }
 function stateLabel(kind: string, state: string): string {
   const label = labels[kind]?.[state]
@@ -41,9 +41,9 @@ export function applicationSheetRow(view: ApplicationView): (string | number)[] 
   const allIds = [...new Set(view.allBillIds)]
   const identity = view.identity
   if (identity && (!['WAITING','PASSED','REVIEW'].includes(identity.status) || !['NEW','EXISTING','UNKNOWN'].includes(identity.detected))) throw Error('Invalid identity state')
-  if (identity?.status === 'PASSED' && (!s.studentHistory || !Number.isSafeInteger(identity.studentId) || (identity.studentId ?? 0) <= 0 ||
+  if (identity?.status === 'PASSED' && ((!s.studentHistory&&!identity.manualReviewed) || !Number.isSafeInteger(identity.studentId) || (identity.studentId ?? 0) <= 0 ||
     !['CREATED','EXISTING'].includes(identity.origin ?? '') || identity.reason ||
-    (s.studentHistory === 'NEW' && identity.origin !== 'CREATED') || (s.studentHistory === 'EXISTING' && identity.detected !== 'EXISTING'))) throw Error('Invalid identity pass')
+    (!identity.manualReviewed&&((s.studentHistory === 'NEW' && identity.origin !== 'CREATED') || (s.studentHistory === 'EXISTING' && identity.detected !== 'EXISTING'))))) throw Error('Invalid identity pass')
   const identityReason: Record<string,string> = {
     identity_declaration_missing:'기존·신규 선택 정보 없음',identity_declaration_mismatch:'신청 선택과 기존 번호 기록이 다름',
     student_identity_review:'대상 학생을 확정할 수 없음',guardian_identity_review:'보호자 연결 확인 필요',
@@ -60,8 +60,8 @@ export function applicationSheetRow(view: ApplicationView): (string | number)[] 
     stateLabel('notification',view.notificationState),view.reviewReason ?? '',koreanTime(view.updatedAt),
     s.studentHistory === 'NEW' ? '신규 수강생' : s.studentHistory === 'EXISTING' ? '기존 수강생' : '미선택',
     identity?.origin === 'CREATED' ? '본 신청에서 생성' : identity?.detected === 'EXISTING' ? '기존 기록 있음' : identity?.detected === 'NEW' ? '기존 기록 없음' : '조회 미확정',
-    !s.studentHistory || identity?.status === 'REVIEW' ? '확인 필요' : identity?.status === 'PASSED' ? '통과' : '조회 대기',
-    !s.studentHistory ? identityReason.identity_declaration_missing : identity?.reason ? (identityReason[identity.reason] ?? '담당자 확인 필요') : '']
+    (!s.studentHistory&&!identity?.manualReviewed) || identity?.status === 'REVIEW' ? '확인 필요' : identity?.status === 'PASSED' ? '통과' : '조회 대기',
+    identity?.manualReviewed&&identity.status==='PASSED'?'수동 확인 완료':!s.studentHistory ? identityReason.identity_declaration_missing : identity?.reason ? (identityReason[identity.reason] ?? '담당자 확인 필요') : '']
 }
 
 export function identityConditionalFormatting(sheetId: number) {

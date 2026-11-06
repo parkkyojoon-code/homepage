@@ -16,11 +16,11 @@ export async function releaseIdentityPhones(client: LedgerClient, applicationId:
   await client.query('DELETE FROM daechion_automation.identity_phone_claims WHERE application_id=$1', [applicationId])
 }
 export async function identityBinding(client: LedgerClient, applicationId: string) {
-  const row = (await client.query('SELECT student_id::text,origin FROM daechion_automation.identity_checks WHERE application_id=$1', [applicationId])).rows[0]
+  const row = (await client.query('SELECT student_id::text,origin,manual_review_id FROM daechion_automation.identity_checks WHERE application_id=$1', [applicationId])).rows[0]
   if (!row?.student_id) return undefined
   const id = Number(row.student_id)
   if (!Number.isSafeInteger(id) || id <= 0) throw new IdentityReview('identity_binding_changed', 'UNKNOWN')
-  return { id, origin: String(row.origin) }
+  return { id, origin: String(row.origin), manualReviewed:Boolean(row.manual_review_id) }
 }
 export async function saveIdentity(client: LedgerClient, applicationId: string, data: {
   status: 'PASSED' | 'REVIEW'; detected: 'NEW' | 'EXISTING' | 'UNKNOWN'; studentId?: number; created?: boolean; reason?: string

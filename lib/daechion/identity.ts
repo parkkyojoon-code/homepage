@@ -20,14 +20,14 @@ export class IdentityReview extends DaechionError {
   constructor(code: string, public readonly detected: 'NEW' | 'EXISTING' | 'UNKNOWN') { super(code) }
 }
 export async function resolveStudent(port: StudentPort, raw: StudentInput, options: {
-  history?: 'NEW' | 'EXISTING'; knownCreatedId?: number
+  history?: 'NEW' | 'EXISTING'; knownCreatedId?: number; manualApprovedId?:number
 } = {}): Promise<{ student: DaechionStudent; created: boolean; detected: 'NEW' | 'EXISTING' }> {
   const input: StudentInput = {
     name: raw.name.trim().normalize('NFC'), studentPhone: normalizePhone(raw.studentPhone),
     ...(raw.guardianPhone ? { guardianPhone: normalizePhone(raw.guardianPhone) } : {}),
   }
   if (!input.name) throw new DaechionError('invalid_student_name')
-  if (!options.history) throw new IdentityReview('identity_declaration_missing', 'UNKNOWN')
+  if (!options.history&&!options.manualApprovedId) throw new IdentityReview('identity_declaration_missing', 'UNKNOWN')
   const candidates = new Map<number, DaechionStudent>()
   try {
     for (const phone of new Set([input.studentPhone, input.guardianPhone].filter((value): value is string => Boolean(value)))) {
@@ -45,6 +45,12 @@ export async function resolveStudent(port: StudentPort, raw: StudentInput, optio
     throw new IdentityReview('identity_lookup_failed', 'UNKNOWN')
   }
   const detected = candidates.size ? 'EXISTING' : 'NEW'
+  if(options.manualApprovedId){
+    const selected=candidates.get(options.manualApprovedId)
+    if(!selected)throw new IdentityReview('identity_binding_changed',detected)
+    try{return {student:verify(selected,input),created:false,detected}}
+    catch(error){throw new IdentityReview(error instanceof DaechionError?error.code:'student_identity_review',detected)}
+  }
   if (options.knownCreatedId !== undefined) {
     if (candidates.size !== 1 || !candidates.has(options.knownCreatedId)) throw new IdentityReview('identity_binding_changed', detected)
   } else if (options.history !== detected) throw new IdentityReview('identity_declaration_mismatch', detected)

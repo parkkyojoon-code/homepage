@@ -8,7 +8,7 @@ function loadMigration(name = '001_initial.sql') {
   return { name, checksum: createHash('sha256').update(sql).digest('hex'),
     body: sql.replace(/^BEGIN;\s*/, '').replace(/COMMIT;\s*$/, '') }
 }
-const loadMigrations = () => ['001_initial.sql','002_identity.sql'].map(loadMigration)
+const loadMigrations = () => ['001_initial.sql','002_identity.sql','003_admin_messages.sql'].map(loadMigration)
 async function status(client, migrations = loadMigrations()) {
   if (!Array.isArray(migrations)) migrations = [migrations]
   const { rows } = await client.query("SELECT to_regclass('daechion_automation.schema_migrations') AS tracked, to_regnamespace('daechion_automation') AS namespace")
@@ -30,6 +30,10 @@ async function checkSchema(client) {
   await client.query('SELECT kind,actor,created_at FROM daechion_automation.events LIMIT 0')
   await client.query('SELECT status,detected_type,student_id,origin,reason_code,checked_at FROM daechion_automation.identity_checks LIMIT 0')
   await client.query('SELECT phone,application_id FROM daechion_automation.identity_phone_claims LIMIT 0')
+  await client.query('SELECT manual_access_action FROM daechion_automation.applications LIMIT 0')
+  await client.query('SELECT manual_review_id FROM daechion_automation.identity_checks LIMIT 0')
+  await client.query('SELECT fingerprint,operator_name,reason,evidence FROM daechion_automation.admin_actions LIMIT 0')
+  await client.query('SELECT phone,state,provider_message_id,accepted_at FROM daechion_automation.ready_receipts LIMIT 0')
 }
 async function migrate(client, migrations = loadMigrations()) {
   if (!Array.isArray(migrations)) migrations = [migrations]

@@ -7,7 +7,7 @@ export async function automationTransaction<T>(client: LedgerClient, run: () => 
   catch (error) { await client.query('ROLLBACK'); throw error }
 }
 export async function automationChanged(client: LedgerClient, applicationId: string, kind: string,
-  actor: 'BILLING_WORKER' | 'ENROLLMENT_WORKER') {
+  actor: 'BILLING_WORKER' | 'ENROLLMENT_WORKER' | 'ADMIN') {
   const changed = await client.query<{ version: string }>(`UPDATE daechion_automation.applications
     SET version=version+1,updated_at=now() WHERE id=$1 RETURNING version::text`, [applicationId])
   const version = changed.rows[0].version

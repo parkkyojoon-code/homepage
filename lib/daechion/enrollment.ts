@@ -120,6 +120,7 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
     const resolved = await resolveStudent(guarded, { name: job.snapshot.studentName, studentPhone: job.snapshot.studentPhone,
       ...(job.snapshot.guardianPhone ? { guardianPhone: job.snapshot.guardianPhone } : {}) }, {
       history: job.snapshot.studentHistory, knownCreatedId: binding?.origin === 'CREATED' ? binding.id : undefined,
+      manualApprovedId:binding?.manualReviewed?binding.id:undefined,
     })
     await ports.withClient(client => saveIdentity(client, applicationId, {status:'PASSED', detected:resolved.detected, studentId:resolved.student.id, created:resolved.created}))
     identitySaved = true

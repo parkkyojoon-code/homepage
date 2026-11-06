@@ -44,7 +44,7 @@ test('payment reads and enrollment have separate default-off controls', async ()
     await worker.main({argv:['--once'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',...env},
       makeRuntime:()=>({check:async()=>{},cycle:async(_send,options)=>{flags.push(options);return {}}}),write:()=>{}})
   }
-  assert.deepEqual(flags,[{paymentsEnabled:false,enrollmentEnabled:false,sheetsEnabled:false},{paymentsEnabled:true,enrollmentEnabled:false,sheetsEnabled:false},{paymentsEnabled:true,enrollmentEnabled:true,sheetsEnabled:false}])
+  assert.deepEqual(flags,[{paymentsEnabled:false,enrollmentEnabled:false,sheetsEnabled:false,readyMessagesEnabled:false},{paymentsEnabled:true,enrollmentEnabled:false,sheetsEnabled:false,readyMessagesEnabled:false},{paymentsEnabled:true,enrollmentEnabled:true,sheetsEnabled:false,readyMessagesEnabled:false}])
 })
 
 test('explicit Sheets setup never enters the financial cycle and --check takes precedence',async()=>{

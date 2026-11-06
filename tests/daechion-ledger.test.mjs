@@ -14,6 +14,9 @@ import identityStore from '../.daechion-test-build/lib/daechion/identity-store.j
 import intakeHttp from '../.daechion-test-build/lib/daechion/intake-http.js'
 import publisher from '../.daechion-test-build/lib/daechion/sheets-publisher.js'
 import sheetsWorker from '../.daechion-test-build/lib/daechion/sheets-worker.js'
+import admin from '../.daechion-test-build/lib/daechion/admin.js'
+import adminHttp from '../.daechion-test-build/lib/daechion/admin-http.js'
+import readyMessage from '../.daechion-test-build/lib/daechion/ready-message.js'
 import migrations from '../scripts/daechion-migrations.cjs'
 
 const { createApplication, reserveBill, applicationSnapshotSchema } = ledger
@@ -57,9 +60,9 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     await db.exec('CREATE TABLE legacy_students(id integer PRIMARY KEY); INSERT INTO legacy_students VALUES(7);')
     const migrator = migrationClient(db)
     await t.test('migration status is read-only; tracked application is repeatable and checksum protected',async()=>{
-      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql']})
+      assert.deepEqual(await migrations.status(migrator),{tracked:false,pending:['001_initial.sql','002_identity.sql','003_admin_messages.sql']})
       assert.equal((await db.query("SELECT to_regnamespace('daechion_automation') AS name")).rows[0].name,null)
-      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql'])
+      assert.deepEqual(await migrations.migrate(migrator),['001_initial.sql','002_identity.sql','003_admin_messages.sql'])
       assert.deepEqual(await migrations.migrate(migrator),[])
       await assert.rejects(migrations.migrate(migrator,{...migrations.loadMigration(),checksum:'changed'}),/AUTOMATION_MIGRATION_HISTORY_MISMATCH/)
     })
@@ -197,6 +200,7 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
         env:{...process.env,DAECHION_DATABASE_URL:process.env.DAECHION_TEST_POSTGRES_URL,
           DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_BILLING_SEND_ENABLED:'true',
           DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_ENROLLMENT_ENABLED:'true',DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_API_KEY:'fake-key',DAECHION_TENANT_ID:'fake-tenant',
+          DAECHION_READY_MESSAGE_ENABLED:'true',SOLAPI_API_KEY:'fake-key',SOLAPI_API_SECRET:'fake-secret',SOLAPI_SENDER:'01000000999',DAECHION_SHEETS_ENABLED:'false',
           PAYSSAM_API_KEY:'fake-test-key',PAYSSAM_MEMBER:'fake-member',PAYSSAM_MERCHANT:'fake-merchant',
           DAECHION_BILLING_CALLBACK_URL:'https://web.invalid/api/daechion/billing/callback'},
       })
@@ -424,6 +428,102 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.throws(()=>sheetsDestination('https://example.com',legacy))
       assert.deepEqual(sheetsDestination(fresh,legacy),{spreadsheetId:fresh,valueInputOption:'RAW'})
     })
+    const adminInput=async(id,action,extra={})=>({requestKey:randomUUID(),applicationId:id,expectedVersion:String((await appRow(id)).version),action,operatorName:'검수 담당자',reason:'격리 검수에서 외부 내역 직접 확인',confirmed:true,...extra})
+    await t.test('admin actions require a fresh version, retain an audit and replay once without duplicate side effects',async()=>{
+      const id=await paymentFixture();await observe(id)
+      const action=await adminInput(id,'HOLD')
+      assert.deepEqual(await admin.applyAdminAction(client,action),{replayed:false})
+      assert.deepEqual(await admin.applyAdminAction(client,action),{replayed:true})
+      await assert.rejects(admin.applyAdminAction(client,{...action,requestKey:randomUUID()}),/STALE/)
+      await assert.rejects(admin.applyAdminAction(client,{...action,reason:'changed request'}),/STALE/)
+      assert.equal((await appRow(id)).payment_state,'PAID');assert.equal((await appRow(id)).automation_state,'HOLD')
+      assert.equal((await db.query('SELECT id FROM daechion_automation.admin_actions WHERE application_id=$1',[id])).rows.length,1)
+    })
+    await t.test('manual student approval resolves a NEW mismatch without rewriting the declared history',async()=>{
+      const id=await paymentFixture('NEW');await observe(id)
+      const ports={daechion:fakeDaechion(),withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'REVIEW')
+      const action=await adminInput(id,'RESUME',{studentId:77})
+      await assert.rejects(admin.applyAdminAction(client,action,{...student,name:'다른학생'}),/INVALID_EVIDENCE/)
+      await admin.applyAdminAction(client,action,student)
+      assert.equal((await appRow(id)).submission.studentHistory,'NEW')
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.ok((await db.query('SELECT manual_review_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows[0].manual_review_id)
+      await admin.applyAdminAction(client,await adminInput(id,'REVOKED'))
+      assert.equal((await appRow(id)).automation_state,'REVOKED')
+      await observe(id)
+      assert.equal((await appRow(id)).automation_state,'REVOKED')
+    })
+    await t.test('manual payment evidence is checked and late manual registration is not undone by the polling worker',async()=>{
+      const id=(await make(undefined,{...input,studentHistory:'NEW'})).id
+      await billing.reserveApplicationBill(client,id,'payment-test');await billing.claimBillSend(client,id,'payment-test')
+      const bill=(await db.query('SELECT bill_id FROM daechion_automation.bills WHERE application_id=$1',[id])).rows[0]
+      const paidAt=new Date(Date.now()-1000).toISOString(),sentAt=new Date(Date.now()-8*86400000).toISOString()
+      const paymentAction=await adminInput(id,'CONFIRM_PAYMENT',{billId:bill.bill_id,amountWon:1200,paidAt,sentAt})
+      await assert.rejects(admin.applyAdminAction(client,{...paymentAction,amountWon:1}),/INVALID_EVIDENCE/)
+      await admin.applyAdminAction(client,paymentAction)
+      const action=await adminInput(id,'MANUAL_COMPLETE',{studentId:77})
+      await admin.applyAdminAction(client,action,student)
+      assert.ok((await appRow(id)).manual_access_action)
+      await observe(id,{paidAt})
+      assert.ok((await appRow(id)).manual_access_action);assert.equal((await appRow(id)).review_code,'manual_access_recorded')
+      await observe(id,{state:'C',paidAt:null})
+      assert.equal((await appRow(id)).manual_access_action,null);assert.equal((await appRow(id)).payment_state,'CANCELLED')
+    })
+    await t.test('admin HTTP checks login and origin before reading records or trusting manual evidence',async()=>{
+      let connections=0
+      const ports={authed:async()=>false,enabled:true,origins:['https://admin.invalid'],withClient:async run=>{connections++;return run(client)},student:async()=>student}
+      const request=new Request('https://admin.invalid/api/admin/daechion/applications')
+      assert.equal((await adminHttp.adminGet(request,ports)).status,401);assert.equal(connections,0)
+      assert.equal((await adminHttp.adminGet(request,{...ports,authed:async()=>true,enabled:false})).status,503)
+      const cross=new Request(request.url,{method:'POST',headers:{Origin:'https://wrong.invalid','Content-Type':'application/json'},body:'{}'})
+      assert.equal((await adminHttp.adminPost(cross,{...ports,authed:async()=>true})).status,403);assert.equal(connections,0)
+    })
+    await t.test('LMS sends only after all grants, only to student/guardian, and never twice',async()=>{
+      await db.query("UPDATE daechion_automation.outbox SET state='FAILED',lease_token=NULL,lease_until=NULL WHERE kind='READY_MESSAGE' AND state IN ('PENDING','RUNNING')")
+      await db.query("UPDATE daechion_automation.applications SET notification_state='FAILED' WHERE notification_state='PENDING'")
+      const id=await paymentFixture();await observe(id)
+      const ports={daechion:fakeDaechion(),withClient:run=>run(client)}
+      await enrollment.enrollApplication(id,true,ports)
+      let calls=[]
+      const sms={provider:{send:async data=>{calls.push(data);return {accepted:true,messageId:'accepted-'+calls.length}}},withClient:run=>run(client)}
+      assert.equal(await readyMessage.sendOneReadyMessage(sms),'SKIPPED')
+      await enrollment.enrollApplication(id,true,ports)
+      assert.equal(await readyMessage.sendOneReadyMessage(sms),'SENT');assert.equal(await readyMessage.sendOneReadyMessage(sms),'SKIPPED')
+      assert.deepEqual(calls.map(item=>item.phone).sort(),['01000000001','01000000002'])
+      assert.equal((await appRow(id)).notification_state,'SENT')
+    })
+    await t.test('partial LMS uncertainty never resends an accepted recipient',async()=>{
+      const id=await paymentFixture();await observe(id)
+      const registration={daechion:fakeDaechion(),withClient:run=>run(client)}
+      await enrollment.enrollApplication(id,true,registration);await enrollment.enrollApplication(id,true,registration)
+      let calls=0
+      const ports={provider:{send:async()=>{calls++;return calls===1?{accepted:true,messageId:'one-accepted'}:{accepted:false}}},withClient:run=>run(client)}
+      assert.equal(await readyMessage.sendOneReadyMessage(ports),'UNKNOWN');assert.equal(await readyMessage.sendOneReadyMessage(ports),'SKIPPED');assert.equal(calls,2)
+      assert.deepEqual((await db.query('SELECT state FROM daechion_automation.ready_receipts WHERE application_id=$1 ORDER BY phone',[id])).rows.map(item=>item.state),['SENT','UNKNOWN'])
+    })
+    await t.test('cancellation while sending LMS stops remaining recipients and cannot mark the whole job delivered',async()=>{
+      const id=await paymentFixture();await observe(id)
+      const registration={daechion:fakeDaechion(),withClient:run=>run(client)}
+      await enrollment.enrollApplication(id,true,registration);await enrollment.enrollApplication(id,true,registration)
+      let calls=0
+      const ports={provider:{send:async()=>{calls++;await observe(id,{state:'C',paidAt:null});return {accepted:true,messageId:'accepted-before-cancel'}}},withClient:run=>run(client)}
+      assert.equal(await readyMessage.sendOneReadyMessage(ports),'UNKNOWN');assert.equal(calls,1)
+      assert.equal((await appRow(id)).notification_state,'UNKNOWN');assert.equal((await appRow(id)).payment_state,'CANCELLED')
+    })
+    await t.test('parallel PostgreSQL message workers send each recipient only once',{skip:!db.isPostgres},async()=>{
+      const id=await paymentFixture();await observe(id)
+      const registration={daechion:fakeDaechion(),withClient:run=>run(client)}
+      await enrollment.enrollApplication(id,true,registration);await enrollment.enrollApplication(id,true,registration)
+      const calls=[]
+      const ports={provider:{send:async data=>{calls.push(data.phone);return {accepted:true,messageId:'concurrent-'+data.receiptId}}},withClient:async run=>{
+        const separate=new pg.Client({connectionString:process.env.DAECHION_TEST_POSTGRES_URL});await separate.connect()
+        try{return await run(separate)}finally{await separate.end()}
+      }}
+      assert.deepEqual((await Promise.all([readyMessage.sendOneReadyMessage(ports),readyMessage.sendOneReadyMessage(ports)])).sort(),['SENT','SKIPPED'])
+      assert.deepEqual(calls.sort(),['01000000001','01000000002'])
+    })
     await t.test('public intake enforces origin, size, required history, durable replay and recent duplicate protection',async()=>{
       const product={id:'public-http-intake',name:'공개 접수 검수',visible:true,purchaseProcess:'PROCESS_2',modes:{online:{enabled:true,price:1200},offline:{enabled:false,price:0}},textbook:{included:false,price:0}}
       const bindings=[{productId:product.id,lectureIds:[10]}],origin='https://test.invalid'
@@ -533,12 +633,12 @@ test('identity migration upgrades tracked 001 without rewriting submissions or o
     await db.exec('CREATE TABLE daechion_automation.schema_migrations(name text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())')
     await db.query('INSERT INTO daechion_automation.schema_migrations(name,checksum) VALUES($1,$2)',[initial.name,initial.checksum])
     await db.query('INSERT INTO daechion_automation.applications(id,request_key,request_fingerprint,product_id,product_title,tuition_won,textbook_won,total_won,submission) VALUES($1,$2,$3,$4,$5,1000,200,1200,$6::jsonb)',[id,randomUUID(),'0'.repeat(64),input.productId,input.productTitle,JSON.stringify(input)])
-    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql']})
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql']})
     const second = migrations.loadMigration('002_identity.sql')
     await assert.rejects(migrations.migrate(migrationClient(db),[initial,{...second,body:second.body+'\nSELECT * FROM missing_upgrade_table;'}]))
     assert.equal((await db.query("SELECT to_regclass('daechion_automation.identity_checks') AS name")).rows[0].name,null)
-    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql']})
-    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql'])
+    assert.deepEqual(await migrations.status(migrationClient(db)),{tracked:true,pending:['002_identity.sql','003_admin_messages.sql']})
+    assert.deepEqual(await migrations.migrate(migrationClient(db)),['002_identity.sql','003_admin_messages.sql'])
     assert.deepEqual((await db.query('SELECT submission FROM daechion_automation.applications WHERE id=$1',[id])).rows[0].submission,input)
     assert.deepEqual((await db.query('SELECT status,student_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows,[{status:'WAITING',student_id:null}])
     assert.equal((await db.query("SELECT checksum FROM daechion_automation.schema_migrations WHERE name='001_initial.sql'")).rows[0].checksum,initial.checksum)

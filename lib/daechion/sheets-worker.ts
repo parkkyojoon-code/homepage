@@ -29,7 +29,7 @@ export async function claimSheetJob(client:LedgerClient) {
       studentId:identity?.student_id?numberId(identity.student_id):undefined,lectureIds:regs.map(row=>numberId(row.lecture_id)),registrationState,
       notificationState:String(app.notification_state),reviewReason:app.review_code?String(app.review_code):undefined,
       identity:identity?{status:identity.status as 'WAITING'|'PASSED'|'REVIEW',detected:identity.detected_type as 'NEW'|'EXISTING'|'UNKNOWN',studentId:identity.student_id?numberId(identity.student_id):undefined,
-        origin:identity.origin as 'CREATED'|'EXISTING'|undefined,reason:identity.reason_code?String(identity.reason_code):undefined}:undefined,
+        origin:identity.origin as 'CREATED'|'EXISTING'|undefined,reason:identity.reason_code?String(identity.reason_code):undefined,manualReviewed:Boolean(identity.manual_review_id)}:undefined,
     }
     return {id:String(queue.id),applicationId:String(app.id),token,version:String(app.snapshot_version),view}
   })
