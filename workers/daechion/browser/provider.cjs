@@ -77,8 +77,9 @@ async function verifyCollection(page,url,tabName,kind,input) {
   return titles.length
 }
 
-async function applyAndVerify(page,input,lecture) {
+async function applyAndVerify(page,input,lecture,onStage=()=>{}) {
   const participants=`${ORIGIN}/crm/lectures/${input.lectureId}/participants`
+  onStage('PICKER_PAGE')
   await page.goto(participants)
   // A login redirect or a page for another lecture is not successful auth.
   await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
@@ -87,6 +88,7 @@ async function applyAndVerify(page,input,lecture) {
   const picker=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'일괄 학생 추가',exact:true})})
   await picker.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true}).fill(input.studentPhone)
   const row=await exactStudentRow(picker,input)
+  onStage('STUDENT_SELECTED')
   await row.getByRole('checkbox').setChecked(true)
   await picker.getByRole('button',{name:/^1명 추가(?:\s|$)/}).click()
   const weeks=page.getByRole('dialog',{name:'차시 선택',exact:true})
@@ -100,6 +102,7 @@ async function applyAndVerify(page,input,lecture) {
     await checkbox.setChecked(true)
   }
   // First possible registration write: re-check the DB's payment/hold fence.
+  onStage('WEEK_SELECTED')
   await input.beforeWrite()
   await weeks.getByRole('button',{name:'일괄 추가',exact:true}).click()
   const access=page.getByRole('dialog',{name:'권한 부여',exact:true})
@@ -110,30 +113,37 @@ async function applyAndVerify(page,input,lecture) {
   if(await attendance.count())await attendance.setChecked(false)
   if(await access.getByRole('checkbox').count()!==ACCESS_LABELS.length+await attendance.count())fail()
   await input.beforeWrite()
+  onStage('ACCESS_SUBMIT')
   await access.getByRole('button',{name:/^확인(?:\s|$)/}).click()
   await access.waitFor({state:'hidden'})
 
   let contentCount=0
   for(const id of input.weeklyLectureIds){
     const url=`${ORIGIN}/crm/lectures/${input.lectureId}/${id}`
+    onStage('VERIFY_VIDEO')
     contentCount+=await verifyCollection(page,url,'영상','video',input)
+    onStage('VERIFY_MATERIAL')
     contentCount+=await verifyCollection(page,url,'자료','material',input)
   }
   // Library uses the same material table. A changed layout is a review, not a
   // reason to skip verification. Empty libraries are allowed.
+  onStage('VERIFY_LIBRARY')
   contentCount+=await verifyCollection(page,participants,/^강의 자료실(?:\s|$)/,'material',input)
   if(!contentCount)fail()
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
 
-function browserAccessProvider(env,api,{launch}={}) {
+function browserAccessProvider(env,api,{launch,onStage=()=>{}}={}) {
   if(env.DAECHION_CONTENT_BROWSER_ENABLED!=='true'||env.DAECHION_CONTENT_BROWSER_VERIFIED!=='true')throw Error('CONTENT_BROWSER_DISABLED')
   const state=storageState(env.DAECHION_BROWSER_STORAGE_STATE)
   const launchBrowser=launch??(options=>require('playwright').chromium.launch(options))
   if(!launch)require.resolve('playwright')
   return {async ensureContentAccess(input){
     let browser
+    let stage='API_PREFLIGHT'
+    const report=value=>{stage=value;onStage(value)}
     try {
+      report('API_PREFLIGHT')
       if(!uniqueIds(input.weeklyLectureIds)||!Number.isSafeInteger(input.studentId)||input.studentId<=0||!Number.isSafeInteger(input.lectureId)||input.lectureId<=0||
         !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()||typeof input.beforeWrite!=='function')fail()
       if(String((await api.me()).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
@@ -144,7 +154,9 @@ function browserAccessProvider(env,api,{launch}={}) {
       const lecture=matches[0],names=lecture.weeklyLectures.map(week=>week.name)
       if(!lecture.opened||!sameIds(lecture.weeklyLectures.map(week=>week.id),input.weeklyLectureIds)||
         new Set(names).size!==names.length||names.some(name=>!name.trim()||name==='전체 선택'))fail()
+      report('BROWSER_LAUNCH')
       browser=await launchBrowser({headless:true})
+      report('BROWSER_CONTEXT')
       const context=await browser.newContext({storageState:state,acceptDownloads:false})
       context.setDefaultTimeout(10000)
       // Do not record traces, screenshots, requests, cookies or student lists.
@@ -162,9 +174,9 @@ function browserAccessProvider(env,api,{launch}={}) {
         await input.beforeWrite()
       }}
       let timer
-      try{return await Promise.race([applyAndVerify(page,guardedInput,lecture),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])}
+      try{return await Promise.race([applyAndVerify(page,guardedInput,lecture,report),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])}
       finally{clearTimeout(timer)}
-    } catch {throw Error('CONTENT_ACCESS_UNCONFIRMED')}
+    } catch {throw Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage})}
     finally{if(browser)await browser.close().catch(()=>{})}
   }}
 }
