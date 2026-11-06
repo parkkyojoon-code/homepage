@@ -1,0 +1,25 @@
+name: Daechion contract checks
+on:
+  push:
+    branches: ['codex/daechion-enrollment-base']
+  pull_request:
+    paths:
+      - 'lib/daechion/**'
+      - 'tests/daechion.test.ts'
+      - 'tsconfig.daechion-tests.json'
+      - '.github/workflows/daechion.yml'
+      - 'package*.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:daechion

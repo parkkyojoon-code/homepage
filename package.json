@@ -7,6 +7,7 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
+    "test:daechion": "tsc -p tsconfig.daechion-tests.json && node --test .daechion-test-build/tests/daechion.test.js",
     "test:legacy-auth": "npm run build && node --test tests/legacy-auth-http.integration.mjs",
     "test:lectures": "tsc -p tsconfig.lectures-tests.json && node --test .test-build/tests/lectures.test.js",
     "test:lectures:integration": "tsc -p tsconfig.lectures-tests.json && node --test tests/lecture-service-flow.integration.mjs",
