@@ -135,6 +135,25 @@ test('real browser grants only the selected student, clears attendance copying a
   }
 })
 
+test('empty weekly collections require their loaded empty control and explicit placeholder',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:45000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  const browser=await chromium.launch({headless:true})
+  try{
+    for(const kind of ['video','material'])for(const mode of ['empty','missing-placeholder','contradictory','short-control']){
+      const page=await browser.newPage()
+      const label=kind==='video'?'영상':'파일',tab=kind==='video'?'영상':'자료'
+      const placeholder=kind==='video'?'영상을 끌어서 업로드해주세요.':'자료를 끌어서 업로드해주세요.'
+      const row=kind==='video'?'<div data-row-index="0"><p>검수파일</p></div>':'<table><tr>'+Array.from({length:9},(_,i)=>'<td>'+(i===2?'검수파일':'')+'</td>').join('')+'</tr></table>'
+      await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><meta charset="utf-8"><button role="tab">${tab}</button><button>${label} 추가${mode==='short-control'?'':'하기'}</button>${mode==='missing-placeholder'?'':'<p>'+placeholder+'</p>'}${mode==='contradictory'?row:''}`}))
+      const result=provider.verifyCollection(page,'https://parkkyojoon.daechion.com/crm/lectures/10/100',tab,kind,input)
+      if(mode==='empty')assert.equal(await result,0)
+      else await assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
+      await page.close()
+    }
+  }finally{await browser.close()}
+})
+
 test('nonempty library checks every category and file without saving permission lists',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:90000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')

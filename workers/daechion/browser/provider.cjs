@@ -57,22 +57,29 @@ async function listTitles(page,kind) {
 }
 
 async function verifyCollection(page,url,tabName,kind,input) {
-  await page.goto(url)
-  await page.getByRole('tab',{name:tabName,exact:typeof tabName==='string'}).click()
-  // Wait for an explicit loaded control rather than interpreting a loading
-  // screen as an empty collection.
-  await page.getByRole('button',{name:kind==='video'?'영상 추가':'파일 추가',exact:true}).waitFor({state:'visible'})
-  await page.waitForLoadState('networkidle',{timeout:10000})
-  const titles=await listTitles(page,kind)
-  if(titles.length>100||titles.some(title=>!title.trim())||new Set(titles).size!==titles.length)fail()
-  for(const title of titles){
-    await verifyFile(page,title,input)
+  async function load(){
     await page.goto(url)
     await page.getByRole('tab',{name:tabName,exact:typeof tabName==='string'}).click()
-    await page.getByRole('button',{name:kind==='video'?'영상 추가':'파일 추가',exact:true}).waitFor({state:'visible'})
+    const label=kind==='video'?'영상':'파일'
+    await page.getByRole('button',{name:new RegExp('^'+label+' 추가(?:하기)?$')}).waitFor({state:'visible'})
     await page.waitForLoadState('networkidle',{timeout:10000})
+    const titles=await listTitles(page,kind)
+    const emptyButton=page.getByRole('button',{name:label+' 추가하기',exact:true})
+    if(await emptyButton.count()===1&&await emptyButton.isVisible()){
+      const placeholder=page.getByText(kind==='video'?'영상을 끌어서 업로드해주세요.':'자료를 끌어서 업로드해주세요.',{exact:true})
+      if(titles.length||await placeholder.count()!==1||!await placeholder.isVisible()||await page.getByRole('button',{name:label+' 추가',exact:true}).count())fail()
+      return []
+    }
+    // A loaded nonempty control with no rows is ambiguous, never proof of zero.
+    if(!titles.length||titles.length>100||titles.some(title=>!title.trim())||new Set(titles).size!==titles.length)fail()
+    return titles
   }
-  const after=await listTitles(page,kind)
+  const titles=await load()
+  for(const title of titles){
+    await verifyFile(page,title,input)
+    if(JSON.stringify((await load()).sort())!==JSON.stringify([...titles].sort()))fail()
+  }
+  const after=await load()
   if(JSON.stringify([...after].sort())!==JSON.stringify([...titles].sort()))fail()
   return titles.length
 }
@@ -283,4 +290,4 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
   }
   return {ensureContentAccess:input=>run(input),refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }
-module.exports={browserAccessProvider,applyAndVerify,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}
+module.exports={browserAccessProvider,applyAndVerify,verifyCollection,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}
