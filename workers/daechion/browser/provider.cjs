@@ -77,18 +77,66 @@ async function verifyCollection(page,url,tabName,kind,input) {
   return titles.length
 }
 
-async function verifyLibrary(page,url) {
+const LIBRARY_CATEGORIES=['자습용 자료','손필기 자료','암기자료']
+async function verifyLibrary(page,url,input) {
   await page.goto(url)
   const tab=page.getByRole('tab',{name:/^강의 자료실(?:\s|$)/})
   await tab.click()
-  await page.getByRole('button',{name:'파일 추가하기',exact:true}).waitFor({state:'visible'})
   await page.waitForLoadState('networkidle',{timeout:10000})
-  // Observed library UI has category folders, unlike a weekly material table.
-  // Only an explicitly empty library is verified until its nonempty layout has
-  // been inspected and tested. Never silently skip a nonempty library.
-  if((await tab.innerText()).replace(/\s+/g,'')!=='강의자료실0개')fail()
-  await page.getByText('등록된 자료가 없어요.',{exact:true}).waitFor({state:'visible'})
-  return 0
+  const totalMatch=(await tab.innerText()).replace(/\s+/g,'').match(/^강의자료실(\d+)개$/)
+  if(!totalMatch)fail()
+  const total=Number(totalMatch[1])
+  if(total>100)fail()
+  if(total===0){
+    await page.getByRole('button',{name:'파일 추가하기',exact:true}).waitFor({state:'visible'})
+    await page.getByText('등록된 자료가 없어요.',{exact:true}).waitFor({state:'visible'})
+    return 0
+  }
+  async function categoryCounts(){
+    const result=[]
+    for(const name of LIBRARY_CATEGORIES){
+      const button=page.getByRole('button',{name:new RegExp('^'+name+'\\s*\\d+개$')})
+      if(await button.count()!==1)fail()
+      const match=(await button.innerText()).replace(/\s+/g,'').match(/(\d+)개$/)
+      if(!match)fail()
+      result.push(Number(match[1]))
+    }
+    if(result.reduce((a,b)=>a+b,0)!==total)fail()
+    return result
+  }
+  const counts=await categoryCounts(),snapshots=[]
+  async function openCategory(index){
+    await page.goto(url)
+    const current=page.getByRole('tab',{name:/^강의 자료실(?:\s|$)/})
+    await current.click()
+    await page.waitForLoadState('networkidle',{timeout:10000})
+    if((await current.innerText()).replace(/\s+/g,'')!==`강의자료실${total}개`||JSON.stringify(await categoryCounts())!==JSON.stringify(counts))fail()
+    await page.getByRole('button',{name:new RegExp('^'+LIBRARY_CATEGORIES[index]+'\\s*\\d+개$')}).click()
+    if(counts[index]===0){
+      await page.getByText('등록된 자료가 없어요.',{exact:true}).waitFor({state:'visible'})
+      return []
+    }
+    await page.getByRole('heading',{name:LIBRARY_CATEGORIES[index],exact:true}).waitFor({state:'visible'})
+    await page.getByRole('button',{name:'업로드',exact:true}).waitFor({state:'visible'})
+    await page.waitForLoadState('networkidle',{timeout:10000})
+    const titles=await listTitles(page,'material')
+    if(titles.length!==counts[index]||titles.some(title=>!title)||new Set(titles).size!==titles.length)fail()
+    return titles
+  }
+  for(let index=0;index<LIBRARY_CATEGORIES.length;index++){
+    const titles=await openCategory(index)
+    snapshots.push([...titles].sort())
+    for(const title of titles){
+      await verifyFile(page,title,input)
+      if(JSON.stringify((await openCategory(index)).sort())!==JSON.stringify(snapshots[index]))fail()
+    }
+  }
+  // Revisit every category so a concurrent move/add/delete cannot be silently
+  // accepted. Permission dialogs are always cancelled; never save their list.
+  for(let index=0;index<LIBRARY_CATEGORIES.length;index++){
+    if(JSON.stringify((await openCategory(index)).sort())!==JSON.stringify(snapshots[index]))fail()
+  }
+  return total
 }
 
 async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=async()=>{}) {
@@ -142,7 +190,7 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   }
   // The library has its own category UI; do not infer a weekly-material table.
   onStage('VERIFY_LIBRARY')
-  contentCount+=await verifyLibrary(page,participants)
+  contentCount+=await verifyLibrary(page,participants,input)
   if(!contentCount)fail()
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
@@ -235,4 +283,4 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
   }
   return {ensureContentAccess:input=>run(input),refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }
-module.exports={browserAccessProvider,applyAndVerify,storageState,exactStudentRow,ACCESS_LABELS}
+module.exports={browserAccessProvider,applyAndVerify,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}

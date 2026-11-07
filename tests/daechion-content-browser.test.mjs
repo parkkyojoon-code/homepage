@@ -135,6 +135,40 @@ test('real browser grants only the selected student, clears attendance copying a
   }
 })
 
+test('nonempty library checks every category and file without saving permission lists',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:90000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  const browser=await chromium.launch({headless:true})
+  try{
+    for(const mode of ['success','missing','duplicate','changed']){
+      const context=await browser.newContext(),page=await context.newPage()
+      await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><meta charset="utf-8"><div id="app"></div><script>
+        const mode=${JSON.stringify(mode)},app=document.querySelector('#app');
+        const button=(name,fn,parent=app)=>{const b=document.createElement('button');b.textContent=name;b.onclick=fn;parent.append(b);return b};
+        const names=['자습용 자료','손필기 자료','암기자료'];
+        function file(title){const d=document.createElement('div');d.innerHTML='<h3>'+title+'</h3>';app.append(d);button('권한 관리',()=>{
+          d.remove();const p=document.createElement('div');p.setAttribute('role','dialog');p.innerHTML='<h6>파일 권한 부여</h6><input aria-label="검색어 입력 (초성 검색 가능)"><table><tr><td><input type="checkbox" '+(mode==='missing'&&title==='자료B'?'':'checked')+'></td><td>검수학생</td><td>010-0000-0001</td></tr></table>';
+          button('취소',()=>{p.remove();if(mode==='changed')localStorage.setItem('changed','yes')},p);button('저장',()=>localStorage.setItem('writes','yes'),p);app.append(p);
+        },d)}
+        function category(i){app.querySelector('[data-files]')?.remove();const d=document.createElement('div');d.setAttribute('data-files','yes');app.append(d);
+          if(i===2){d.innerHTML='<p>등록된 자료가 없어요.</p><button>파일 추가하기</button>';return}
+          const title=i===0?(localStorage.getItem('changed')==='yes'?'바뀐자료':'자료A'):'자료B';
+          d.innerHTML='<h6>'+names[i]+'</h6><button>업로드</button><table><tbody>'+Array.from({length:mode==='duplicate'?2:1},()=>'<tr>'+Array.from({length:9},(_,j)=>'<td>'+(j===2?title:'')+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+          d.querySelectorAll('td:nth-child(3)').forEach(c=>c.onclick=()=>file(title));
+        }
+        button('강의 자료실 '+(mode==='duplicate'?4:2)+'개',()=>{
+          names.forEach((name,i)=>button(name+' '+(i===2?0:mode==='duplicate'?2:1)+'개',()=>category(i)));category(0)
+        }).setAttribute('role','tab');
+      </script>`}))
+      const result=provider.verifyLibrary(page,'https://parkkyojoon.daechion.com/crm/lectures/10/participants',input)
+      if(mode==='success')assert.equal(await result,2)
+      else await assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
+      assert.equal(await page.evaluate(()=>localStorage.getItem('writes')),null)
+      await context.close()
+    }
+  }finally{await browser.close()}
+})
+
 test('real browser captures refreshed credentials and a cold provider reloads them without participant actions',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:45000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
