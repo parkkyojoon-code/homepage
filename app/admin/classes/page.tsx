@@ -148,6 +148,7 @@ export default function AdminClassesPage() {
     if (!editTarget || isNew) { setMsg({ type: 'error', text: '먼저 기본 정보를 저장하세요.' }); return }
     setImgUploading(true)
     const fd = new FormData(); fd.append('image', file)
+    if(editTarget.saleKind==='BUNDLE')fd.append('expectedUpdatedAt',editTarget.updatedAt)
     const res = await fetch(`/api/admin/classes/${editTarget.id}/image`, { method: 'POST', body: fd })
     const data = await res.json()
     if (res.ok) {

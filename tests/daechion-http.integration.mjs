@@ -86,7 +86,12 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       const bundle=await created.json()
       assert.equal(bundle.saleKind,'BUNDLE');assert.equal(bundle.duration,'가상 일정');assert.equal(bundle.modes.online.price,900)
       assert.deepEqual(bundle.daechionBinding.lectures,[{id:101,name:'가상 강의'},{id:102,name:'가상 강의'}])
-      const update={expectedUpdatedAt:bundle.updatedAt,modes:{...body.modes,online:{enabled:true,price:19900}}}
+      const image=()=>{const form=new FormData();form.append('image',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'fixture.png');form.append('expectedUpdatedAt',bundle.updatedAt);return form}
+      const uploaded=await fetch(origin+'/api/admin/classes/'+body.id+'/image',{method:'POST',headers:{Cookie:cookie},body:image()})
+      assert.equal(uploaded.status,200)
+      const imageResult=await uploaded.json();assert.ok(imageResult.updatedAt>bundle.updatedAt)
+      assert.equal((await fetch(origin+'/api/admin/classes/'+body.id+'/image',{method:'POST',headers:{Cookie:cookie},body:image()})).status,409)
+      const update={expectedUpdatedAt:imageResult.updatedAt,modes:{...body.modes,online:{enabled:true,price:19900}}}
       const changed=await request('/api/admin/classes/'+body.id,{body:update,cookie,method:'PUT'})
       assert.equal(changed.status,200);assert.equal((await changed.json()).modes.online.price,19900)
       assert.equal((await request('/api/admin/classes/'+body.id,{body:update,cookie,method:'PUT'})).status,409)
