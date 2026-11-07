@@ -12,6 +12,12 @@ import catalogPolicy from '../.daechion-test-build/lib/daechion/orders/catalog.j
 import orderBilling from '../.daechion-test-build/lib/daechion/orders/billing.js'
 import orderEnrollment from '../.daechion-test-build/lib/daechion/orders/enrollment.js'
 import orderRunner from '../.daechion-test-build/lib/daechion/orders/runner.js'
+import orderMessage from '../.daechion-test-build/lib/daechion/orders/ready-message.js'
+import orderSheets from '../.daechion-test-build/lib/daechion/orders/sheets-worker.js'
+import orderPublisher from '../.daechion-test-build/lib/daechion/orders/sheets-publisher.js'
+import orderView from '../.daechion-test-build/lib/daechion/orders/sheets-view.js'
+import orderStore from '../.daechion-test-build/lib/daechion/orders/worker-store.js'
+import orderDelivery from '../.daechion-test-build/lib/daechion/orders/delivery.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -45,6 +51,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/001_initial.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion/002_identity.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/002_workers.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/003_delivery.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -204,6 +211,8 @@ test('checkout service persists token-bound quotes and atomic orders without ext
         provider.observation={state:'W',billId:provider.bill.billId,amountWon:null,paidAt:null}
         await orderBilling.checkOrderPayment(order.orderId,true,billing)
         assert.equal((await db.query('SELECT checkout_state FROM daechion_orders.orders WHERE id=$1',[order.orderId])).rows[0].checkout_state,'CLOSED')
+        const expiredView=await db.withClient(c=>orderView.orderSheetView(c,order.orderId))
+        assert.equal(expiredView.values[orderView.ORDER_HEADERS.indexOf('처리 확인')],'대기 종료')
         provider.observation={state:'F',billId:provider.bill.billId,amountWon:12900,paidAt:new Date(Date.now()-(late?0:2*86400000)).toISOString()}
         await orderBilling.checkOrderPayment(order.orderId,true,billing)
         assert.equal((await db.query('SELECT checkout_state FROM daechion_orders.orders WHERE id=$1',[order.orderId])).rows[0].checkout_state,late?'REVIEW':'READY')
@@ -261,6 +270,163 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.deepEqual(off.grants,[]);assert.equal(api.creates,0)
       const result=await orderRunner.processOrder(order.orderId,{send:true,read:true,enroll:true},runtime)
       assert.deepEqual(result.grants,['VERIFIED']);assert.equal(provider.sends,1);assert.equal(api.creates,1)
+    })
+    const completeReady=async({guardian=false}={})=>{
+      const person=contact();if(guardian)person.guardianPhone='0108888'+String(sequence).padStart(4,'0')
+      const q=await quote(['a'],{contact:person}),order=await checkout.receiveOrder(orderInput(q),ports),payment=providerFor(12900)
+      const runtime={withClient:db.withClient,provider:payment,preflight:async()=> 'READY',tenantId:'fixture',daechion:enrollmentFor()}
+      await orderBilling.sendOrderBill(order.orderId,true,runtime);payment.paid();await orderBilling.checkOrderPayment(order.orderId,true,runtime)
+      assert.equal(await orderEnrollment.runOrderGrant(order.orderId,true,runtime),'VERIFIED')
+      return {orderId:order.orderId,person,payment}
+    }
+    await t.test('completion messages go once to the student and login guardian, never to a separate payer',async()=>{
+      const {orderId,person,payment}=await completeReady({guardian:true}),sent=[]
+      const delivery={withClient:db.withClient,payment,message:{send:async job=>{sent.push(job);return {accepted:true,messageId:'fixture-'+sent.length}}}}
+      assert.equal(await orderMessage.sendOrderReady(orderId,false,delivery),'DISABLED')
+      const results=await Promise.all([orderMessage.sendOrderReady(orderId,true,delivery),orderMessage.sendOrderReady(orderId,true,delivery)])
+      assert.equal(results.filter(r=>r==='SENT').length,1)
+      assert.deepEqual(sent.map(s=>s.phone).sort(),[person.studentPhone,person.guardianPhone].sort())
+      assert.ok(!sent.some(s=>s.phone===person.payerPhone))
+      assert.ok(sent.every(s=>s.text.includes('https://parkkyojoon.daechion.com')&&s.text.includes('전화번호 끝 4자리')&&!/노션|디스코드|학생카드/.test(s.text)))
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,delivery),'SKIPPED');assert.equal(sent.length,2)
+      const receipt=(await db.query('SELECT id FROM daechion_orders.ready_receipts WHERE order_id=$1 LIMIT 1',[orderId])).rows[0]
+      await assert.rejects(db.query("UPDATE daechion_orders.ready_receipts SET state='PENDING' WHERE id=$1",[receipt.id]),/CANNOT_RESEND/)
+    })
+    await t.test('an unknown message response cannot resend accepted recipients or send remaining recipients blindly',async()=>{
+      const {orderId,payment}=await completeReady({guardian:true});let calls=0
+      const delivery={withClient:db.withClient,payment,message:{send:async()=>{calls++;return calls===1?{accepted:true,messageId:'accepted'}:{accepted:false}}}}
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,delivery),'UNKNOWN')
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,delivery),'SKIPPED');assert.equal(calls,2)
+      const states=(await db.query('SELECT state FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY state',[orderId])).rows.map(r=>r.state)
+      assert.deepEqual(states,['SENT','UNKNOWN'])
+      const unknown=(await db.query("SELECT id FROM daechion_orders.ready_receipts WHERE order_id=$1 AND state='UNKNOWN'",[orderId])).rows[0]
+      await assert.rejects(db.query("UPDATE daechion_orders.ready_receipts SET state='PENDING' WHERE id=$1",[unknown.id]),/CANNOT_RESEND/)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('처리 확인')],'확인 필요')
+      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/문자.*확인 필요/)
+    })
+    await t.test('payment cancellation between recipients blocks remaining messages and keeps the send result uncertain',async()=>{
+      const {orderId,payment}=await completeReady({guardian:true});let calls=0
+      const delivery={withClient:db.withClient,payment,message:{send:async()=>{
+        calls++;payment.observation={state:'C',billId:payment.bill.billId,amountWon:null,paidAt:null}
+        await orderBilling.checkOrderPayment(orderId,true,{withClient:db.withClient,provider:payment})
+        return {accepted:true,messageId:'before-cancel'}
+      }}}
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,delivery),'UNKNOWN');assert.equal(calls,1)
+      const states=(await db.query('SELECT state FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY state',[orderId])).rows.map(r=>r.state)
+      assert.deepEqual(states,['BLOCKED','SENT'])
+    })
+    await t.test('a transient payment query may resume a known unattempted notice, but incomplete orders never send',async()=>{
+      const {orderId,payment}=await completeReady();const paid=await payment.read();let calls=0
+      const delivery={withClient:db.withClient,payment,message:{send:async()=>{calls++;return {accepted:true,messageId:'recovered'}}}}
+      payment.observation={state:'UNKNOWN'}
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,delivery),'SKIPPED');assert.equal(calls,0)
+      payment.observation=paid;assert.equal(await orderMessage.sendOrderReady(orderId,true,delivery),'SENT');assert.equal(calls,1)
+      const incomplete=await workerOrder(['a'])
+      assert.equal(await orderMessage.sendOrderReady(incomplete.orderId,true,delivery),'SKIPPED');assert.equal(calls,1)
+    })
+    const target={spreadsheetId:'new-order-sheet-fixture-only',legacySpreadsheetId:'legacy-sheet-fixture-only',sheetId:0,singleIntake:{spreadsheetId:'new-order-sheet-fixture-only',sheetId:7}}
+    const sheetFixture=()=>{
+      const state={headers:[],initialized:false,row:null,memo:'직원 메모 유지',inserts:0,updates:0,setup:0,failInsert:false,failRead:false,duplicate:false,beforeUpdate:null}
+      const api={call:async(method,url,body)=>{
+        assert.ok(url.startsWith('/spreadsheets/'+target.spreadsheetId))
+        if(state.failRead){state.failRead=false;throw Error('SHEETS_HTTP_503')}
+        if(url.endsWith('/developerMetadata:search')){
+          const lookup=body.dataFilters[0].developerMetadataLookup
+          if(lookup.metadataKey==='pkjmath_order_sheet_v1')return state.initialized?{matchedDeveloperMetadata:[{developerMetadata:{metadataId:1,location:{sheetId:0}}}]}:{}
+          assert.equal(lookup.metadataKey,'pkjmath_order_id')
+          const row={developerMetadata:{metadataId:45,location:{dimensionRange:{dimension:'ROWS',startIndex:1,endIndex:2}}}}
+          return state.row?{matchedDeveloperMetadata:state.duplicate?[row,row]:[row]}:{}
+        }
+        if(method==='GET'&&url.includes('?fields='))return {sheets:[{properties:{sheetId:0,title:'일괄 주문',gridProperties:{columnCount:50}}}]}
+        if(method==='GET')return {values:state.headers.length?url.endsWith('!1:1')?[state.headers]:[state.headers,...(state.row?[state.row]:[])]:[]}
+        if(url.endsWith('/values:batchGetByDataFilter'))return {spreadsheetId:target.spreadsheetId,valueRanges:[{valueRange:{values:[[...state.row,state.memo]]}}]}
+        if(url.endsWith('/values:batchUpdateByDataFilter')){
+          assert.equal(body.valueInputOption,'RAW');assert.equal(body.data[0].values[0].length,orderView.ORDER_HEADERS.length)
+          if(state.beforeUpdate){const fn=state.beforeUpdate;state.beforeUpdate=null;await fn()}
+          state.row=[...body.data[0].values[0]];state.updates++;return {spreadsheetId:target.spreadsheetId,totalUpdatedRows:1}
+        }
+        assert.ok(url.endsWith(':batchUpdate'))
+        const values=body.requests.find(r=>r.updateCells).updateCells.rows[0].values.map(c=>c.userEnteredValue.stringValue??c.userEnteredValue.numberValue)
+        assert.ok(body.requests.find(r=>r.updateCells).updateCells.rows[0].values.every(c=>!c.userEnteredValue.formulaValue))
+        if(body.requests.some(r=>r.updateSheetProperties)){state.headers=values;state.initialized=true;state.setup++}
+        else{state.row=values;state.inserts++;if(state.failInsert){state.failInsert=false;throw Error('SHEETS_REQUEST_UNCONFIRMED')}}
+        return {spreadsheetId:target.spreadsheetId,replies:body.requests.map(()=>({}))}
+      }}
+      return {state,api}
+    }
+    await t.test('order Sheets setup refuses existing/legacy targets and provides red/green checks',async()=>{
+      const {state,api}=sheetFixture()
+      await assert.rejects(orderPublisher.setupOrderSheet(api,{...target,sheetId:7}),/INVALID_ORDER_SHEET_TARGET/)
+      await assert.rejects(orderPublisher.setupOrderSheet(api,{...target,spreadsheetId:target.legacySpreadsheetId}))
+      state.headers=['기존 직원 데이터'];await assert.rejects(orderPublisher.setupOrderSheet(api,target),/NOT_EMPTY/)
+      state.headers=[];await orderPublisher.setupOrderSheet(api,target);await orderPublisher.setupOrderSheet(api,target);assert.equal(state.setup,1)
+      assert.equal(state.headers.at(-1),'직원 메모')
+      const rules=orderView.orderFormatting(0);assert.equal(rules.length,3)
+      assert.ok(rules.every(r=>r.addConditionalFormatRule.rule.ranges[0].startRowIndex===0))
+      assert.ok(rules.some(r=>r.addConditionalFormatRule.rule.booleanRule.condition.values[0].userEnteredValue==='통과'))
+    })
+    await t.test('one order row includes all contacts and exact bill IDs; metadata updates preserve staff notes and newer work',async()=>{
+      const {orderId,person,payment}=await completeReady({guardian:true}),{state,api}=sheetFixture()
+      await orderPublisher.setupOrderSheet(api,target)
+      const sheet={withClient:db.withClient,api,target}
+      assert.equal(await orderSheets.syncOrderSheet(orderId,false,sheet),'DISABLED')
+      assert.equal(await orderSheets.syncOrderSheet(orderId,true,sheet),'DONE');assert.equal(state.inserts,1)
+      const value=label=>state.row[orderView.ORDER_HEADERS.indexOf(label)]
+      assert.equal(value('학생 이름'),person.studentName);assert.equal(value('학부모 이름'),person.guardianName)
+      assert.equal(value('보호자 로그인 전화번호'),person.guardianPhone);assert.equal(value('결제 전화번호'),person.payerPhone)
+      assert.equal(value('현재 청구서 번호'),payment.bill.billId);assert.equal(value('총 청구 금액'),12900);assert.equal(value('중복 수강생 확인'),'통과')
+      await db.withClient(c=>orderStore.orderTransaction(c,()=>orderStore.orderChanged(c,orderId,'fixture_update')))
+      state.beforeUpdate=()=>db.withClient(c=>orderStore.orderTransaction(c,()=>orderStore.orderChanged(c,orderId,'fixture_newer')))
+      assert.equal(await orderSheets.syncOrderSheet(orderId,true,sheet),'DONE')
+      assert.ok((await db.query("SELECT id FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state='PENDING'",[orderId])).rows.length)
+      assert.equal(await orderSheets.syncOrderSheet(orderId,true,sheet),'DONE')
+      assert.equal(state.inserts,1);assert.equal(state.updates,2);assert.equal(state.memo,'직원 메모 유지')
+    })
+    await t.test('a lost sheet insert response blocks duplicates and reconciles only an existing bound row',async()=>{
+      const order=await workerOrder(['a']),{state,api}=sheetFixture();await orderPublisher.setupOrderSheet(api,target)
+      const sheet={withClient:db.withClient,api,target,authorise:async()=>true};state.failInsert=true
+      assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,sheet),'UNKNOWN');assert.equal(state.inserts,1)
+      assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,sheet),'SKIPPED')
+      assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,{...sheet,authorise:async()=>false},true),'SKIPPED')
+      assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,sheet,true),'DONE')
+      assert.equal(state.inserts,1);assert.equal(state.updates,1)
+      await db.withClient(c=>orderStore.orderTransaction(c,()=>orderStore.orderChanged(c,order.orderId,'fixture_duplicate')))
+      state.duplicate=true;assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,sheet),'UNKNOWN');assert.equal(state.updates,1)
+    })
+    await t.test('a read failure can defer before writes, while changed headers block unsafe publication',async()=>{
+      const order=await workerOrder(['a']),{state,api}=sheetFixture();await orderPublisher.setupOrderSheet(api,target)
+      const sheet={withClient:db.withClient,api,target};state.failRead=true
+      assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,sheet),'DEFERRED');assert.equal(state.inserts,0)
+      await db.query("UPDATE daechion_orders.jobs SET available_at=now() WHERE order_id=$1 AND kind='SHEETS'",[order.orderId])
+      state.headers[0]='수정된 열';assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,sheet),'UNKNOWN');assert.equal(state.inserts,0)
+      assert.equal((await db.query("SELECT last_error FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS'",[order.orderId])).rows[0].last_error,'sheet_headers_changed')
+    })
+    await t.test('literal applicant text is never a formula and identity review is highlighted without changing staff columns',async()=>{
+      const literal={...products[0],productId:'literal',title:'=SUM(1,2)'}
+      const scoped={...ports,catalog:async()=>[literal]},person={...contact(),studentName:'=1+1',guardianName:'보호자'}
+      const q=await checkout.quoteCheckout({items:[{productId:'literal'}],contact:person,expectedTotalWon:12900},scoped)
+      const order=await checkout.receiveOrder(orderInput(q),scoped),{state,api}=sheetFixture();await orderPublisher.setupOrderSheet(api,target)
+      await db.query("UPDATE daechion_orders.orders SET checkout_state='REVIEW',review_code='identity_review' WHERE id=$1",[order.orderId])
+      assert.equal(await orderSheets.syncOrderSheet(order.orderId,true,{withClient:db.withClient,api,target}),'DONE')
+      assert.equal(state.row[orderView.ORDER_HEADERS.indexOf('학생 이름')],'=1+1')
+      assert.equal(state.row[orderView.ORDER_HEADERS.indexOf('상품명')],'=SUM(1,2)')
+      assert.equal(state.row[orderView.ORDER_HEADERS.indexOf('중복 수강생 확인')],'확인 필요')
+      assert.match(state.row[orderView.ORDER_HEADERS.indexOf('중복 확인 사유')],/번호/)
+      const verified=await completeReady()
+      await db.withClient(c=>orderStore.orderTransaction(c,()=>orderStore.holdOrder(c,verified.orderId,'identity_review')))
+      const changed=await db.withClient(c=>orderView.orderSheetView(c,verified.orderId))
+      assert.equal(changed.values[orderView.ORDER_HEADERS.indexOf('중복 수강생 확인')],'확인 필요')
+    })
+    await t.test('the gated delivery coordinator projects the final message outcome and never enables legacy or disabled sends',async()=>{
+      assert.deepEqual(orderDelivery.orderDeliverySettings({}),{message:false,sheets:false})
+      assert.throws(()=>orderDelivery.orderDeliverySettings({DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_READY_MESSAGE_ENABLED:'true'}),/REQUIRES_PAYMENT/)
+      assert.throws(()=>orderDelivery.orderDeliverySettings({DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_READY_MESSAGE_ENABLED:'true',DAECHION_READY_MESSAGE_ENABLED:'true',DAECHION_ORDER_PAYMENT_READ_ENABLED:'true'}),/LEGACY_MESSAGES/)
+      assert.deepEqual(await orderDelivery.deliverOrder('',{message:false,sheets:false},{}),{message:'DISABLED',sheets:'DISABLED'})
+      const {orderId,payment}=await completeReady(),{state,api}=sheetFixture();await orderPublisher.setupOrderSheet(api,target)
+      const result=await orderDelivery.deliverOrder(orderId,{message:true,sheets:true},{withClient:db.withClient,payment,api,target,message:{send:async()=>({accepted:true,messageId:'coordinator'})}})
+      assert.deepEqual(result,{message:'SENT',sheets:'DONE'})
+      assert.equal(state.row[orderView.ORDER_HEADERS.indexOf('안내 발송 상태')],'발송 접수 완료')
     })
   }finally{await db.close()}
 })

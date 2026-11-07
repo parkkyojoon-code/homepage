@@ -113,7 +113,8 @@ export async function checkOrderPayment(id:string,enabled:boolean,ports:OrderCon
     await c.query('UPDATE daechion_orders.orders SET checkout_state=$2,payment_state=$3,review_code=$4,paid_at=$5 WHERE id=$1',[id,checkout,payment,review,paidAt])
     if(checkout!=='READY'){
       await c.query("UPDATE daechion_orders.grants SET state='REVIEW',review_code='order_held',lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND state='RUNNING'",[id])
-      await c.query("UPDATE daechion_orders.jobs SET state=CASE WHEN state='RUNNING' THEN 'UNKNOWN' ELSE 'FAILED' END,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND kind='READY_MESSAGE' AND state IN ('PENDING','RUNNING')",[id])
+      await c.query("UPDATE daechion_orders.jobs SET state=CASE WHEN state='RUNNING' THEN 'UNKNOWN' ELSE 'FAILED' END,last_error=$2,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND kind='READY_MESSAGE' AND state IN ('PENDING','RUNNING')",[id,review])
+      await c.query("UPDATE daechion_orders.ready_receipts SET state='BLOCKED' WHERE order_id=$1 AND state='PENDING'",[id])
       await c.query("UPDATE daechion_orders.orders SET notification_state=CASE WHEN EXISTS(SELECT 1 FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE' AND state='UNKNOWN') THEN 'UNKNOWN' ELSE 'FAILED' END WHERE id=$1 AND notification_state='PENDING'",[id])
     }
     if(old!==JSON.stringify([checkout,payment,review,paidAt,last,billState]))await orderChanged(c,id,'payment_observed')
