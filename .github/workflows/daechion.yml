@@ -26,6 +26,7 @@ on:
       - 'tests/daechion-orders.test.ts'
       - 'tests/daechion-orders-ledger.test.mjs'
       - 'tests/daechion-orders-service.test.mjs'
+      - 'tests/daechion-order-migrations.test.mjs'
       - 'tests/daechion-catalog-fixture.cjs'
       - 'tests/daechion-bundle-admin-preview.mjs'
       - 'tests/daechion-cart-preview.mjs'
@@ -92,5 +93,15 @@ jobs:
           test "$(cat worker-default.log)" = "DAECHION_BILLING_WORKER_FAILED"
       - name: Build optional browser worker image
         run: docker build --file workers/daechion/Dockerfile.browser --tag pkjmath-daechion-browser:ci .
+      - name: Verify isolated order DB tools are packaged and refuse missing configuration
+        run: |
+          for image in pkjmath-daechion-worker:ci pkjmath-daechion-browser:ci; do
+            docker run --rm --entrypoint node "$image" -e "require('./scripts/daechion-order-migrations.cjs').loadMigrations()"
+            if docker run --rm --entrypoint node "$image" scripts/daechion-order-db.cjs check > order-db-default.log 2>&1; then
+              echo "An unconfigured order database check must refuse to connect"
+              exit 1
+            fi
+            test "$(cat order-db-default.log)" = "ORDER_INVALID_DATABASE_URL"
+          done
       - name: Verify content rights UI with Chromium and synthetic data only
         run: docker run --rm -e DAECHION_BROWSER_FIXTURE_TEST=true -v "$PWD/tests:/app/tests:ro" --entrypoint node pkjmath-daechion-browser:ci --test tests/daechion-content-browser.test.mjs

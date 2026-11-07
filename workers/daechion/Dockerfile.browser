@@ -24,5 +24,7 @@ COPY scripts/daechion-sheets-verify.cjs ./scripts/
 COPY scripts/daechion-content-verify.cjs ./scripts/
 COPY scripts/daechion-session-check.cjs ./scripts/
 COPY db/daechion ./db/daechion
+COPY scripts/daechion-order-db.cjs scripts/daechion-order-migrations.cjs ./scripts/
+COPY db/daechion-orders ./db/daechion-orders
 # Deployment never starts external writes by default, including in this image.
 CMD ["node", "workers/daechion/billing.cjs", "--check"]
