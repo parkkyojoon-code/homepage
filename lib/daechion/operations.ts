@@ -29,7 +29,7 @@ export async function recordOperation(client:LedgerClient,input:{phase:Operation
 
 export async function operationSummary(client:LedgerClient,id:string):Promise<string[]> {
   const issues=(await client.query('SELECT phase,state FROM daechion_automation.operation_issues WHERE application_id=$1 ORDER BY phase',[id])).rows
-  const queue=(await client.query("SELECT DISTINCT kind FROM daechion_automation.outbox WHERE application_id=$1 AND state IN ('UNKNOWN','FAILED')",[id])).rows
+  const queue=(await client.query("SELECT DISTINCT o.kind FROM daechion_automation.outbox o JOIN daechion_automation.applications a ON a.id=o.application_id WHERE o.application_id=$1 AND o.state IN ('UNKNOWN','FAILED') AND (o.kind='SHEETS' OR a.notification_state<>'SENT')",[id])).rows
   return [...new Set([...issues.map(row=>`${row.state==='OPEN'?'오류 확인 필요':'복구 확인'}: ${operationLabels[phaseSchema.parse(row.phase)]}`),
     ...queue.map(row=>`오류 확인 필요: ${row.kind==='SHEETS'?'신청 목록 반영':'수강 안내'} — 처리 결과 확인 필요`)])]
 }
@@ -39,9 +39,11 @@ export async function operationRows(client:LedgerClient) {
     FROM daechion_automation.operation_issues ORDER BY (state='OPEN') DESC,last_failed_at DESC,scope,phase`)).rows
   // These outcomes deliberately do not throw. They still require staff attention,
   // especially a write whose result is unknown and must not be blindly retried.
-  const queued=(await client.query(`SELECT application_id::text AS scope,CASE WHEN kind='SHEETS' THEN 'sheets' ELSE 'readyMessage' END AS phase,
-    'OPEN' AS state,'UNKNOWN' AS code,count(*)::text AS occurrences,min(created_at) AS first_failed_at,max(created_at) AS last_failed_at,NULL AS resolved_at
-    FROM daechion_automation.outbox WHERE state IN ('UNKNOWN','FAILED') OR (state='RUNNING' AND lease_until<=now()) GROUP BY application_id,kind`)).rows
+  const queued=(await client.query(`SELECT o.application_id::text AS scope,CASE WHEN o.kind='SHEETS' THEN 'sheets' ELSE 'readyMessage' END AS phase,
+    'OPEN' AS state,'UNKNOWN' AS code,count(*)::text AS occurrences,min(o.created_at) AS first_failed_at,max(o.created_at) AS last_failed_at,NULL AS resolved_at
+    FROM daechion_automation.outbox o JOIN daechion_automation.applications a ON a.id=o.application_id
+    WHERE (o.state IN ('UNKNOWN','FAILED') OR (o.state='RUNNING' AND o.lease_until<=now()))
+    AND (o.kind='SHEETS' OR a.notification_state<>'SENT') GROUP BY o.application_id,o.kind`)).rows
   const seen=new Set(queued.map(row=>`${row.scope}/${row.phase}`))
   return [...queued,...recorded.filter(row=>!seen.has(`${row.scope}/${row.phase}`))].sort((a,b)=>Number(b.state==='OPEN')-Number(a.state==='OPEN'))
 }

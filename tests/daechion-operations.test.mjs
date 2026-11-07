@@ -48,6 +48,12 @@ test('durable per-application diagnostics preserve business states, privacy, rec
     assert.ok((await operations.operationRows(client)).some(r=>r.scope===id&&r.phase==='sheets'&&r.state==='OPEN'))
     assert.match((await operations.operationSummary(client,id)).join('\n'),/신청 목록 반영/)
     assert.deepEqual((await db.query('SELECT payment_state,automation_state,notification_state FROM daechion_automation.applications WHERE id=$1',[id])).rows[0],initial)
+    // A historical stopped message must not stay red after an actual later send.
+    await db.query("INSERT INTO daechion_automation.outbox(id,application_id,kind,event_version,state) VALUES($1,$2,'READY_MESSAGE',1000,'FAILED')",[crypto.randomUUID(),id])
+    assert.ok((await operations.operationRows(client)).some(r=>r.scope===id&&r.phase==='readyMessage'))
+    await db.query("UPDATE daechion_automation.applications SET notification_state='SENT' WHERE id=$1",[id])
+    assert.ok(!(await operations.operationRows(client)).some(r=>r.scope===id&&r.phase==='readyMessage'))
+    assert.ok(!(await operations.operationSummary(client,id)).some(r=>r.includes('수강 안내')))
     await assert.rejects(operations.recordOperation(client,{phase:'enrollment',applicationId:id,ok:false,code:'private cookie 01012345678'}))
     await operations.recordOperation(client,{phase:'sessionRefresh',ok:false,code:'SESSION_REFRESH'})
     assert.ok((await operations.operationRows(client)).some(r=>r.scope==='WORKER'&&r.state==='OPEN'))
