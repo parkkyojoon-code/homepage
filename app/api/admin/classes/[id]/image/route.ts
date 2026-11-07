@@ -31,5 +31,5 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   classes[idx].updatedAt = new Date().toISOString()
   saveClasses(classes)
 
-  return NextResponse.json({ ok: true, filename, url: `/api/images/${filename}` })
+  return NextResponse.json({ ok: true, filename, url: `/api/images/${filename}`,updatedAt:classes[idx].updatedAt })
 }

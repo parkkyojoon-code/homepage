@@ -47,17 +47,18 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     const adminPassword = randomBytes(24).toString('hex')
     const callbackKey = randomBytes(24).toString('hex')
     const env = {...process.env,NODE_ENV:'production',DATA_DIR:temp,ADMIN_PASSWORD:adminPassword,ADMIN_SECRET:randomBytes(32).toString('hex'),
+      DAECHION_CATALOG_FIXTURE:'local-only',NODE_OPTIONS:`--require ${JSON.stringify(path.join(root,'tests','daechion-catalog-fixture.cjs'))}`,
       DAECHION_INTAKE_ENABLED:'true',DAECHION_ADMIN_ENABLED:'true',DAECHION_DATABASE_URL:connectionString,DAECHION_ORDERS_ENABLED:'false',
       DAECHION_TENANT_ID:'test-only',DAECHION_APP_ORIGIN:origin,DAECHION_ADDITIONAL_ORIGINS:'',DAECHION_PRODUCT_BINDINGS_JSON:'[]',
       DAECHION_BILLING_WORKER_ENABLED:'false',DAECHION_BILLING_SEND_ENABLED:'false',DAECHION_PAYMENT_READ_ENABLED:'false',
       DAECHION_ENROLLMENT_ENABLED:'false',DAECHION_READY_MESSAGE_ENABLED:'false',DAECHION_SHEETS_ENABLED:'false',
-      DAECHION_API_KEY:'',GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:callbackKey,PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',
+      DAECHION_API_KEY:'synthetic-fixture-only',GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:callbackKey,PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',
       DAECHION_PAYSSAM_CALLBACK_ENABLED:'true',
       SOLAPI_API_KEY:'',SOLAPI_API_SECRET:'',LECTURES_DATABASE_URL:'',LECTURES_WORKER_ENABLED:'false',LECTURES_WORKER_TOKEN:''}
     child = spawn(process.execPath,[path.join(root,'node_modules','next','dist','bin','next'),'start','--hostname','127.0.0.1','--port',String(port)],{cwd:root,env,stdio:'ignore',windowsHide:true})
     let startError; child.on('error',e=>{startError=e})
-    const request = (route,{body,cookie,requestOrigin=origin,timeout=15000}={})=>fetch(origin+route,{
-      method:body===undefined?'GET':'POST',redirect:'manual',signal:AbortSignal.timeout(timeout),
+    const request = (route,{body,cookie,method,requestOrigin=origin,timeout=15000}={})=>fetch(origin+route,{
+      method:method??(body===undefined?'GET':'POST'),redirect:'manual',signal:AbortSignal.timeout(timeout),
       headers:{Origin:requestOrigin,...(cookie?{Cookie:cookie}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},
       ...(body===undefined?{}:{body:JSON.stringify(body)})})
     let ready = false
@@ -71,6 +72,30 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     const input = {requestKey:randomUUID(),productId,studentHistory:'NEW',applicantType:'GUARDIAN',studentName:'가상 HTTP 학생',guardianName:'가상 HTTP 보호자',
       studentPhone:'010-0000-0771',guardianPhone:'010-0000-0772',payerPhone:'010-0000-0773',mode:'ONLINE',campus:'',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
     let applicationId,adminCookie,qaSheetPorts,readPublishedRow,readSheetWrites
+    await t.test('administrator creates and edits an explicitly typed private bundle without changing existing products',async()=>{
+      const before=JSON.parse(await readFile(path.join(temp,'classes.json'),'utf8'))
+      const body={id:'bundle-http-fixture',saleKind:'BUNDLE',purchaseProcess:'PROCESS_2',visible:false,name:'가상 묶음상품',
+        modes:{online:{enabled:true,price:900},offline:{enabled:false,price:0,campuses:[]}},textbook:{included:false,price:0},
+        duration:'가상 일정',daechionLectureIds:[101,102]}
+      assert.equal((await request('/api/admin/classes',{body})).status,401)
+      const login=await request('/api/admin/login',{body:{password:adminPassword}})
+      const cookie=login.headers.get('set-cookie')?.split(';')[0];assert.ok(cookie)
+      for(const invalid of [{...body,visible:true},{...body,daechionLectureIds:[101,101]},{...body,purchaseProcess:'PROCESS_1'},
+        {...body,modes:{...body.modes,online:{enabled:true,price:1.5}}}])assert.equal((await request('/api/admin/classes',{body:invalid,cookie})).status,400)
+      const created=await request('/api/admin/classes',{body,cookie});assert.equal(created.status,201)
+      const bundle=await created.json()
+      assert.equal(bundle.saleKind,'BUNDLE');assert.equal(bundle.duration,'가상 일정');assert.equal(bundle.modes.online.price,900)
+      assert.deepEqual(bundle.daechionBinding.lectures,[{id:101,name:'가상 강의'},{id:102,name:'가상 강의'}])
+      const update={expectedUpdatedAt:bundle.updatedAt,modes:{...body.modes,online:{enabled:true,price:19900}}}
+      const changed=await request('/api/admin/classes/'+body.id,{body:update,cookie,method:'PUT'})
+      assert.equal(changed.status,200);assert.equal((await changed.json()).modes.online.price,19900)
+      assert.equal((await request('/api/admin/classes/'+body.id,{body:update,cookie,method:'PUT'})).status,409)
+      assert.equal((await request('/api/admin/classes/'+body.id,{body:{saleKind:'SINGLE'},cookie,method:'PUT'})).status,400)
+      assert.equal((await request('/api/admin/classes/'+productId,{body:{saleKind:'BUNDLE'},cookie,method:'PUT'})).status,400)
+      const after=JSON.parse(await readFile(path.join(temp,'classes.json'),'utf8'))
+      assert.deepEqual(after.filter(c=>c.id!==body.id),before)
+      assert.ok(!(await (await request('/api/classes')).json()).some(c=>c.id===body.id))
+    })
     await t.test('new cart endpoints stay unavailable while the original process-two intake runs',async()=>{
       for(const route of ['/api/daechion/orders/cart','/api/daechion/orders/quotes','/api/daechion/orders']){
         const response=await request(route,{body:{}})

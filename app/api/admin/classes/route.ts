@@ -3,11 +3,12 @@ import { isAdminAuthed } from '@/lib/admin-auth'
 import { loadClasses, saveClasses, generateId, ClassData } from '@/lib/classes'
 import { isOriginalProduct, parsePurchaseProcess } from '@/lib/purchase-process'
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
+import { saleKindForWrite, validateBundle, SalePolicyError } from '@/lib/daechion/orders/sale-policy'
 
 // GET: 전체 수업 목록 (visible 무관)
 export async function GET() {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  return NextResponse.json(loadClasses())
+  return NextResponse.json(loadClasses(),{headers:{'Cache-Control':'no-store'}})
 }
 
 // POST: 새 수업 추가
@@ -26,6 +27,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '기존 수업은 프로세스1을 유지합니다.' }, { status: 400 })
   }
 
+  let saleKind
+  try{
+    saleKind=saleKindForWrite(body.saleKind)
+    validateBundle({...body,purchaseProcess,saleKind},body.daechionLectureIds,false)
+  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
+
   let daechionBinding
   try{daechionBinding=await resolveClassBinding(body,purchaseProcess,undefined,process.env)}catch(error){
     return NextResponse.json({error:error instanceof ClassBindingError?error.message:'대치온 연결을 확인하지 못했습니다.'},{status:400})
@@ -33,6 +40,7 @@ export async function POST(req: NextRequest) {
   const newClass: ClassData = {
     id:          newId,
     purchaseProcess,
+    saleKind,
     daechionBinding,
     visible:     body.visible ?? false,
     name:        body.name || '',
@@ -40,7 +48,7 @@ export async function POST(req: NextRequest) {
     badge:       body.badge || '',
     image:       null,
     modes: {
-      online:  { enabled: body.modes?.online?.enabled ?? true,  price: body.modes?.online?.price ?? 0 },
+      online:  { enabled: body.modes?.online?.enabled ?? true,  price: body.modes?.online?.price ?? 0, campuses: [] },
       offline: { enabled: body.modes?.offline?.enabled ?? false, price: body.modes?.offline?.price ?? 0, campuses: body.modes?.offline?.campuses ?? [] },
     },
     textbook: {
@@ -48,6 +56,7 @@ export async function POST(req: NextRequest) {
       price:    body.textbook?.price ?? 0,
     },
     description: body.description || '',
+    duration: body.duration || '',
     keywords:    body.keywords || ['', '', ''],
     createdAt:   now,
     updatedAt:   now,

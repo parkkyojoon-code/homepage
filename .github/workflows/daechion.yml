@@ -22,6 +22,8 @@ on:
       - 'tests/daechion-orders.test.ts'
       - 'tests/daechion-orders-ledger.test.mjs'
       - 'tests/daechion-orders-service.test.mjs'
+      - 'tests/daechion-catalog-fixture.cjs'
+      - 'tests/daechion-bundle-admin-preview.mjs'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
       - 'tests/daechion-operations.test.mjs'
@@ -69,6 +71,7 @@ jobs:
       - run: npm run test:daechion
       - run: node --test tests/daechion-sheets-verify.test.mjs
       - run: node --check tests/daechion-browser-preview.mjs
+      - run: node --check tests/daechion-bundle-admin-preview.mjs
       - run: npm run test:legacy-auth
       - run: node --test tests/daechion-http.integration.mjs
       - name: Build isolated Daechion worker image

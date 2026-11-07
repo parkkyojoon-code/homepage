@@ -26,7 +26,7 @@ export async function intakeAvailability(productId: string, ports: IntakeHttpPor
   try {
     const product = await ports.loadProduct(productId)
     const binding = product && configuredProductBinding(product,ports.bindings,ports.tenantId)
-    if (!product?.visible || !binding || product.subjectSelection != null) return json({available:false})
+    if (!product?.visible || product.saleKind==='BUNDLE' || !binding || product.subjectSelection != null) return json({available:false})
     await ports.ready()
     return json({available:true})
   } catch { return json({available:false}) }

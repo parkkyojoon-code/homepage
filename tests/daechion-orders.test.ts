@@ -1,6 +1,8 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {resolveCart,reviewOwnership,type CheckoutProduct,type ResolvedCart} from '../lib/daechion/orders/cart'
+import {saleKindForWrite,validateBundle} from '../lib/daechion/orders/sale-policy'
+import {prepareApplication} from '../lib/daechion/intake'
 
 const single=(productId:string,id:number,priceWon=12900):CheckoutProduct=>({productId,title:'동일 강의명',saleKind:'SINGLE',purchaseProcess:'PROCESS_2',visible:true,priceWon,tenantId:'fixture',revision:'r1',lectures:[{id,name:'동일 강의명'}]})
 const a=single('a',10), b=single('b',11,18500)
@@ -8,6 +10,28 @@ const pack:CheckoutProduct={...a,productId:'pack',title:'4강 묶음',saleKind:'
 const resolve=(ids:string[],catalog:unknown[]=[a,b,pack])=>resolveCart({items:ids.map(productId=>({productId}))},catalog,'fixture')
 const now=new Date('2026-11-08T01:00:00Z'),key='b'.repeat(64)
 const report=(cart:ResolvedCart,states:Partial<Record<number,'OWNED'|'NOT_OWNED'|'UNKNOWN'>>={})=>({cartFingerprint:cart.fingerprint,subjectKey:key,checkedAt:now.toISOString(),identity:'PASSED',lectures:cart.items.flatMap(item=>item.lectures.map(target=>({id:target.id,state:states[target.id]??'NOT_OWNED'})))})
+
+test('bundle editing preserves sale identity and rejects invalid prices, targets and legacy pricing',()=>{
+  const record={saleKind:'BUNDLE' as const,purchaseProcess:'PROCESS_2' as const,name:'파이널 묶음',visible:false,
+    modes:{online:{enabled:true,price:19900},offline:{enabled:false,price:0}},textbook:{included:false,price:0}}
+  assert.equal(saleKindForWrite(undefined),undefined)
+  assert.equal(saleKindForWrite('BUNDLE'),'BUNDLE')
+  assert.equal(saleKindForWrite(undefined,record),'BUNDLE')
+  assert.throws(()=>saleKindForWrite('SINGLE',record))
+  assert.throws(()=>saleKindForWrite('BUNDLE',{...record,saleKind:undefined}))
+  assert.throws(()=>saleKindForWrite('unknown'))
+  assert.doesNotThrow(()=>validateBundle(record,[10,11],false))
+  for(const ids of [[],[10],[10,10],['10',11],[-1,11],Array.from({length:31},(_,i)=>i+1)])assert.throws(()=>validateBundle(record,ids,false))
+  for(const price of [0,-1,1.5,NaN,Infinity,2147483648,'900'])assert.throws(()=>validateBundle({...record,modes:{...record.modes,online:{enabled:true,price:price as number}}},[10,11],false))
+  assert.throws(()=>validateBundle({...record,purchaseProcess:'PROCESS_1'},[10,11],false))
+  assert.throws(()=>validateBundle({...record,textbook:{included:true,price:300}},[10,11],false))
+  assert.throws(()=>validateBundle({...record,subjectSelection:{}},[10,11],false))
+  assert.throws(()=>validateBundle({...record,modes:{...record.modes,offline:{enabled:true,price:300}}},[10,11],false))
+  assert.throws(()=>validateBundle({...record,visible:true},[10,11],false))
+  assert.doesNotThrow(()=>validateBundle({...record,saleKind:undefined,purchaseProcess:'PROCESS_1'},undefined,false))
+  const legacyInput={requestKey:'f8b88473-efce-4d39-8767-c79a8cd7f811',productId:'bundle',studentName:'가상',studentPhone:'01000000001',payerPhone:'01000000001',studentHistory:'NEW',applicantType:'STUDENT',mode:'ONLINE',expectedTotalWon:19900,confirmPayment:true,agreePrivacy:true}
+  assert.throws(()=>prepareApplication(legacyInput,{...record,id:'bundle',visible:true},[{productId:'bundle',lectureIds:[10,11]}],'fixture'),/PRODUCT_UNAVAILABLE/)
+})
 
 test('server-owned exact sums and fixed bundle price do not infer quantity discounts',()=>{
   assert.equal(resolve(['a','b']).totalWon,31400)

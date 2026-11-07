@@ -13,6 +13,7 @@ interface SubjectSelection { subjects: string[]; tiers: SubjectPricingTier[] }
 interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
   purchaseProcess?: PurchaseProcess
+  saleKind?: 'SINGLE'|'BUNDLE'
   daechionBinding?:StoredLectureBinding|null
   daechionLectureIds?:number[]
   image: string | null
@@ -68,11 +69,12 @@ export default function AdminClassesPage() {
   useEffect(() => { load() }, [])
 
   async function toggleVisible(cls: ClassData) {
-    await fetch(`/api/admin/classes/${cls.id}`, {
+    const res=await fetch(`/api/admin/classes/${cls.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ visible: !cls.visible }),
+      body: JSON.stringify({ visible: !cls.visible,...(cls.saleKind==='BUNDLE'?{expectedUpdatedAt:cls.updatedAt}:{}) }),
     })
+    if(!res.ok){const data=await res.json();setMsg({type:'error',text:data.error??'공개 설정을 저장하지 못했습니다.'});return}
     load()
   }
 
@@ -98,11 +100,19 @@ export default function AdminClassesPage() {
   }
 
   function openNew() {
+    setMsg(null)
     setEditTarget(JSON.parse(JSON.stringify(EMPTY_CLASS)))
     setIsNew(true)
   }
 
+  function openBundle(){
+    setMsg(null)
+    setEditTarget({...JSON.parse(JSON.stringify(EMPTY_CLASS)),saleKind:'BUNDLE',purchaseProcess:'PROCESS_2'})
+    setIsNew(true)
+  }
+
   function openEdit(cls: ClassData) {
+    setMsg(null)
     setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls),daechionLectureIds:cls.daechionBinding?.lectures.map(item=>item.id)??[] })
     setIsNew(false)
   }
@@ -114,7 +124,8 @@ export default function AdminClassesPage() {
     setSaving(true); setMsg(null)
     const method = isNew ? 'POST' : 'PUT'
     const url    = isNew ? '/api/admin/classes' : `/api/admin/classes/${editTarget.id}`
-    const body={...editTarget,...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||undefined}:{})}
+    const body={...editTarget,...(!isNew&&editTarget.saleKind==='BUNDLE'?{expectedUpdatedAt:editTarget.updatedAt}:{}),...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||undefined}:{})}
+    try{
     const res = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
@@ -129,7 +140,8 @@ export default function AdminClassesPage() {
       const d = await res.json()
       setMsg({ type: 'error', text: d.error || '저장 실패' })
     }
-    setSaving(false)
+    }catch{setMsg({type:'error',text:'저장 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
+    finally{setSaving(false)}
   }
 
   async function uploadImage(file: File) {
@@ -139,7 +151,7 @@ export default function AdminClassesPage() {
     const res = await fetch(`/api/admin/classes/${editTarget.id}/image`, { method: 'POST', body: fd })
     const data = await res.json()
     if (res.ok) {
-      setEditTarget(p => p ? { ...p, image: data.filename } : p)
+      setEditTarget(p => p ? { ...p, image: data.filename,updatedAt:data.updatedAt??p.updatedAt } : p)
       load()
     } else {
       setMsg({ type: 'error', text: data.error || '이미지 업로드 실패' })
@@ -254,16 +266,19 @@ export default function AdminClassesPage() {
     <div style={{ minHeight: '100vh', padding: '0 0 80px' }}>
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '36px 20px 0' }}>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap:'wrap',gap:16,marginBottom: 28 }}>
           <div>
             <a href="/admin/dashboard" style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', textDecoration: 'none' }}>← 대시보드</a>
             <h1 style={{ fontSize: 24, fontWeight: 800, color: '#fff', marginTop: 6 }}>수업 관리</h1>
           </div>
-          <button onClick={openNew} style={{
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button onClick={openNew} style={{
             padding: '10px 18px', background: 'linear-gradient(135deg,#0066FF,#4d8bf5)',
             border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer',
           }}>+ 수업 추가</button>
+          <button onClick={openBundle} style={{padding:'10px 18px',background:'rgba(77,139,245,0.15)',border:'1px solid #4d8bf5',borderRadius:10,color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>+ 묶음상품 추가</button></div>
         </div>
+
+        {msg&&<p role="alert" style={{color:msg.type==='error'?'#f08888':'#6ef5b0',fontSize:13}}>{msg.text}</p>}
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: 60, color: 'rgba(255,255,255,0.3)' }}>불러오는 중…</div>
@@ -314,6 +329,7 @@ export default function AdminClassesPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
                     <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{cls.name}</span>
                     {cls.badge && <span style={{ fontSize: 9, fontWeight: 800, color: '#f0c040', background: 'rgba(240,192,64,0.12)', border: '1px solid rgba(240,192,64,0.2)', borderRadius: 4, padding: '1px 6px' }}>{cls.badge}</span>}
+                    {cls.saleKind==='BUNDLE'&&<span style={{fontSize:10,color:'#9ec3ff',whiteSpace:'nowrap'}}>묶음상품 · {cls.daechionBinding?.lectures.length??0}강의</span>}
                   </div>
                   <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
                     {cls.category} · {cls.modes.online.enabled ? `온라인 ${cls.modes.online.price.toLocaleString()}원` : ''}
@@ -326,7 +342,7 @@ export default function AdminClassesPage() {
                 </div>
 
                 {/* 공개 토글 */}
-                <button onClick={() => toggleVisible(cls)} style={{
+                <button onClick={() => toggleVisible(cls)} disabled={cls.saleKind==='BUNDLE'&&!cls.visible} title={cls.saleKind==='BUNDLE'?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
                   padding: '5px 12px', fontSize: 11, fontWeight: 700, borderRadius: 20, border: 'none', cursor: 'pointer',
                   background: cls.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
                   color: cls.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
@@ -354,10 +370,10 @@ export default function AdminClassesPage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 }}>
           <div>
             <button onClick={closeEdit} style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', background: 'none', border: 'none', cursor: 'pointer' }}>← 목록으로</button>
-            <h1 style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginTop: 6 }}>{isNew ? '수업 추가' : '수업 수정'}</h1>
+            <h1 style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginTop: 6 }}>{e.saleKind==='BUNDLE'?(isNew?'묶음상품 추가':'묶음상품 수정'):(isNew ? '수업 추가' : '수업 수정')}</h1>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={() => upd(['visible'], !e.visible)} style={{
+            <button onClick={() => upd(['visible'], !e.visible)} disabled={e.saleKind==='BUNDLE'&&!e.visible} title={e.saleKind==='BUNDLE'?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
               padding: '8px 14px', fontSize: 12, fontWeight: 700, borderRadius: 20, border: 'none', cursor: 'pointer',
               background: e.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
               color: e.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
@@ -370,7 +386,8 @@ export default function AdminClassesPage() {
           </div>
         </div>
 
-        {msg && <div style={{ borderRadius: 10, padding: '11px 16px', marginBottom: 16, fontSize: 13, background: msg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)', border: `1px solid ${msg.type === 'success' ? 'rgba(52,209,126,0.2)' : 'rgba(239,84,84,0.2)'}`, color: msg.type === 'success' ? '#6ef5b0' : '#f08888' }}>{msg.text}</div>}
+        {msg && <div role="alert" style={{ borderRadius: 10, padding: '11px 16px', marginBottom: 16, fontSize: 13, background: msg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)', border: `1px solid ${msg.type === 'success' ? 'rgba(52,209,126,0.2)' : 'rgba(239,84,84,0.2)'}`, color: msg.type === 'success' ? '#6ef5b0' : '#f08888' }}>{msg.text}</div>}
+        {e.saleKind==='BUNDLE'&&<p style={{color:'#b8c6df',fontSize:13,marginBottom:16}}>판매 준비 중에는 비공개로 저장됩니다.</p>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
@@ -467,7 +484,7 @@ export default function AdminClassesPage() {
 
           {/* 기본 정보 */}
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div role="group" aria-label="프로세스" style={{ display: 'flex', gap: 24 }}>
+            {e.saleKind==='BUNDLE'?<div style={{color:'#fff',fontSize:13}}>프로세스2</div>:<div role="group" aria-label="프로세스" style={{ display: 'flex', gap: 24 }}>
               {(['PROCESS_1', 'PROCESS_2'] as const).map((value, index) => (
                 <label key={value} style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', fontSize: 13 }}>
                   <input type="checkbox" checked={(e.purchaseProcess ?? 'PROCESS_1') === value}
@@ -476,7 +493,7 @@ export default function AdminClassesPage() {
                   프로세스{index + 1}
                 </label>
               ))}
-            </div>
+            </div>}
             {e.purchaseProcess==='PROCESS_2'&&<LectureBindingPicker key={isNew?'new':e.id} ids={e.daechionLectureIds??[]} saved={e.daechionBinding?.lectures} onChange={ids=>upd(['daechionLectureIds'],ids)}/>}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
@@ -491,8 +508,8 @@ export default function AdminClassesPage() {
                 {isNew && <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비우면 자동 생성됩니다</p>}
               </div>
               <div>
-                <label style={lbl}>수업명</label>
-                <input style={inp} value={e.name} onChange={ev => upd(['name'], ev.target.value)} placeholder="예: 수리논술 오페론" />
+                <label htmlFor="class-name" style={lbl}>{e.saleKind==='BUNDLE'?'묶음상품명':'수업명'}</label>
+                <input id="class-name" style={inp} value={e.name} onChange={ev => upd(['name'], ev.target.value)} placeholder="예: 수리논술 오페론" />
               </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -536,7 +553,7 @@ export default function AdminClassesPage() {
               />
               <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>수업 카드 하단 시계 아이콘 옆에 표시됩니다</p>
             </div>
-            <div>
+            {e.saleKind!=='BUNDLE'&&<><div>
               <label style={lbl}>수강신청 라벨 — 온라인 <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>구글 시트에 기록됨</span></label>
               <input
                 style={inp}
@@ -555,9 +572,14 @@ export default function AdminClassesPage() {
                 placeholder="예: 【수리논술 현강】 오페론 수열과 규칙성 신청"
               />
               <p style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: 4 }}>비워두면 기존 자동 생성 방식 유지</p>
-            </div>
+            </div></>}
           </div>
 
+          {e.saleKind==='BUNDLE'?<div style={{...card,padding:20}}>
+            <label htmlFor="bundle-price" style={lbl}>최종 판매가 (원)</label>
+            <input id="bundle-price" type="number" min={1} max={2147483647} step={1} style={inp} value={e.modes.online.price} onChange={ev=>upd(['modes','online','price'],Number(ev.target.value))}/>
+            <p style={{color:'#b8c6df',fontSize:12,marginTop:10}}>선택한 {e.daechionLectureIds?.length??0}개 강의 · {e.modes.online.price.toLocaleString('ko-KR')}원</p>
+          </div>:<>
           {/* 운영 방식 */}
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.35)' }}>운영 방식 & 금액</div>
@@ -676,6 +698,7 @@ export default function AdminClassesPage() {
             )}
           </div>
 
+          </>}
         </div>
 
         <div style={{ marginTop: 20, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
