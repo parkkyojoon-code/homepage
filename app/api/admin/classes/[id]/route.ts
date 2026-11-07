@@ -48,7 +48,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     saleKind,
     daechionBinding,
     image: body.image ?? classes[idx].image,  // 이미지는 별도 엔드포인트로
-    updatedAt: new Date().toISOString(),
+    updatedAt: new Date(saleKind==='BUNDLE'?Math.max(Date.now(),(Date.parse(classes[idx].updatedAt)||0)+1):Date.now()).toISOString(),
   }
   saveClasses(classes)
 

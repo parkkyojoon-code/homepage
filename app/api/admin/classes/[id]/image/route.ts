@@ -28,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   saveClassImage(filename, buffer)
 
   classes[idx].image = filename
-  classes[idx].updatedAt = new Date().toISOString()
+  classes[idx].updatedAt = new Date(classes[idx].saleKind==='BUNDLE'?Math.max(Date.now(),(Date.parse(classes[idx].updatedAt)||0)+1):Date.now()).toISOString()
   saveClasses(classes)
 
   return NextResponse.json({ ok: true, filename, url: `/api/images/${filename}`,updatedAt:classes[idx].updatedAt })
