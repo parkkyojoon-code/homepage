@@ -6,6 +6,10 @@ on:
     paths:
       - 'lib/daechion/**'
       - 'components/daechion/**'
+      - 'app/classes/cart/**'
+      - 'app/classes/page.tsx'
+      - 'lib/cart-checkout-contract.ts'
+      - 'tsconfig.daechion-cart.json'
       - 'lib/purchase-process.ts'
       - 'lib/classes.ts'
       - 'app/admin/classes/**'
@@ -24,6 +28,7 @@ on:
       - 'tests/daechion-orders-service.test.mjs'
       - 'tests/daechion-catalog-fixture.cjs'
       - 'tests/daechion-bundle-admin-preview.mjs'
+      - 'tests/daechion-cart-preview.mjs'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
       - 'tests/daechion-operations.test.mjs'
@@ -68,10 +73,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:daechion-worker
+      - run: npx tsc -p tsconfig.daechion-cart.json
       - run: npm run test:daechion
       - run: node --test tests/daechion-sheets-verify.test.mjs
       - run: node --check tests/daechion-browser-preview.mjs
       - run: node --check tests/daechion-bundle-admin-preview.mjs
+      - run: node --check tests/daechion-cart-preview.mjs
       - run: npm run test:legacy-auth
       - run: node --test tests/daechion-http.integration.mjs
       - name: Build isolated Daechion worker image

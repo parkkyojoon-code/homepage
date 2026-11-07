@@ -102,6 +102,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       assert.ok(!(await (await request('/api/classes')).json()).some(c=>c.id===body.id))
     })
     await t.test('new cart endpoints stay unavailable while the original process-two intake runs',async()=>{
+      assert.deepEqual(await (await request('/api/daechion/orders/catalog')).json(),{available:false,products:[]})
       for(const route of ['/api/daechion/orders/cart','/api/daechion/orders/quotes','/api/daechion/orders']){
         const response=await request(route,{body:{}})
         assert.equal(response.status,503)

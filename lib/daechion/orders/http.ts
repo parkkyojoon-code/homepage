@@ -13,6 +13,21 @@ export interface OrderHttpPorts extends CheckoutPorts {
   ready():Promise<void>
 }
 const json=(body:unknown,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store','X-Robots-Tag':'noindex'}})
+export async function orderCatalog(ports:OrderHttpPorts){
+  if(!ports.settings)return json({available:false,products:[]})
+  try{
+    await ports.ready()
+    const source=await ports.catalog(),products=[]
+    for(const row of source){
+      if(!row||typeof row!=='object'||!('productId' in row))continue
+      try{
+        const item=resolveCart({items:[{productId:row.productId}]},source,ports.tenantId).items[0]
+        products.push({productId:item.productId,title:item.title,saleKind:item.saleKind,priceWon:item.priceWon,lectureCount:item.lectures.length})
+      }catch{/* A malformed or ambiguous product is never advertised as purchasable. */}
+    }
+    return json({available:products.length>0,products})
+  }catch{return json({available:false,products:[]},503)}
+}
 export async function orderPost(kind:'cart'|'quotes'|'orders',request:Request,ports:OrderHttpPorts){
   if(!ports.settings)return json({code:'ORDERS_UNAVAILABLE',error:'현재 신청을 준비 중입니다.'},503)
   if(!ports.settings.origins.includes(request.headers.get('origin')??''))return json({error:'요청을 확인할 수 없습니다.'},403)

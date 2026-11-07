@@ -111,6 +111,11 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     })
     await t.test('HTTP defaults off, rejects forged input/origin/oversized data and hides internal failures',async()=>{
       const web={...ports,settings:{origins:['https://fixture.invalid']},ready:async()=>{}}
+      assert.deepEqual(await (await http.orderCatalog({...web,settings:null})).json(),{available:false,products:[]})
+      const listing=await (await http.orderCatalog({...web,catalog:async()=>[...products,{...products[0],productId:'forged',purchaseProcess:'PROCESS_1'}]})).json()
+      assert.equal(listing.available,true);assert.equal(listing.products.length,products.length)
+      assert.deepEqual(Object.keys(listing.products[0]).sort(),['lectureCount','priceWon','productId','saleKind','title'])
+      assert.equal((await http.orderCatalog({...web,ready:async()=>{throw Error('NO_SCHEMA')}})).status,503)
       assert.equal((await http.orderPost('cart',request({}),{...web,settings:null})).status,503)
       assert.equal((await http.orderPost('cart',request({},{origin:'https://evil.invalid'}),web)).status,403)
       assert.equal((await http.orderPost('cart',request({},{'content-type':'text/plain'}),web)).status,415)
