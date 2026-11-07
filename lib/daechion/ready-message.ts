@@ -42,7 +42,7 @@ export async function queueReadyMessage(client:LedgerClient,id:string,version:st
   await client.query("UPDATE daechion_automation.applications SET notification_state='PENDING' WHERE id=$1",[id])
   await client.query("INSERT INTO daechion_automation.outbox(id,application_id,kind,event_version) VALUES($1,$2,'READY_MESSAGE',$3)",[randomUUID(),id,version])
 }
-export async function sendOneReadyMessage(ports:{applicationId?:string;provider:ReadyMessageProvider;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
+export async function sendOneReadyMessage(ports:{applicationId?:string;onApplication?:(id:string)=>void;provider:ReadyMessageProvider;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
   if(ports.applicationId!==undefined)z.string().uuid().parse(ports.applicationId)
   const job=await ports.withClient(client=>automationTransaction(client,async()=>{
     const stale=(await client.query("SELECT application_id FROM daechion_automation.outbox WHERE kind='READY_MESSAGE' AND state='RUNNING' AND lease_until<=now() AND ($1::uuid IS NULL OR application_id=$1) ORDER BY application_id",[ports.applicationId??null])).rows
@@ -68,6 +68,7 @@ export async function sendOneReadyMessage(ports:{applicationId?:string;provider:
     return {applicationId:String(app.id),id:String(queue.id),token,text:lmsText(snapshot.studentName,snapshot.productTitle)}
   }))
   if(!job)return 'SKIPPED'
+  ports.onApplication?.(job.applicationId)
   const receipts=await ports.withClient(async client=>(await client.query('SELECT id,phone,state FROM daechion_automation.ready_receipts WHERE application_id=$1 ORDER BY phone',[job.applicationId])).rows)
   for(const receipt of receipts){
     if(receipt.state!=='PENDING')continue

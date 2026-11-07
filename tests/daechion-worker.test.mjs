@@ -30,6 +30,38 @@ test('disabled provider phases do not require billing, SMS, Daechion or Google c
   await assert.rejects(service.setupSheets(),/separate new spreadsheet/)
 })
 
+test('session refresh failures are distinguished from business failures, redacted and throttled',async()=>{
+  for(const stage of ['SESSION_REFRESH','private cookie and phone']){
+    let refreshes=0,reads=0
+    const settings={DAECHION_API_KEY:'synthetic-only',DAECHION_TENANT_ID:'116',DAECHION_CONTENT_TEST_LECTURE_ID:'10',
+      DAECHION_PAYMENT_READ_ENABLED:'true',DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true'}
+    const service=worker.runtime(settings,{withClient:async run=>run({query:async sql=>{
+      assert.match(sql.trim(),/^SELECT/);reads++;return {rows:[]}
+    }}),providers:{daechion:{me:async()=>({tenantId:116}),refreshSession:async()=>{
+      refreshes++;throw Object.assign(Error('private key, phone and cookie'),{stage})
+    }}}})
+    const first=await service.cycle(false,{enrollmentEnabled:true})
+    assert.equal(first.failed,1);assert.deepEqual(first.failurePhases,{sessionRefresh:1})
+    assert.equal(first.sessionFailureStage,stage==='SESSION_REFRESH'?stage:undefined)
+    assert.equal(JSON.stringify(first).includes('private'),false)
+    assert.equal(first.sent+first.checked+first.enrolled+first.sheets+first.messages,0)
+    const second=await service.cycle(false,{enrollmentEnabled:true})
+    assert.equal(second.failed,0);assert.equal(second.failurePhases,undefined)
+    assert.equal(refreshes,1);assert.equal(reads,2)
+  }
+})
+
+test('session-only diagnostics expose only approved stage codes and never start financial work',async()=>{
+  for(const stage of ['SESSION_REFRESH','private cookie']){
+    const output=[]
+    await worker.main({argv:['--session-only','--once'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_SESSION_MAINTENANCE_ENABLED:'true'},
+      makeRuntime:()=>({check:async()=>{},maintainSession:async()=>{throw Object.assign(Error('private key'),{stage})},
+        cycle:async()=>{throw Error('must not start')}}),write:value=>output.push(value)})
+    assert.deepEqual(output,[{sessionMaintenance:true,refreshed:false,sending:false,...(stage==='SESSION_REFRESH'?{failureStage:stage}:{})}])
+    assert.equal(JSON.stringify(output).includes('private'),false)
+  }
+})
+
 test('explicit scoped Sheets reconciliation cannot run financial phases even with their flags enabled',async()=>{
   const id='10000000-0000-4000-8000-000000000001',calls=[]
   const env={DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_ACCEPTANCE_TEST_ONLY:'true',DAECHION_ACCEPTANCE_APPLICATION_ID:id,

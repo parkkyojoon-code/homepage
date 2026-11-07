@@ -1,5 +1,8 @@
 const { setTimeout: sleep } = require('node:timers/promises')
 
+// Only locally defined phase names may enter logs; never serialize errors.
+const sessionFailureStage = error => ['API_PREFLIGHT','BROWSER_LAUNCH','BROWSER_CONTEXT','SESSION_REFRESH'].includes(error?.stage) ? error.stage : undefined
+
 function workerArguments(argv,env){
   const options=[...argv],index=options.indexOf('--application-id')
   let applicationId
@@ -63,10 +66,23 @@ function runtime(env,{withClient,providers={}}={}) {
     if(!messageProvider)messageProvider=solapiReadyProvider({apiKey:env.SOLAPI_API_KEY,apiSecret:env.SOLAPI_API_SECRET,sender:env.SOLAPI_SENDER})
     return messageProvider
   }
+  const diagnosticsEnabled=env.DAECHION_DIAGNOSTICS_SHEETS_ENABLED==='true'
+  const {recordOperation,operationRows}=require('../../.daechion-worker-build/lib/daechion/operations.js')
+  const {publishOperations}=require('../../.daechion-worker-build/lib/daechion/operations-sheet.js')
+  let diagnosticStorageFailed=false
+  async function observe(phase,applicationId,ok,code){
+    if(!diagnosticsEnabled)return
+    try{await withAutomationClient(client=>recordOperation(client,{phase,applicationId,ok,code}));}
+    catch{diagnosticStorageFailed=true}
+  }
+  async function observeSelected(phase,id,ok,code){
+    await observe(phase,id,ok,code)
+    if(ok&&id)await observe(phase,undefined,true)
+  }
   let sheetApi, sheetTarget
   function sheetRuntime() {
     if(sheetApi&&sheetTarget)return {sheetApi,sheetTarget}
-    if(env.DAECHION_SHEETS_ENABLED!=='true')throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
+    if(env.DAECHION_SHEETS_ENABLED!=='true'&&!diagnosticsEnabled)throw Error('NEW_SHEET_CONFIGURATION_REQUIRED')
     const {googleSheetsApi}=require('../../.daechion-worker-build/lib/daechion/google-sheets.js')
     const {sheetsDestination}=require('../../.daechion-worker-build/lib/daechion/sheets-view.js')
     sheetsDestination(env.DAECHION_SHEETS_SPREADSHEET_ID,env.GOOGLE_SHEET_ID)
@@ -95,10 +111,34 @@ function runtime(env,{withClient,providers={}}={}) {
   async function maintainSession(){
     const id=Number(env.DAECHION_BROWSER_CHECK_LECTURE_ID??env.DAECHION_CONTENT_TEST_LECTURE_ID)
     if(!Number.isSafeInteger(id)||id<=0)throw Error('CONTENT_SESSION_CHECK_TARGET_REQUIRED')
-    return browserProvider().refreshSession(id)
+    try{
+      const result=await browserProvider().refreshSession(id)
+      await observe('sessionRefresh',undefined,result?.refreshed===true)
+      return result
+    }catch(error){await observe('sessionRefresh',undefined,false,sessionFailureStage(error));throw error}
   }
   return {
     maintainSession,
+    async syncDiagnostics(){
+      if(!diagnosticsEnabled)return {enabled:false}
+      try{
+        const {sheetApi,sheetTarget}=sheetRuntime()
+        // This projection-only path is independent of financial switches.
+        for(let i=0;i<5;i++){
+          let selected
+          try{
+            const result=await syncOneApplication({onApplication:id=>{selected=id},api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
+            if(result==='SKIPPED')break
+            await observeSelected('sheets',selected,result==='DONE',result==='DEFERRED'?'DEFERRED':'UNKNOWN')
+          }catch{await observe('sheets',selected,false);break}
+        }
+        const issues=await withAutomationClient(client=>operationRows(client))
+        if(diagnosticStorageFailed)issues.unshift({scope:'WORKER',phase:'diagnostics',state:'OPEN',code:'기록 저장 확인 필요',occurrences:'1',first_failed_at:new Date(),last_failed_at:new Date(),resolved_at:null})
+        await publishOperations(sheetApi,sheetTarget,issues)
+        await observe('diagnostics',undefined,true)
+        return {enabled:true,updated:true,storageFailed:diagnosticStorageFailed}
+      }catch{await observe('diagnostics',undefined,false);return {enabled:true,updated:false,storageFailed:diagnosticStorageFailed}}
+    },
     async reconcileSheets(applicationId){
       await checkAcceptanceTarget(applicationId,env,withAutomationClient)
       const {sheetApi,sheetTarget}=sheetRuntime()
@@ -124,6 +164,13 @@ function runtime(env,{withClient,providers={}}={}) {
       // Never announce readiness until this external prerequisite is verified.
       if ((enrollmentEnabled || readyMessagesEnabled) && env.DAECHION_ACCESS_POLICY_VERIFIED !== 'true') throw Error('ACCESS_POLICY_VERIFICATION_REQUIRED')
       const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0,messages:0,deferred:0 }
+      const failed = (phase,error) => {
+        outcomes.failed++
+        outcomes.failurePhases ??= {}
+        outcomes.failurePhases[phase] = (outcomes.failurePhases[phase] ?? 0) + 1
+        const stage = phase === 'sessionRefresh' ? sessionFailureStage(error) : undefined
+        if(stage) outcomes.sessionFailureStage = stage
+      }
       const provider=(sendEnabled||paymentsEnabled)?paymentProvider():undefined
       if (enrollmentEnabled && !tenantChecked) {
         if (String((await enrollmentProvider().me()).tenantId) !== env.DAECHION_TENANT_ID.trim()) throw Error('DAECHION_TENANT_MISMATCH')
@@ -131,7 +178,7 @@ function runtime(env,{withClient,providers={}}={}) {
       }
       if(enrollmentEnabled&&Date.now()>=sessionRefreshAt){
         try{await maintainSession();sessionRefreshAt=Date.now()+15*60*1000}
-        catch{outcomes.failed++;sessionRefreshAt=Date.now()+60000}
+        catch(error){failed('sessionRefresh',error);sessionRefreshAt=Date.now()+60000}
       }
       const ids = sendEnabled ? await withAutomationClient(async client => {
         const result = await client.query(`SELECT a.id FROM daechion_automation.applications a
@@ -147,10 +194,11 @@ function runtime(env,{withClient,providers={}}={}) {
       for (const id of ids) {
         try {
           const result = await sendApplicationBill(id, true, { provider, withClient: withAutomationClient })
+          if(['SENT','UNKNOWN'].includes(result.outcome))await observe('billing',id,result.outcome==='SENT',result.outcome==='UNKNOWN'?'UNKNOWN':undefined)
           if (result.outcome === 'SENT') outcomes.sent++
           else if (result.outcome === 'UNKNOWN') outcomes.unknown++
           else outcomes.skipped++
-        } catch { outcomes.failed++ }
+        } catch(error) { failed('billing',error);await observe('billing',id,false) }
       }
       if (paymentsEnabled) {
         const payments = await withAutomationClient(async client => (await client.query(`SELECT a.id FROM daechion_automation.applications a
@@ -161,9 +209,10 @@ function runtime(env,{withClient,providers={}}={}) {
         for (const row of payments) {
           try {
             const result = await checkApplicationPayment(row.id, { provider, withClient: withAutomationClient })
+            if(result!=='SKIPPED'&&result!=='STALE')await observe('paymentRead',row.id,result!=='UNKNOWN',result==='UNKNOWN'?'UNKNOWN':undefined)
             outcomes.checked++; if (result === 'UNKNOWN') outcomes.unknown++
           }
-          catch { outcomes.failed++ }
+          catch(error) { failed('paymentRead',error);await observe('paymentRead',row.id,false) }
         }
       }
       if (enrollmentEnabled) {
@@ -176,26 +225,35 @@ function runtime(env,{withClient,providers={}}={}) {
         for (const row of applications) {
           try {
             const result = await enrollApplication(row.id, true, { daechion,tenantId:env.DAECHION_TENANT_ID.trim(), withClient: withAutomationClient })
+            if(['DONE','REVIEW'].includes(result))await observe('enrollment',row.id,result==='DONE',result==='REVIEW'?'UNKNOWN':undefined)
             if (result === 'DONE') outcomes.enrolled++
             else if (result === 'REVIEW') outcomes.review++
             else outcomes.skipped++
-          } catch { outcomes.failed++ }
+          } catch(error) { failed('enrollment',error);await observe('enrollment',row.id,false) }
         }
       }
       if(readyMessagesEnabled){
         const messageProvider=readyMessageProvider()
         for(let i=0;i<5;i++){
-          try{const result=await sendOneReadyMessage({applicationId,provider:messageProvider,withClient:withAutomationClient});if(result==='SKIPPED')break;if(result==='SENT')outcomes.messages++;else outcomes.unknown++}catch{outcomes.failed++;break}
+          let selected=applicationId
+          try{
+            const result=await sendOneReadyMessage({applicationId,onApplication:id=>{selected=id},provider:messageProvider,withClient:withAutomationClient})
+            if(result==='SKIPPED')break
+            await observeSelected('readyMessage',selected,result==='SENT',result==='UNKNOWN'?'UNKNOWN':undefined)
+            if(result==='SENT')outcomes.messages++;else outcomes.unknown++
+          }catch(error){failed('readyMessage',error);await observe('readyMessage',selected,false);break}
         }
       }
       if(sheetsEnabled) {
         const {sheetApi,sheetTarget}=sheetRuntime()
         for(let i=0;i<5;i++) {
+          let selected=applicationId
           try {
-            const result=await syncOneApplication({applicationId,api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
+            const result=await syncOneApplication({applicationId,onApplication:id=>{selected=id},api:sheetApi,target:sheetTarget,withClient:withAutomationClient})
             if(result==='SKIPPED')break
+            await observeSelected('sheets',selected,result==='DONE',result==='DEFERRED'?'DEFERRED':'UNKNOWN')
             if(result==='DONE')outcomes.sheets++;else if(result==='DEFERRED')outcomes.deferred++;else outcomes.unknown++
-          }catch{outcomes.failed++;break}
+          }catch(error){failed('sheets',error);await observe('sheets',selected,false);break}
         }
       }
       return outcomes
@@ -230,9 +288,10 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     process.once('SIGTERM',stop);process.once('SIGINT',stop)
     try{
       do{
-        let refreshed=false
-        try{refreshed=(await service.maintainSession())?.refreshed===true}catch{}
-        write({sessionMaintenance:true,refreshed,sending:false})
+        let refreshed=false, failureStage
+        try{refreshed=(await service.maintainSession())?.refreshed===true}catch(error){failureStage=sessionFailureStage(error)}
+        const diagnostics=env.DAECHION_DIAGNOSTICS_SHEETS_ENABLED==='true'?await service.syncDiagnostics():undefined
+        write({sessionMaintenance:true,refreshed,sending:false,...(failureStage?{failureStage}:{}),...(diagnostics?{diagnostics}:{})})
         if(argv.includes('--once')||stopping)break
         try{await sleep(refreshed?900000:60000,undefined,{signal:controller.signal})}catch{if(!stopping)throw Error('SESSION_MAINTENANCE_WAIT_FAILED')}
       }while(!stopping)
@@ -252,6 +311,7 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
         readyMessagesEnabled:env.DAECHION_READY_MESSAGE_ENABLED==='true',
         ...(parsed.applicationId?{applicationId:parsed.applicationId}:{}),
       }), sending: sendEnabled })
+      if(env.DAECHION_DIAGNOSTICS_SHEETS_ENABLED==='true')write({diagnostics:await service.syncDiagnostics()})
       if (argv.includes('--once') || stopping) break
       await sleep(30000)
     } while (!stopping)
