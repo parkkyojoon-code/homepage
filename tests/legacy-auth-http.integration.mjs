@@ -24,10 +24,15 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
  let child;
  try{
   await writeFile(studentFile,JSON.stringify([student]));
+  const baseClass={visible:true,name:'검수 수업',category:'수리논술',image:null,duration:'검수',
+   modes:{online:{enabled:true,price:1200,campuses:[]},offline:{enabled:false,price:0,campuses:[]}},
+   textbook:{included:false,price:0},description:'',keywords:['','',''],createdAt:'2026-01-01',updatedAt:'2026-01-01'};
+  await writeFile(path.join(temp,'classes.json'),JSON.stringify([{...baseClass,id:'12course'},{...baseClass,id:'chuweol'}]));
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');
   const port=reservation.address().port;await new Promise((resolve,reject)=>reservation.close(e=>e?reject(e):resolve()));
   const origin=`http://127.0.0.1:${port}`;
   const env={...process.env,NODE_ENV:'production',DATA_DIR:temp,ADMIN_PASSWORD:adminPassword,ADMIN_SECRET:randomBytes(32).toString('hex'),
+   DAECHION_INTAKE_ENABLED:'false',DAECHION_ADMIN_ENABLED:'false',DAECHION_DATABASE_URL:'',
    LECTURES_DATABASE_URL:'',LECTURES_APP_ORIGIN:origin,LECTURES_ADDITIONAL_ORIGINS:'',LECTURES_WORKER_ENABLED:'false',LECTURES_WORKER_TOKEN:'',
    GOOGLE_SERVICE_ACCOUNT_JSON:'',GOOGLE_SHEET_ID:'',PAYSSAM_API_KEY:'',PAYSSAM_MEMBER:'',PAYSSAM_MERCHANT:'',SOLAPI_API_KEY:'',SOLAPI_API_SECRET:'',
    LECTURES_BOOTSTRAP_USERNAME:'',LECTURES_BOOTSTRAP_NAME:'',LECTURES_BOOTSTRAP_PASSWORD:''};
@@ -63,6 +68,59 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
    const r=await request('/api/admin/login',{method:'POST',body:{password:adminPassword}});assert.equal(r.status,200);adminCookie=cookieOf(r,'admin_session');
    const list=await request('/api/admin/students',{cookie:adminCookie});assert.equal(list.status,200);assert.deepEqual((await list.json()).map(s=>s.id),[student.id]);
   });
+  await t.test('admin can select either process for new classes and updates preserve omitted process',async()=>{
+   for(const [id,purchaseProcess] of [['test-process-one','PROCESS_1'],['test-process-two','PROCESS_2']]) {
+    const r=await request('/api/admin/classes',{method:'POST',cookie:adminCookie,body:{...baseClass,id,purchaseProcess}});
+    assert.equal(r.status,201);assert.equal((await r.json()).purchaseProcess,purchaseProcess);
+    assert.equal((await (await request(`/api/classes/${id}`)).json()).purchaseProcess,purchaseProcess);
+   }
+   const update=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{name:'이름 변경'}});
+   assert.equal(update.status,200);assert.equal((await update.json()).purchaseProcess,'PROCESS_2');
+   for(const purchaseProcess of ['PROCESS_2','PROCESS_1']) {
+    const switched=await request('/api/admin/classes/test-process-one',{method:'PUT',cookie:adminCookie,body:{purchaseProcess}});
+    assert.equal(switched.status,200);assert.equal((await switched.json()).purchaseProcess,purchaseProcess);
+   }
+   const invalid=await request('/api/admin/classes',{method:'POST',cookie:adminCookie,body:{...baseClass,id:'invalid-process',purchaseProcess:['PROCESS_1','PROCESS_2']}});
+   assert.equal(invalid.status,400);
+  });
+  await t.test('lecture catalog is admin-only and forged course bindings cannot bypass server validation',async()=>{
+   assert.equal((await request('/api/admin/daechion/lectures')).status,401);
+   assert.equal((await request('/api/admin/daechion/lectures',{cookie:studentCookie})).status,401);
+   assert.equal((await request('/api/admin/daechion/lectures',{cookie:adminCookie})).status,503);
+   const forged={tenantId:'forged',lectures:[{id:999,name:'forged'}],verifiedAt:'2026-11-06T00:00:00Z'};
+   const response=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionBinding:forged}});
+   assert.equal(response.status,200);assert.equal((await response.json()).daechionBinding,undefined);
+   const bad=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[999]}});
+   assert.equal(bad.status,400);
+   const stale=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[],expectedDaechionBindingAt:'outdated'}});
+   assert.equal(stale.status,409);
+   const cleared=await request('/api/admin/classes/test-process-two',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[]}});
+   assert.equal(cleared.status,200);assert.equal((await cleared.json()).daechionBinding,null);
+   const original=await request('/api/admin/classes/12course',{method:'PUT',cookie:adminCookie,body:{daechionLectureIds:[999],daechionBinding:forged}});
+   assert.equal(original.status,200);assert.equal((await original.json()).daechionBinding,undefined);
+  });
+  await t.test('original classes stay on process 1 and process 2 cannot enter legacy application intake',async()=>{
+   for(const id of ['12course','chuweol']) {
+    assert.equal((await (await request(`/api/classes/${id}`)).json()).purchaseProcess,'PROCESS_1');
+    assert.equal((await request(`/api/admin/classes/${id}`,{method:'PUT',cookie:adminCookie,body:{purchaseProcess:'PROCESS_2'}})).status,400);
+    assert.equal((await request('/api/apply',{method:'POST',body:{courseId:id}})).status,400);
+   }
+   const blocked=await request('/api/apply',{method:'POST',body:{courseId:'test-process-two',purchaseProcess:'PROCESS_1'}});
+   assert.equal(blocked.status,503);assert.equal((await blocked.json()).code,'PROCESS_2_NOT_READY');
+   assert.equal((await request('/api/apply',{method:'POST',body:{courseId:'test-process-one'}})).status,400);
+   const stored=JSON.parse(await readFile(path.join(temp,'classes.json'),'utf8'));
+   assert.ok(stored.filter(c=>['12course','chuweol'].includes(c.id)).every(c=>c.purchaseProcess!=='PROCESS_2'));
+  });
+  await t.test('new process-2 API is closed by default and does not fall through to legacy billing',async()=>{
+   const availability=await request('/api/daechion/applications?productId=test-process-two');assert.equal(availability.status,200);assert.deepEqual(await availability.json(),{available:false});
+   const receipt=await request('/api/daechion/applications',{method:'POST',body:{productId:'test-process-two'}});assert.equal(receipt.status,503);assert.equal((await receipt.json()).success,false);
+  });
+  await t.test('new management API requires the existing admin session and remains disabled without its DB',async()=>{
+   assert.equal((await request('/api/admin/daechion/applications')).status,401);
+   assert.equal((await request('/api/admin/daechion/applications',{cookie:studentCookie})).status,401);
+   assert.equal((await request('/api/admin/daechion/applications',{cookie:adminCookie})).status,503);
+   assert.equal((await request('/api/admin/daechion/applications',{method:'POST',body:{action:'HOLD'}})).status,401);
+  });
   await t.test('retired APIs stay closed with existing student and admin cookies',async()=>{
    for(const route of ['/api/lectures/me','/api/lectures/orders','/api/lectures/admin/orders','/api/lectures/admin/accounts'])
     assert.equal((await request(route,{cookie:`${studentCookie}; ${adminCookie}`})).status,410,route);
@@ -94,6 +152,7 @@ test('legacy and lecture authentication remain isolated over HTTP',{timeout:1200
    for(const route of ['/','/classes','/my','/api/classes'])assert.equal((await request(route)).status,200,route);
    const r=await request('/api/admin/classes',{cookie:adminCookie});assert.equal(r.status,200);assert.ok(Array.isArray(await r.json()));
    const r2=await request('/api/apply',{method:'POST',body:{}});assert.equal(r2.status,400,'legacy application validation remains reachable');
+   const callback=await request('/api/daechion/payssam/notification',{method:'POST',body:{}});assert.equal(callback.status,503,'new payment receipt is disabled by default');
   });
   await t.test('existing student logout clears only its own cookie',async()=>{
    const r=await request('/api/my/logout',{method:'POST',cookie:`${studentCookie}; ${adminCookie}`});assert.equal(r.status,200);

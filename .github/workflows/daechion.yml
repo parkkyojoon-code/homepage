@@ -1,0 +1,81 @@
+name: Daechion contract checks
+on:
+  push:
+    branches: ['codex/daechion-enrollment-base']
+  pull_request:
+    paths:
+      - 'lib/daechion/**'
+      - 'components/daechion/**'
+      - 'lib/purchase-process.ts'
+      - 'lib/classes.ts'
+      - 'app/admin/classes/**'
+      - 'app/api/admin/classes/**'
+      - 'app/api/admin/daechion/**'
+      - 'app/admin/daechion/**'
+      - 'app/admin/dashboard/page.tsx'
+      - 'app/api/classes/**'
+      - 'app/api/apply/**'
+      - 'app/api/daechion/**'
+      - 'app/apply/**'
+      - 'tests/legacy-auth-http.integration.mjs'
+      - 'tests/daechion.test.ts'
+      - 'tests/daechion-ledger.test.mjs'
+      - 'tests/daechion-worker.test.mjs'
+      - 'tests/daechion-content-browser.test.mjs'
+      - 'tests/daechion-sheets-verify.test.mjs'
+      - 'tests/daechion-http.integration.mjs'
+      - 'tests/daechion-browser-preview.mjs'
+      - 'workers/daechion/**'
+      - 'db/daechion/**'
+      - 'scripts/daechion-*.cjs'
+      - 'tsconfig.daechion-tests.json'
+      - 'tsconfig.daechion-worker.json'
+      - '.github/workflows/daechion.yml'
+      - 'package*.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: daechion_ci
+          POSTGRES_PASSWORD: ci-test-only
+          POSTGRES_DB: daechion_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DAECHION_TEST_POSTGRES_URL: postgresql://daechion_ci:ci-test-only@127.0.0.1:5432/daechion_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:daechion-worker
+      - run: npm run test:daechion
+      - run: node --test tests/daechion-sheets-verify.test.mjs
+      - run: node --check tests/daechion-browser-preview.mjs
+      - run: npm run test:legacy-auth
+      - run: node --test tests/daechion-http.integration.mjs
+      - name: Build isolated Daechion worker image
+        run: docker build --file workers/daechion/Dockerfile --tag pkjmath-daechion-worker:ci .
+      - name: Verify unconfigured worker image refuses to start
+        run: |
+          if docker run --rm pkjmath-daechion-worker:ci > worker-default.log 2>&1; then
+            echo "An unconfigured worker must refuse to start"
+            exit 1
+          fi
+          test "$(cat worker-default.log)" = "DAECHION_BILLING_WORKER_FAILED"
+      - name: Build optional browser worker image
+        run: docker build --file workers/daechion/Dockerfile.browser --tag pkjmath-daechion-browser:ci .
+      - name: Verify content rights UI with Chromium and synthetic data only
+        run: docker run --rm -e DAECHION_BROWSER_FIXTURE_TEST=true -v "$PWD/tests:/app/tests:ro" --entrypoint node pkjmath-daechion-browser:ci --test tests/daechion-content-browser.test.mjs

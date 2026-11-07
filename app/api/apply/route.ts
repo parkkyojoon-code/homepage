@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { getClassById } from '@/lib/classes'
 import { calcSubjectSelectionPrice, subjectSelectionLabel } from '@/lib/subjectPricing'
+import { purchaseProcessOf } from '@/lib/purchase-process'
 
 // 환경변수에서 설정 로드
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g'
@@ -47,6 +48,13 @@ export async function POST(request: NextRequest) {
       // 과목 개수 선택형 신청 (예: 수능수학 추월반) — 선택한 과목명 배열
       selectedSubjects,
     } = body
+
+    // Process 2 must not fall back to the old Sheets/long-course onboarding.
+    // Replace this gate with the dedicated DB intake once it is connected.
+    const selectedProduct = typeof courseId === 'string' ? getClassById(courseId) : null
+    if (selectedProduct && purchaseProcessOf(selectedProduct) === 'PROCESS_2') {
+      return NextResponse.json({ success: false, error: '신규 강의 구매를 준비 중입니다.', code: 'PROCESS_2_NOT_READY' }, { status: 503 })
+    }
 
     // 유효성 검사
     if (!studentName || !parentPhone || !studentPhone || !courseType) {

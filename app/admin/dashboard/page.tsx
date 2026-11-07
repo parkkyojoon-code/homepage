@@ -38,6 +38,7 @@ export default function AdminDashboard() {
   }
 
   const sections = [
+    {key:'daechion',icon:'🧾',label:'신규 강의 신청 관리',desc:'결제·중복 수강생 확인 및 수동 처리 이력',href:'/admin/daechion',accent:'#6a9df5',accentDim:'rgba(106,157,245,0.12)',accentBorder:'rgba(106,157,245,0.25)',badge:null,badgeLabel:null,sub:'프로세스2 신청 · 보류·재개·수동 확인'},
     {
       key: 'homework',
       icon: '📋',

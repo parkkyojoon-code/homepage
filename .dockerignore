@@ -1,0 +1,12 @@
+.git
+**/node_modules
+.next
+.test-build
+.daechion-test-build
+.daechion-worker-build
+**/.auth
+**/playwright/.auth
+**/*.storage-state.json
+.env*
+backups
+*.dump

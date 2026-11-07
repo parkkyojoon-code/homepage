@@ -22,7 +22,8 @@ for(const file of files){
  for(const [name,pattern] of rules){pattern.lastIndex=0;for(const match of text.matchAll(pattern))failures.push(`${file}:${text.slice(0,match.index).split('\n').length}: ${name}`)}
  for(const match of text.matchAll(/postgres(?:ql)?:\/\/[^\s:@/]+:([^@\s]+)@[^\s'"<>]+/g)){
   let safeCi=false
-  if(file==='.github/workflows/lecture-service.yml'){try{const url=new URL(match[0]);safeCi=url.username==='lecture_ci'&&url.password==='ci-test-only'&&url.hostname==='127.0.0.1'&&url.port==='5432'&&url.pathname==='/lecture_ci'}catch{}}
+  const ciDatabase={'.github/workflows/lecture-service.yml':'lecture_ci','.github/workflows/daechion.yml':'daechion_ci'}[file]
+  if(ciDatabase){try{const url=new URL(match[0]);safeCi=url.username===ciDatabase&&url.password==='ci-test-only'&&url.hostname==='127.0.0.1'&&url.port==='5432'&&url.pathname==='/'+ciDatabase&&!url.search&&!url.hash}catch{}}
   if(!safeCi)failures.push(`${file}:${text.slice(0,match.index).split('\n').length}: DATABASE_PASSWORD_LITERAL`)
  }
 }

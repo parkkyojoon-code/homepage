@@ -6,6 +6,8 @@ import { motion } from "framer-motion"
 import { CheckCircle, ArrowLeft, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { calcSubjectSelectionPrice, type SubjectSelection } from "@/lib/subjectPricing"
+import type { PurchaseProcess } from '@/lib/purchase-process'
+import ProcessTwoApplicationForm from '@/components/daechion/ApplicationForm'
 
 // 수업 정보
 const courseTypeMap = (category: string, option: string, campus: string, hasSubjectSelection: boolean): string => {
@@ -29,6 +31,7 @@ export default function ApplyPage() {
 
   const [classData, setClassData] = useState<{
     name: string; category: string
+    purchaseProcess?: PurchaseProcess
     onlinePrice: number; offlinePrice: number
     textbookIncluded: boolean; textbookPrice: number
     subjectSelection: SubjectSelection | null
@@ -43,6 +46,7 @@ export default function ApplyPage() {
       .then(data => {
         if (data) setClassData({
           name: data.name,
+          purchaseProcess: data.purchaseProcess,
           category: data.category,
           onlinePrice: data.modes?.online?.price ?? 0,
           offlinePrice: data.modes?.offline?.price ?? 0,
@@ -121,6 +125,12 @@ export default function ApplyPage() {
         </button>
       </div>
     )
+  }
+
+  if (classData.purchaseProcess === 'PROCESS_2') {
+    return <ProcessTwoApplicationForm key={`${courseId}:${option}:${campus}`} productId={courseId} name={classData.name}
+      mode={option==='offline'?'OFFLINE':'ONLINE'} campus={option==='offline'?campus:''}
+      tuition={option==='offline'?classData.offlinePrice:classData.onlinePrice} textbook={classData.textbookIncluded?classData.textbookPrice:0}/>
   }
 
   const validateForm = () => {
