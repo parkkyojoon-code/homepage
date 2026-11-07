@@ -135,6 +135,19 @@ test('real browser grants only the selected student, clears attendance copying a
   }
 })
 
+test('file verification waits for delayed saved permissions without checking or saving them',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:20000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  const browser=await chromium.launch({headless:true})
+  try{
+    const page=await browser.newPage()
+    await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><meta charset="utf-8"><p>검수파일</p><button onclick="document.querySelector('#rights').hidden=false">권한 관리</button><div id="rights" role="dialog" hidden><h6>파일 권한 부여</h6><input aria-label="검색어 입력 (초성 검색 가능)"><table><tr><td><input id="permission" type="checkbox" onchange="window.edited=true"></td><td>검수학생</td><td>010-0000-0001</td></tr></table><button onclick="window.saved=true">저장</button><button onclick="document.querySelector('#rights').hidden=true">취소</button></div><script>document.querySelector('button').addEventListener('click',()=>setTimeout(()=>document.querySelector('#permission').checked=true,500))</script>`}))
+    await page.goto('https://parkkyojoon.daechion.com/crm/lectures/10/participants')
+    await provider.verifyFile(page,'검수파일',input)
+    assert.deepEqual(await page.evaluate(()=>({saved:!!window.saved,edited:!!window.edited,selected:document.querySelector('#permission').checked,closed:document.querySelector('#rights').hidden})),{saved:false,edited:false,selected:true,closed:true})
+  }finally{await browser.close()}
+})
+
 test('empty weekly collections require their loaded empty control and explicit placeholder',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:45000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')

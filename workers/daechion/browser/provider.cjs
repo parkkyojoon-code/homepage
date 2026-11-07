@@ -37,7 +37,11 @@ async function verifyFile(page,title,input) {
   const dialog=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'파일 권한 부여',exact:true})})
   await dialog.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true}).fill(input.studentPhone)
   const row=await exactStudentRow(dialog,input)
-  if(!await row.getByRole('checkbox').isChecked())fail()
+  // The student row renders before its saved permission arrives. Wait for the
+  // persisted selection without checking or saving anything ourselves.
+  try{await row.locator('input[type="checkbox"]:checked').waitFor({state:'attached',timeout:10000})}catch{fail()}
+  const confirmed=await exactStudentRow(dialog,input)
+  if(!await confirmed.getByRole('checkbox').isChecked())fail()
   // Verification is read-only: never save the full student permission list.
   await dialog.getByRole('button',{name:'취소',exact:true}).click()
 }
@@ -85,7 +89,8 @@ async function verifyCollection(page,url,tabName,kind,input) {
 }
 
 const LIBRARY_CATEGORIES=['자습용 자료','손필기 자료','암기자료']
-async function verifyLibrary(page,url,input) {
+async function verifyLibrary(page,url,input,onStage=()=>{}) {
+  onStage('LIBRARY_OPEN')
   await page.goto(url)
   const tab=page.getByRole('tab',{name:/^강의 자료실(?:\s|$)/})
   await tab.click()
@@ -111,8 +116,10 @@ async function verifyLibrary(page,url,input) {
     if(result.reduce((a,b)=>a+b,0)!==total)fail()
     return result
   }
+  onStage('LIBRARY_COUNTS')
   const counts=await categoryCounts(),snapshots=[]
   async function openCategory(index){
+    onStage('LIBRARY_CATEGORY_'+index)
     await page.goto(url)
     const current=page.getByRole('tab',{name:/^강의 자료실(?:\s|$)/})
     await current.click()
@@ -134,6 +141,7 @@ async function verifyLibrary(page,url,input) {
     const titles=await openCategory(index)
     snapshots.push([...titles].sort())
     for(const title of titles){
+      onStage('LIBRARY_FILE')
       await verifyFile(page,title,input)
       if(JSON.stringify((await openCategory(index)).sort())!==JSON.stringify(snapshots[index]))fail()
     }
@@ -143,6 +151,7 @@ async function verifyLibrary(page,url,input) {
   for(let index=0;index<LIBRARY_CATEGORIES.length;index++){
     if(JSON.stringify((await openCategory(index)).sort())!==JSON.stringify(snapshots[index]))fail()
   }
+  onStage('LIBRARY_COMPLETE')
   return total
 }
 
@@ -197,7 +206,7 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   }
   // The library has its own category UI; do not infer a weekly-material table.
   onStage('VERIFY_LIBRARY')
-  contentCount+=await verifyLibrary(page,participants,input)
+  contentCount+=await verifyLibrary(page,participants,input,onStage)
   if(!contentCount)fail()
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
@@ -290,4 +299,4 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
   }
   return {ensureContentAccess:input=>run(input),refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }
-module.exports={browserAccessProvider,applyAndVerify,verifyCollection,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}
+module.exports={browserAccessProvider,applyAndVerify,verifyFile,verifyCollection,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}
