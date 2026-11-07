@@ -84,6 +84,39 @@ test('identity, tenant, duplicate week labels and changed lecture targets stop b
 
 // A real Chromium executes this synthetic UI contract in CI. Every page request
 // is fulfilled locally; no vendor accounts, student data or network calls exist.
+test('read-only session refresh accepts empty and populated rosters without add controls and rejects unrelated pages',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:20000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  for(const mode of ['empty','populated','login','wrong-lecture','button-only']){
+    let saves=0,clicks=-1
+    const launch=async options=>{
+      const browser=await chromium.launch(options);let page
+      return {newContext:async settings=>{
+        const context=await browser.newContext(settings)
+        return {setDefaultTimeout:ms=>context.setDefaultTimeout(ms),route:(...args)=>context.route(...args),storageState:()=>context.storageState(),
+          newPage:async()=>{
+            page=await context.newPage();page.setDefaultTimeout(300)
+            const name=mode==='login'?'로그인':'같은 이름'
+            const tab=['login','button-only'].includes(mode)?'':`<button role="tab">수강생 목록 ${mode==='empty'?0:1}명</button>`
+            const html=`<!doctype html><meta charset="utf-8"><h3>${name}</h3>${tab}${mode==='button-only'?'<button>일괄 학생 추가</button>':''}<script>window.clicks=0;document.addEventListener('click',()=>window.clicks++)</script>`
+            await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:html}))
+            const goto=page.goto.bind(page)
+            if(mode==='wrong-lecture')page.goto=url=>goto(url.replace('/10/','/11/'))
+            return page
+          }}
+      },close:async()=>{if(page)clicks=await page.evaluate(()=>window.clicks);await browser.close()}}
+    }
+    const sessions={run:async run=>run({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,assert:async()=>{},save:async()=>{saves++}})}
+    const access=provider.browserAccessProvider(env,api,{launch,sessions})
+    if(['empty','populated'].includes(mode)){
+      assert.deepEqual(await access.refreshSession(10),{refreshed:true});assert.equal(saves,1)
+    }else{
+      await assert.rejects(access.refreshSession(10),/CONTENT_ACCESS_UNCONFIRMED/);assert.equal(saves,0)
+    }
+    assert.equal(clicks,0)
+  }
+})
+
 const fixture=`<!doctype html><meta charset="utf-8"><div id="app"></div><script>
 const app=document.querySelector('#app'),path=location.pathname;
 const row=(checked=false,wrong=false)=>'<table><tbody><tr><td><input type="checkbox" '+(checked?'checked':'')+'></td><td><p>'+(wrong?'다른학생':'검수학생')+'</p></td><td>010-0000-0001</td></tr></tbody></table>';
@@ -217,7 +250,7 @@ test('real browser captures refreshed credentials and a cold provider reloads th
       const context=await browser.newContext(options),newPage=context.newPage.bind(context)
       context.newPage=async()=>{
         const page=await newPage()
-          await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h3>같은 이름</h3><button onclick="window.actions=1">일괄 학생 추가</button><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
+          await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h3>같은 이름</h3><button role="tab">수강생 목록 1명</button><button onclick="window.actions=1">일괄 학생 추가</button><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
         browser.fixturePage=page;return page
       }
       return context

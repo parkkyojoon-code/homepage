@@ -260,8 +260,9 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
         report('SESSION_REFRESH')
         const target=`${ORIGIN}/crm/lectures/${input.lectureId}/participants`
         await page.goto(target)
-        await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
         await page.getByRole('heading',{name:lecture.name,exact:true}).waitFor({state:'visible'})
+        // Authentication must not depend on an add-student action or roster size.
+        await page.getByRole('tab',{name:/^수강생 목록(?:\s+\d+명)?$/}).waitFor({state:'visible'})
         if(page.url()!==target)fail()
         if(input.exerciseExpiredAccess){
           const expiry=require('./token-state.cjs').accessExpiry(JSON.stringify(await context.storageState()))
