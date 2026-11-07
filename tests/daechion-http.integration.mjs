@@ -47,7 +47,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     const adminPassword = randomBytes(24).toString('hex')
     const callbackKey = randomBytes(24).toString('hex')
     const env = {...process.env,NODE_ENV:'production',DATA_DIR:temp,ADMIN_PASSWORD:adminPassword,ADMIN_SECRET:randomBytes(32).toString('hex'),
-      DAECHION_INTAKE_ENABLED:'true',DAECHION_ADMIN_ENABLED:'true',DAECHION_DATABASE_URL:connectionString,
+      DAECHION_INTAKE_ENABLED:'true',DAECHION_ADMIN_ENABLED:'true',DAECHION_DATABASE_URL:connectionString,DAECHION_ORDERS_ENABLED:'false',
       DAECHION_TENANT_ID:'test-only',DAECHION_APP_ORIGIN:origin,DAECHION_ADDITIONAL_ORIGINS:'',DAECHION_PRODUCT_BINDINGS_JSON:'[]',
       DAECHION_BILLING_WORKER_ENABLED:'false',DAECHION_BILLING_SEND_ENABLED:'false',DAECHION_PAYMENT_READ_ENABLED:'false',
       DAECHION_ENROLLMENT_ENABLED:'false',DAECHION_READY_MESSAGE_ENABLED:'false',DAECHION_SHEETS_ENABLED:'false',
@@ -71,6 +71,14 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     const input = {requestKey:randomUUID(),productId,studentHistory:'NEW',applicantType:'GUARDIAN',studentName:'가상 HTTP 학생',guardianName:'가상 HTTP 보호자',
       studentPhone:'010-0000-0771',guardianPhone:'010-0000-0772',payerPhone:'010-0000-0773',mode:'ONLINE',campus:'',expectedTotalWon:1200,confirmPayment:true,agreePrivacy:true}
     let applicationId,adminCookie,qaSheetPorts,readPublishedRow,readSheetWrites
+    await t.test('new cart endpoints stay unavailable while the original process-two intake runs',async()=>{
+      for(const route of ['/api/daechion/orders/cart','/api/daechion/orders/quotes','/api/daechion/orders']){
+        const response=await request(route,{body:{}})
+        assert.equal(response.status,503)
+        assert.equal((await response.json()).code,'ORDERS_UNAVAILABLE')
+        assert.equal(response.headers.get('cache-control'),'no-store')
+      }
+    })
     await t.test('only the configured process-two product is available; old route cannot accept it',async()=>{
       assert.equal((await (await request(`/api/daechion/applications?productId=${productId}`)).json()).available,true)
       for(const id of ['12course','chuweol'])assert.equal((await (await request(`/api/daechion/applications?productId=${id}`)).json()).available,false)

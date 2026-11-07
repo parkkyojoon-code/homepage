@@ -21,6 +21,7 @@ on:
       - 'tests/daechion.test.ts'
       - 'tests/daechion-orders.test.ts'
       - 'tests/daechion-orders-ledger.test.mjs'
+      - 'tests/daechion-orders-service.test.mjs'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
       - 'tests/daechion-operations.test.mjs'
