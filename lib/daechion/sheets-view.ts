@@ -15,6 +15,7 @@ export interface ApplicationView {
   billingState: string; currentBillId?: string; allBillIds: string[]; sentAt?: string; dueAt?: string;
   paymentState: string; paidAt?: string; studentId?: number; lectureIds: number[];
   registrationState: string; notificationState: string; reviewReason?: string;
+  operationSummary?: string[];
   identity?: { status: 'WAITING' | 'PASSED' | 'REVIEW'; detected: 'NEW' | 'EXISTING' | 'UNKNOWN';
     studentId?: number; origin?: 'CREATED' | 'EXISTING'; reason?: string;manualReviewed?:boolean }
 }
@@ -52,7 +53,7 @@ export function applicationSheetRow(view: ApplicationView): (string | number)[] 
     s.additionalInputs.map(field => `${field.label}: ${field.value}`).join('\n'),stateLabel('billing',view.billingState),view.currentBillId ?? '',allIds.join('\n'),
     koreanTime(view.sentAt),koreanTime(view.dueAt),stateLabel('payment',view.paymentState),koreanTime(view.paidAt),
     view.studentId === undefined ? '' : String(view.studentId),view.lectureIds.join('\n'),stateLabel('registration',view.registrationState),
-    stateLabel('notification',view.notificationState),reviewReasonLabel(view.reviewReason),koreanTime(view.updatedAt),
+    stateLabel('notification',view.notificationState),[reviewReasonLabel(view.reviewReason),...(view.operationSummary??[])].filter(Boolean).join('\n'),koreanTime(view.updatedAt),
     s.studentHistory === 'NEW' ? '신규 수강생' : s.studentHistory === 'EXISTING' ? '기존 수강생' : '미선택',
     identity?.origin === 'CREATED' ? '본 신청에서 생성' : identity?.detected === 'EXISTING' ? '기존 기록 있음' : identity?.detected === 'NEW' ? '기존 기록 없음' : '조회 미확정',
     (!s.studentHistory&&!identity?.manualReviewed) || identity?.status === 'REVIEW' ? '확인 필요' : identity?.status === 'PASSED' ? '통과' : '조회 대기',

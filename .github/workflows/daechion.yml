@@ -21,6 +21,7 @@ on:
       - 'tests/daechion.test.ts'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
+      - 'tests/daechion-operations.test.mjs'
       - 'tests/daechion-content-browser.test.mjs'
       - 'tests/daechion-sheets-verify.test.mjs'
       - 'tests/daechion-http.integration.mjs'

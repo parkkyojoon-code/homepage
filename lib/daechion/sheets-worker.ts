@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { applicationSnapshotSchema, type LedgerClient } from './ledger'
 import { automationTransaction } from './automation-store'
 import { publishApplication, type SheetsApi, type SheetTarget } from './sheets-publisher'
+import { operationSummary } from './operations'
 import type { ApplicationView } from './sheets-view'
 
 const timestamp=(value:unknown)=>value?new Date(value as string).toISOString():undefined
@@ -31,7 +32,7 @@ export async function claimSheetJob(client:LedgerClient,applicationId?:string,re
       billingState:String(current?.state??'NOT_CREATED'),currentBillId:current?String(current.bill_id):undefined,allBillIds:bills.map(bill=>String(bill.bill_id)),
       sentAt:timestamp(current?.sent_at),dueAt:timestamp(current?.due_at),paymentState:String(app.payment_state),paidAt:timestamp(app.paid_at),
       studentId:identity?.student_id?numberId(identity.student_id):undefined,lectureIds:regs.map(row=>numberId(row.lecture_id)),registrationState,
-      notificationState:String(app.notification_state),reviewReason:app.review_code?String(app.review_code):undefined,
+      operationSummary:await operationSummary(client,String(app.id)),notificationState:String(app.notification_state),reviewReason:app.review_code?String(app.review_code):undefined,
       identity:identity?{status:identity.status as 'WAITING'|'PASSED'|'REVIEW',detected:identity.detected_type as 'NEW'|'EXISTING'|'UNKNOWN',studentId:identity.student_id?numberId(identity.student_id):undefined,
         origin:identity.origin as 'CREATED'|'EXISTING'|undefined,reason:identity.reason_code?String(identity.reason_code):undefined,manualReviewed:Boolean(identity.manual_review_id)}:undefined,
     }
@@ -62,11 +63,12 @@ async function deferUnwrittenSheetJob(client:LedgerClient,job:SheetJob) {
     return changed.rows[0]?.state==='PENDING'?'DEFERRED':'UNKNOWN'
   })
 }
-export async function syncOneApplication(ports:{applicationId?:string;reconcileUnknown?:boolean;api:SheetsApi;target:SheetTarget;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
+export async function syncOneApplication(ports:{applicationId?:string;onApplication?:(id:string)=>void;reconcileUnknown?:boolean;api:SheetsApi;target:SheetTarget;withClient<T>(run:(client:LedgerClient)=>Promise<T>):Promise<T>}) {
   if(ports.applicationId!==undefined)z.string().uuid().parse(ports.applicationId)
   if(ports.reconcileUnknown&&ports.applicationId===undefined)throw Error('SHEET_RECONCILIATION_TARGET_REQUIRED')
   const job=await ports.withClient(client=>claimSheetJob(client,ports.applicationId,ports.reconcileUnknown))
   if(!job)return 'SKIPPED'
+  ports.onApplication?.(job.applicationId)
   let writeAttempted=false
   const trackedApi:SheetsApi={call(method,path,body){
     // developerMetadata search uses POST but is a documented read operation.
