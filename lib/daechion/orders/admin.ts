@@ -1,8 +1,9 @@
 import {createHash} from 'node:crypto'
 import {z} from 'zod'
 import type {LedgerClient} from '../ledger'
-import {orderTransaction,lockOrder,holdOrder} from './worker-store'
+import {orderTransaction,lockOrder,holdOrder,orderChanged} from './worker-store'
 import {retryRecordedAccessInTransaction} from './enrollment'
+import {contextFromOrder,reviewContext,reviewEvidenceSchema,latestReview,type ReviewEvidence} from './manual-review'
 
 const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
 const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
@@ -10,12 +11,23 @@ const common={requestKey:z.string().uuid(),orderId:z.string().uuid(),expectedVer
 export const orderAdminActionSchema=z.discriminatedUnion('action',[
   z.object({...common,action:z.literal('HOLD')}).strict(),
   z.object({...common,action:z.literal('RETRY_ACCESS'),lectureId:z.number().int().positive().safe()}).strict(),
+  z.object({...common,action:z.literal('APPROVE_EXISTING'),studentId:z.number().int().positive().safe(),
+    targetIds:z.array(z.number().int().positive().safe()).min(1).max(30).refine(ids=>new Set(ids).size===ids.length),confirmNotOwned:z.literal(true)}).strict(),
+  z.object({...common,action:z.literal('RESUME_UNBILLED')}).strict(),
 ])
 export type OrderAdminAction=z.infer<typeof orderAdminActionSchema>
 export class OrderAdminError extends Error {
   constructor(public readonly code:'NOT_FOUND'|'STALE'|'CONFLICT'|'STATE'){super(code)}
 }
 export const orderSearchSchema=z.object({q:z.string().trim().max(80).default(''),reviewOnly:z.boolean().default(false),page:z.number().int().min(0).max(1000).default(0)}).strict()
+export async function replayOrderAction(c:LedgerClient,tenantId:string,input:OrderAdminAction){
+  const fingerprint=createHash('sha256').update(JSON.stringify(input)).digest('hex')
+  const row=(await c.query(`SELECT a.fingerprint,a.after_version::text,o.tenant_id FROM daechion_orders.admin_actions a
+    JOIN daechion_orders.orders o ON o.id=a.order_id WHERE a.request_key=$1`,[input.requestKey])).rows[0]
+  if(!row)return null
+  if(row.tenant_id!==tenantId||row.fingerprint!==fingerprint)throw new OrderAdminError('CONFLICT')
+  return {replayed:true,version:String(row.after_version)}
+}
 export async function listOrders(c:LedgerClient,tenantId:string,raw:unknown={}){
   const input=orderSearchSchema.parse(raw),phone=input.q.replace(/[\s-]/g,'')
   const result=await c.query(`SELECT o.id,o.contact_snapshot->>'studentName' AS student_name,o.student_phone,o.total_won,
@@ -44,30 +56,58 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
     FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id WHERE g.order_id=$1 ORDER BY g.lecture_id`,[id])).rows
   const messages=(await c.query('SELECT phone,state,accepted_at FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows
   const jobs=(await c.query('SELECT kind,state,attempts,last_error,event_version::text FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
-  const actions=(await c.query('SELECT action,lecture_id::text,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
-  return {order,items,bills,grants,messages,jobs,actions,canHold:order.checkout_state!=='DRAFT'}
+  const actions=(await c.query('SELECT action,lecture_id::text,student_id::text,target_ids,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
+  const status=(await c.query('SELECT identity_write_started,identity_token,confirmed_at FROM daechion_orders.orders WHERE id=$1',[id])).rows[0]
+  const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
+  const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
+  return {order,items,bills,grants,messages,jobs,actions,canHold:order.checkout_state!=='DRAFT',canApproveExisting:unbilled,
+    canResumeUnbilled:unbilled&&order.checkout_state==='REVIEW'&&order.review_code==='admin_hold'&&status.confirmed_at!==null&&(!reviewed||age>=0&&age<=15*60000)}
 }
-export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown){
+export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence){
   const input=orderAdminActionSchema.parse(raw)
   const fingerprint=createHash('sha256').update(JSON.stringify(input)).digest('hex')
   return orderTransaction(c,async()=>{
     await c.query('SELECT pg_advisory_xact_lock(61132,hashtext($1))',[input.requestKey])
-    const previous=(await c.query(`SELECT a.fingerprint,a.after_version::text,o.tenant_id FROM daechion_orders.admin_actions a
-      JOIN daechion_orders.orders o ON o.id=a.order_id WHERE a.request_key=$1`,[input.requestKey])).rows[0]
-    if(previous){
-      if(previous.tenant_id!==tenantId||previous.fingerprint!==fingerprint)throw new OrderAdminError('CONFLICT')
-      return {replayed:true,version:String(previous.after_version)}
-    }
+    const previous=await replayOrderAction(c,tenantId,input)
+    if(previous)return previous
     const order=await lockOrder(c,input.orderId)
     if(!order||order.tenant_id!==tenantId)throw new OrderAdminError('NOT_FOUND')
     if(String(order.version)!==input.expectedVersion)throw new OrderAdminError('STALE')
+    let review:ReviewEvidence|undefined
+    if(input.action==='APPROVE_EXISTING'||input.action==='RESUME_UNBILLED'){
+      if(order.payment_state!=='PENDING'||order.student_id!==null||order.identity_state!=='WAITING'||order.identity_write_started||order.identity_token||
+        !['READY','REVIEW'].includes(String(order.checkout_state))||(await c.query('SELECT id FROM daechion_orders.bills WHERE order_id=$1',[input.orderId])).rows.length)throw new OrderAdminError('STATE')
+      if(input.action==='RESUME_UNBILLED'){
+        if(order.checkout_state!=='REVIEW'||order.review_code!=='admin_hold'||!order.confirmed_at)throw new OrderAdminError('STATE')
+        // An expired existing-student attestation cannot be bypassed by a hold/resume.
+        const prior=await latestReview(c,input.orderId)
+        if(prior&&Date.now()-Date.parse(prior.checkedAt)>15*60000)throw new OrderAdminError('STATE')
+      }else{
+        review=reviewEvidenceSchema.parse(evidence)
+        const context=await contextFromOrder(c,tenantId,input.orderId),bound=reviewContext(context!)
+        const age=Date.now()-Date.parse(review.checkedAt),ids=[...input.targetIds].sort((a,b)=>a-b)
+        if(age<0||age>60000||review.studentId!==input.studentId||review.binding!==bound.binding||
+          JSON.stringify(review.targetIds)!==JSON.stringify(bound.targetIds)||JSON.stringify(ids)!==JSON.stringify(bound.targetIds))throw new OrderAdminError('STATE')
+      }
+    }
+    const nextVersion=(BigInt(input.expectedVersion)+1n).toString()
+    const writeAudit=()=>c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,
+      student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)`,[input.requestKey,input.orderId,fingerprint,input.action,input.action==='RETRY_ACCESS'?input.lectureId:null,
+      input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??null,review?order.request_fingerprint:null,JSON.stringify(review?.targetIds??[]),review?.checkedAt??null])
+    if(input.action==='APPROVE_EXISTING')await writeAudit()
     if(input.action==='HOLD'){
       if(order.checkout_state==='DRAFT')throw new OrderAdminError('STATE')
       await holdOrder(c,input.orderId,'admin_hold')
-    }else if(!await retryRecordedAccessInTransaction(c,input))throw new OrderAdminError('STATE')
+    }else if(input.action==='RETRY_ACCESS'){
+      if(!await retryRecordedAccessInTransaction(c,input))throw new OrderAdminError('STATE')
+    }else{
+      await c.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL WHERE id=$1",[input.orderId])
+      await orderChanged(c,input.orderId,input.action==='APPROVE_EXISTING'?'existing_review_approved':'unbilled_order_resumed')
+    }
     const version=String((await c.query('SELECT version::text FROM daechion_orders.orders WHERE id=$1',[input.orderId])).rows[0].version)
-    await c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[input.requestKey,input.orderId,fingerprint,input.action,input.action==='RETRY_ACCESS'?input.lectureId:null,input.operatorName,input.reason,input.expectedVersion,version])
+    if(version!==nextVersion)throw new OrderAdminError('STATE')
+    if(input.action!=='APPROVE_EXISTING')await writeAudit()
     return {replayed:false,version}
   })
 }

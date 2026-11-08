@@ -1,5 +1,5 @@
 {
   "extends":"./tsconfig.json",
-  "compilerOptions":{"incremental":false,"types":["node","react","next"]},
+  "compilerOptions":{"incremental":false,"target":"ES2020","types":["node","react","next"]},
   "include":["components/daechion/CartCheckout.tsx","components/daechion/CartEntry.tsx","app/classes/cart/page.tsx","app/admin/daechion/orders/page.tsx","app/api/admin/daechion/orders/route.ts","app/api/daechion/orders/catalog/route.ts","lib/cart-checkout-contract.ts"]
 }

@@ -21,6 +21,8 @@ import orderDelivery from '../.daechion-test-build/lib/daechion/orders/delivery.
 import orderExecutable from '../workers/daechion/orders.cjs'
 import orderAdmin from '../.daechion-test-build/lib/daechion/orders/admin.js'
 import orderAdminHttp from '../.daechion-test-build/lib/daechion/orders/admin-http.js'
+import manualReview from '../.daechion-test-build/lib/daechion/orders/manual-review.js'
+import orderPreflight from '../.daechion-test-build/lib/daechion/orders/preflight.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -56,6 +58,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/002_workers.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/003_delivery.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/004_admin.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/005_manual_review.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -530,6 +533,77 @@ test('checkout service persists token-bound quotes and atomic orders without ext
         await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',action)),/STATE/)
         assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[next.orderId])).rows[0].n,0)
       }
+    })
+    await t.test('existing-student review authorises one exact student and full unowned cart before billing; payment then reuses the same inactive account',async()=>{
+      const person={...contact(),guardianName:'가상 보호자',guardianPhone:'01000007890',studentHistory:'NEW'}
+      const q=await checkout.quoteCheckout({items:[{productId:'pack'}],contact:person,expectedTotalWon:25000},{...ports,
+        ownership:async(cart,_person,key)=>({...report(cart,key),identity:'REVIEW'})})
+      const {orderId}=await checkout.receiveOrder(orderInput(q),ports)
+      await assert.rejects(db.query("UPDATE daechion_orders.orders SET checkout_state='READY' WHERE id=$1",[orderId]),/ORDER_QUOTE_NOT_READY/)
+      await assert.rejects(db.query("UPDATE daechion_orders.quotes SET state='CONSUMED' WHERE id=$1",[q.quoteId]),/ORDER_QUOTE_TRANSITION_INVALID/)
+      let creates=0,inspections=0;const enrolments=[]
+      const profile={id:9090,name:person.studentName,active:false,studentPhoneNumber:person.studentPhone,parentPhoneNumber:'01000001212',parentPhoneNumber2:person.guardianPhone}
+      const api={me:async()=>({tenantId:'fixture'}),student:async id=>{assert.equal(id,9090);return {...profile}},
+        students:async phone=>[profile].filter(s=>[s.studentPhoneNumber,s.parentPhoneNumber,s.parentPhoneNumber2].includes(phone)),
+        lectures:async()=>[20,21].map(id=>({id,opened:true,weeklyLectures:[{id:id*100}]})),
+        createStudent:async()=>{creates++;throw Error('Must not create another account')},
+        enroll:async(lectureId,studentId)=>{enrolments.push({lectureId,studentId});return {lectureId,studentId,enrolledWeeklyLectureIds:[lectureId*100],alreadyEnrolledWeeklyLectureIds:[]}},
+        ensureContentAccess:async input=>{await input.beforeWrite();return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}}}
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient,
+        inspectExisting:async(ctx,id)=>{inspections++;return manualReview.inspectExisting(ctx,id,api)}}
+      const input=await adminAction(orderId,'APPROVE_EXISTING',{studentId:9090,targetIds:[20,21],confirmNotOwned:true})
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,confirmNotOwned:false}),admin)).status,400)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,evidence:{studentId:9090}}),admin)).status,400)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,targetIds:[20]}),admin)).status,409)
+      const context=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId))
+      const proof=await manualReview.inspectExisting(context,9090,api)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,{...proof,binding:'f'.repeat(64)})),/STATE/)
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,200)
+      const count=inspections
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,200);assert.equal(inspections,count)
+      const saved=(await db.query('SELECT checkout_state,student_id,contact_snapshot,total_won,confirmed_at FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(saved.checkout_state,'READY');assert.equal(saved.student_id,null);assert.equal(saved.total_won,25000);assert.equal(saved.contact_snapshot.studentHistory,'NEW');assert.ok(saved.confirmed_at)
+      assert.equal((await db.query('SELECT state FROM daechion_orders.quotes WHERE id=$1',[q.quoteId])).rows[0].state,'CONSUMED')
+      const sheet=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.equal(sheet.values[orderView.ORDER_HEADERS.indexOf('중복 수강생 확인')],'통과')
+      assert.match(sheet.values[orderView.ORDER_HEADERS.indexOf('중복 확인 사유')],/관리자 확인: 학생 ID 9090/)
+      const manual=await db.withClient(c=>manualReview.latestReview(c,orderId)),preflight={tenantId:'fixture',subjectSecret:'s'.repeat(32),api,manualReview:async()=>manual}
+      assert.equal(await orderPreflight.preflightOrder(context,preflight),'READY')
+      assert.equal(await orderPreflight.preflightOrder(context,{...preflight,manualReview:async()=>({...manual,checkedAt:new Date(Date.now()-16*60000).toISOString()})}),'REVIEW')
+      assert.equal(await orderPreflight.preflightOrder(context,{...preflight,api:{...api,student:async()=>({...profile,parentPhoneNumber2:'01000009998'})}}),'REVIEW')
+      const payment=providerFor(25000),billing={withClient:db.withClient,provider:payment,preflight:ctx=>orderPreflight.preflightOrder(ctx,preflight)}
+      assert.equal(await orderBilling.sendOrderBill(orderId,true,billing),'SENT');assert.equal(payment.sends,1)
+      payment.paid();assert.equal(await orderBilling.checkOrderPayment(orderId,true,billing),'PAID')
+      const enrollment={withClient:db.withClient,tenantId:'fixture',daechion:api}
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED')
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED')
+      assert.equal(creates,0);assert.deepEqual(enrolments,[{lectureId:20,studentId:9090},{lectureId:21,studentId:9090}])
+      assert.equal(Number((await db.query('SELECT student_id FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].student_id),9090)
+      const before=inspections;assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectExisting:async()=>{throw Error('Should replay without API')}})).status,200);assert.equal(inspections,before)
+    })
+    await t.test('only an unbilled administrative hold can resume; incomplete audit commits and identity mismatches stay blocked',async()=>{
+      const {orderId}=await workerOrder(['a'])
+      const hold=await adminAction(orderId)
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',hold))
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canResumeUnbilled,true)
+      const resume=await adminAction(orderId,'RESUME_UNBILLED')
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',resume))
+      assert.equal((await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',resume))).replayed,true)
+      assert.equal((await db.query('SELECT checkout_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].checkout_state,'READY')
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.bills WHERE order_id=$1',[orderId])).rows[0].n,0)
+      const version=String((await db.query('SELECT version FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].version)
+      await assert.rejects(db.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,operator_name,reason,before_version,after_version)
+        VALUES($1,$2,$3,'HOLD','검수','버전 증가 불일치',$4,$4)`,[randomUUID(),orderId,'a'.repeat(64),version]),/check constraint/)
+      await assert.rejects(db.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,operator_name,reason,before_version,after_version)
+        VALUES($1,$2,$3,'HOLD','검수','미완료 감사 기록',$4,$5)`,[randomUUID(),orderId,'a'.repeat(64),version,(BigInt(version)+1n).toString()]),/ORDER_ADMIN_COMMIT_INCOMPLETE/)
+      const next=await workerOrder(['b']),p=providerFor(18500)
+      await orderBilling.sendOrderBill(next.orderId,true,{withClient:db.withClient,provider:{...p,send:async job=>{await p.send(job);return 'UNKNOWN'}},preflight:async()=> 'READY'})
+      const denied=await adminAction(next.orderId,'RESUME_UNBILLED')
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',denied)),/STATE/)
+      const ctx=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId))
+      const wrong={id:55,name:'다른 학생',active:true,studentPhoneNumber:'01000005555'}
+      await assert.rejects(manualReview.inspectExisting(ctx,55,{me:async()=>({tenantId:'fixture'}),student:async()=>wrong,students:async()=>[wrong]}))
+      await assert.rejects(manualReview.inspectExisting(ctx,55,{me:async()=>({tenantId:'other'}),student:async()=>wrong,students:async()=>[wrong]}),/TENANT/)
     })
   }finally{await db.close()}
 })

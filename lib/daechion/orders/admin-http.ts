@@ -1,10 +1,13 @@
 import {z} from 'zod'
 import type {LedgerClient} from '../ledger'
-import {listOrders,orderDetail,applyOrderAdminAction,OrderAdminError,orderSearchSchema} from './admin'
+import {listOrders,orderDetail,applyOrderAdminAction,OrderAdminError,orderSearchSchema,orderAdminActionSchema,replayOrderAction} from './admin'
+import {contextFromOrder,type ReviewEvidence} from './manual-review'
+import type {BillingContext} from './billing'
 export interface OrderAdminPorts {
   enabled:boolean;tenantId:string;origins:string[];authed():Promise<boolean>
   withClient<T>(run:(c:LedgerClient)=>Promise<T>):Promise<T>
   ready(c:LedgerClient):Promise<void>
+  inspectExisting?(context:BillingContext,studentId:number):Promise<ReviewEvidence>
 }
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Robots-Tag':'noindex'}})
 async function guard(ports:OrderAdminPorts){
@@ -42,7 +45,17 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
       const {kind:_kind,...input}=z.object({kind:z.literal('SEARCH'),...orderSearchSchema.shape}).strict().parse(raw)
       return json(await readOnly(ports,c=>listOrders(c,ports.tenantId,input)))
     }
-    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,raw)})})
+    const input=orderAdminActionSchema.parse(raw)
+    let evidence:ReviewEvidence|undefined
+    if(input.action==='APPROVE_EXISTING'){
+      const replay=await readOnly(ports,c=>replayOrderAction(c,ports.tenantId,input))
+      if(replay)return json({success:true,...replay})
+      if(!ports.inspectExisting)throw new OrderAdminError('STATE')
+      const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
+      if(!context)throw new OrderAdminError('STALE')
+      evidence=await ports.inspectExisting(context,input.studentId)
+    }
+    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence)})})
   }catch(error){
     if(error instanceof z.ZodError||error instanceof SyntaxError)return json({error:'담당자·사유·확인 항목과 입력 내용을 확인해주세요.'},400)
     if(error instanceof OrderAdminError){

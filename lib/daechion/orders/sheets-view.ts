@@ -3,6 +3,7 @@ import type {LedgerClient} from '../ledger'
 import {orderReason} from './reasons'
 export {orderReason} from './reasons'
 import {contactSchema} from './checkout'
+import {latestReview,reviewContext} from './manual-review'
 
 export const ORDER_HEADERS=Object.freeze(['주문번호','신청시각','프로세스','신청자 유형','학생 이름','학부모 이름','학생 전화번호','보호자 로그인 전화번호','결제 전화번호',
   '기존·신규 선택','상품명','상품 ID','상품 종류','상품별 판매가','총 청구 금액','원비 확인','개인정보 동의','안내문 버전','견적번호',
@@ -32,9 +33,13 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const quote=(await c.query('SELECT snapshot FROM daechion_orders.quotes WHERE id=$1',[o.quote_id])).rows[0]
   const quoteReasons=z.array(z.object({productId:z.string(),code:z.enum(['BUNDLE_ALREADY_OWNED','OWNERSHIP_UNKNOWN'])})).parse((quote?.snapshot as {reviewReasons?:unknown})?.reviewReasons??[])
   const itemTitle=(productId:string)=>String(items.find(i=>i.product_id===productId)?.title??productId)
+  const reviewed=await latestReview(c,id)
+  const bound=reviewed?reviewContext({orderId:id,version:String(o.version),tenantId:String(o.tenant_id),totalWon:Number(o.total_won),contact,items:items.map(i=>i.snapshot)}):null
+  const reviewAge=reviewed?Date.now()-Date.parse(reviewed.checkedAt):NaN
+  const reviewedFresh=reviewed&&reviewed.binding===bound?.binding&&reviewAge>=0&&reviewAge<=15*60000
   const identityConcern=o.identity_state==='REVIEW'||typeof o.review_code==='string'&&(/^identity_/.test(o.review_code)||o.review_code==='billing_preflight_review')
-  const duplicateReason=identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
-  const duplicate=identityConcern?'확인 필요':o.identity_state==='PASSED'?'통과':quoteReasons.length?'확인 필요':'조회 대기'
+  const duplicateReason=identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — 청구 전 재검사 대기`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
+  const duplicate=identityConcern?'확인 필요':o.identity_state==='PASSED'||reviewedFresh?'통과':reviewed||quoteReasons.length?'확인 필요':'조회 대기'
   const errors=[orderReason(o.review_code),...grants.filter(g=>g.state==='REVIEW').map(g=>`강의 ID ${g.lecture_id}: ${orderReason(g.review_code)}`),
     ...jobs.map(j=>`${j.kind==='SHEETS'?'시트':'안내 문자'}: ${orderReason(j.last_error)||state(j.state)}`),
     ...receipts.filter(r=>r.state==='UNKNOWN').map(r=>`${r.phone}: 문자 결과 확인 필요`)].filter(Boolean)

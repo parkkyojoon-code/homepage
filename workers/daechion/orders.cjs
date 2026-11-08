@@ -82,7 +82,8 @@ function runtime(env, overrides = {}) {
       await (overrides.processOrder ?? built('orders/runner').processOrder)(id, flags, {
         withClient, provider, daechion: enrollment, tenantId: env.DAECHION_TENANT_ID.trim(),
         preflight: context => built('orders/preflight').preflightOrder(context, {
-          tenantId: env.DAECHION_TENANT_ID.trim(), subjectSecret: env.DAECHION_ORDERS_SUBJECT_SECRET, api: official }),
+          tenantId: env.DAECHION_TENANT_ID.trim(), subjectSecret: env.DAECHION_ORDERS_SUBJECT_SECRET, api: official,
+          manualReview: context => withClient(client => built('orders/manual-review').latestReview(client, context.orderId)) }),
       })
     } catch {
       processingFailed = true

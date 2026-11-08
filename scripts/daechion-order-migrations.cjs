@@ -2,7 +2,7 @@ const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { createHash } = require('node:crypto')
 
-const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql'])
+const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql'])
 function loadMigrations() {
   return names.map(name => {
     const sql = readFileSync(join(__dirname, '../db/daechion-orders', name), 'utf8').replace(/\r\n/g, '\n')
@@ -36,7 +36,7 @@ async function checkSchema(client) {
     'SELECT kind,event_version,state,available_at,last_error FROM daechion_orders.jobs LIMIT 0',
     'SELECT kind,created_at FROM daechion_orders.events LIMIT 0',
     'SELECT phone,text_snapshot,state,provider_message_id,accepted_at FROM daechion_orders.ready_receipts LIMIT 0',
-    'SELECT request_key,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version FROM daechion_orders.admin_actions LIMIT 0',
+    'SELECT request_key,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at FROM daechion_orders.admin_actions LIMIT 0',
   ]) await client.query(sql)
   const guards = [
     ['orders', 'guard_order', 'guard_order'], ['orders', 'guard_worker_order', 'guard_worker_order'],
@@ -45,6 +45,7 @@ async function checkSchema(client) {
     ['bills', 'guard_bill', 'guard_bill'], ['quotes', 'guard_quote', 'guard_quote'],
     ['jobs', 'guard_ready_job', 'guard_ready_job'], ['ready_receipts', 'guard_ready_receipt', 'guard_ready_receipt'],
     ['admin_actions', 'guard_admin_action', 'guard_admin_action'],
+    ['admin_actions', 'guard_admin_commit', 'guard_admin_commit'],
   ]
   const triggers = await client.query(`SELECT c.relname AS table_name,t.tgname AS name,t.tgenabled AS enabled,
     p.proname AS function_name,pn.nspname AS function_schema FROM pg_trigger t

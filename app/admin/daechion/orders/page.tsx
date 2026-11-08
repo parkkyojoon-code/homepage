@@ -13,7 +13,7 @@ interface Detail {
   grants:{lecture_id:string;state:string;review_code:string|null;enrollment_recorded:boolean;can_retry:boolean}[]
   bills:{bill_id:string;amount_won:number;state:string;is_current:boolean;checked_at:string|null}[]
   messages:{phone:string;state:string}[];jobs:{kind:string;state:string;attempts:number;last_error:string|null;event_version:string}[]
-  actions:{action:string;lecture_id:string|null;operator_name:string;reason:string;before_version:string;after_version:string;created_at:string}[];canHold:boolean
+  actions:{action:string;lecture_id:string|null;student_id?:string|null;target_ids?:number[];operator_name:string;reason:string;before_version:string;after_version:string;created_at:string}[];canHold:boolean;canApproveExisting:boolean;canResumeUnbilled:boolean
 }
 interface Page {rows:Row[];hasMore:boolean;page:number}
 const labels:Record<string,string>={DRAFT:'접수 준비',READY:'자동 처리 대기',REVIEW:'확인 필요',CLOSED:'대기 종료',PENDING:'대기',PAID:'결제 완료',CANCELLED:'취소',UNKNOWN:'결과 확인 필요',
@@ -24,7 +24,8 @@ class RequestError extends Error {constructor(message:string,readonly status:num
 export default function OrdersPage(){
   const router=useRouter(),[page,setPage]=useState<Page>({rows:[],hasMore:false,page:0}),[detail,setDetail]=useState<Detail|null>(null)
   const [q,setQ]=useState(''),[reviewOnly,setReviewOnly]=useState(false),[busy,setBusy]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('')
-  const [action,setAction]=useState<'HOLD'|'RETRY_ACCESS'>('HOLD'),[lecture,setLecture]=useState(''),[operator,setOperator]=useState(''),[reason,setReason]=useState(''),[confirmed,setConfirmed]=useState(false)
+  const [action,setAction]=useState<'HOLD'|'RETRY_ACCESS'|'APPROVE_EXISTING'|'RESUME_UNBILLED'>('HOLD'),[lecture,setLecture]=useState(''),[operator,setOperator]=useState(''),[reason,setReason]=useState(''),[confirmed,setConfirmed]=useState(false)
+  const [studentId,setStudentId]=useState(''),[notOwned,setNotOwned]=useState(false)
   const [uncertain,setUncertain]=useState(false),[reload,setReload]=useState(false),pending=useRef<Record<string,unknown>|null>(null)
   const api=useCallback(async(path:string,body?:unknown)=>{
     const response=await fetch('/api/admin/daechion/orders'+path,{cache:'no-store',signal:AbortSignal.timeout(25000),...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})})
@@ -34,7 +35,7 @@ export default function OrdersPage(){
     return data
   },[router])
   useEffect(()=>{let active=true;api('').then(data=>{if(active)setPage(data)}).catch(e=>{if(active)setError(e.message)}).finally(()=>{if(active)setBusy(false)});return()=>{active=false}},[api])
-  function received(data:Detail){setDetail(data);setLecture(data.grants.find(g=>g.can_retry)?.lecture_id??'');setConfirmed(false);setReason('');setAction('HOLD');setUncertain(false);setReload(false);pending.current=null}
+  function received(data:Detail){setDetail(data);setLecture(data.grants.find(g=>g.can_retry)?.lecture_id??'');setStudentId(data.order.student_id??'');setNotOwned(false);setConfirmed(false);setReason('');setAction('HOLD');setUncertain(false);setReload(false);pending.current=null}
   async function search(next=0){
     if(busy)return;setBusy(true);setError('')
     try{setPage(await api('',{kind:'SEARCH',q,reviewOnly,page:next}));setDetail(null);pending.current=null;setUncertain(false);setNotice('')}
@@ -48,7 +49,9 @@ export default function OrdersPage(){
     event.preventDefault();if(busy||!detail||reload)return
     if(!uncertain){
       if(!confirmed||!operator.trim()||!reason.trim()||action==='RETRY_ACCESS'&&!detail.grants.some(g=>g.lecture_id===lecture&&g.can_retry))return
-      pending.current={requestKey:crypto.randomUUID(),orderId:detail.order.id,expectedVersion:detail.order.version,action,operatorName:operator,reason,confirmed:true,...(action==='RETRY_ACCESS'?{lectureId:Number(lecture)}:{})}
+      if(action==='APPROVE_EXISTING'&&(!notOwned||!Number.isSafeInteger(Number(studentId))||Number(studentId)<=0))return
+      pending.current={requestKey:crypto.randomUUID(),orderId:detail.order.id,expectedVersion:detail.order.version,action,operatorName:operator,reason,confirmed:true,
+        ...(action==='RETRY_ACCESS'?{lectureId:Number(lecture)}:{}),...(action==='APPROVE_EXISTING'?{studentId:Number(studentId),targetIds:detail.grants.map(g=>Number(g.lecture_id)).sort((a,b)=>a-b),confirmNotOwned:true}:{})}
     }
     setBusy(true);setError('');setNotice('')
     let saved=false
@@ -61,6 +64,11 @@ export default function OrdersPage(){
     }finally{setBusy(false)}
   }
   const retries=detail?.grants.filter(g=>g.can_retry)??[]
+  const canAct=detail&&(action==='HOLD'?detail.canHold:action==='RETRY_ACCESS'?retries.length>0:action==='APPROVE_EXISTING'?detail.canApproveExisting:detail.canResumeUnbilled)
+  const descriptions={HOLD:'추가 자동 등록과 완료 안내를 멈춥니다. 이미 부여한 권한은 회수하지 않습니다.',RETRY_ACCESS:'결제 조회가 유효하고 API 등록 성공이 기록된 강의만 다시 대기시킵니다. 실제 재확인은 작업자가 다음에 처리합니다.',
+    APPROVE_EXISTING:'대치온에서 아래 학생의 모든 구성 강의 미보유 상태를 직접 확인한 후 승인합니다. 이름·학생 번호·보호자 번호는 서버가 다시 대조합니다. 금액은 그대로이며 승인 후 15분 안에 작업자의 청구 전 재검사를 통과해야 합니다.',
+    RESUME_UNBILLED:'청구 이력이 전혀 없고 관리자 보류만 남은 주문을 청구 대기로 되돌립니다. 청구서·계정 생성·결제 결과가 불명확한 주문은 재개하지 않습니다.'}
+  const actionLabel=(value:string)=>({HOLD:'자동 처리 보류',RETRY_ACCESS:'강의 권한 재확인 대기',APPROVE_EXISTING:'기존 학생·전체 강의 미보유 확인',RESUME_UNBILLED:'청구 전 관리자 보류 해제'}[value]??value)
   return <main className={styles.page}>
     <Link href="/admin/daechion">← 기존 단건 신청 관리</Link><h1>일괄 주문 관리</h1>
     <p>청구 발송·학생 생성·문자 발송 결과가 불명확한 건은 여기서 다시 실행하지 않습니다.</p>
@@ -78,15 +86,16 @@ export default function OrdersPage(){
       {detail.grants.map(grant=><p key={grant.lecture_id}>강의 ID {grant.lecture_id} · {label(grant.state)} · {grant.enrollment_recorded?'API 등록 성공 기록 있음':'API 등록 성공 미확정'}{grant.review_code&&` · ${orderReason(grant.review_code)}`}</p>)}
       {detail.messages.map(message=><p key={message.phone}>안내 {message.phone} · {label(message.state)}</p>)}
       {detail.jobs.map((job,index)=><p key={index}>{job.kind==='SHEETS'?'Sheets 반영':'완료 안내'} · {label(job.state)} · 기준 버전 {job.event_version}{job.last_error&&` · ${orderReason(job.last_error)}`}</p>)}
-      <form className={styles.action} onSubmit={submit}><fieldset disabled={busy||uncertain||reload}><legend>보류·권한 재확인</legend>
-        <label>처리 종류<select value={action} onChange={event=>{setAction(event.target.value as typeof action);setConfirmed(false)}}><option value="HOLD" disabled={!detail.canHold}>자동 처리 보류</option><option value="RETRY_ACCESS" disabled={!retries.length}>등록된 강의 권한 재확인 대기</option></select></label>
-        <p>{action==='HOLD'?'추가 자동 등록과 완료 안내를 멈춥니다. 이미 부여한 권한은 회수하지 않습니다.':'결제 조회가 유효하고 API 등록 성공이 기록된 강의만 다시 대기시킵니다. 실제 재확인은 작업자가 다음에 처리합니다.'}</p>
+      <form className={styles.action} onSubmit={submit}><fieldset disabled={busy||uncertain||reload}><legend>확인·보류·권한 재확인</legend>
+        <label>처리 종류<select value={action} onChange={event=>{setAction(event.target.value as typeof action);setConfirmed(false);setNotOwned(false)}}><option value="HOLD" disabled={!detail.canHold}>자동 처리 보류</option><option value="RETRY_ACCESS" disabled={!retries.length}>등록된 강의 권한 재확인 대기</option><option value="APPROVE_EXISTING" disabled={!detail.canApproveExisting}>기존 학생·전체 강의 미보유 확인</option><option value="RESUME_UNBILLED" disabled={!detail.canResumeUnbilled}>청구 전 관리자 보류 해제</option></select></label>
+        <p>{descriptions[action]}</p>
+        {action==='APPROVE_EXISTING'&&<><label>확인한 대치온 학생 ID<input required type="number" min="1" step="1" value={studentId} onChange={event=>setStudentId(event.target.value)}/></label><p>확인할 전체 강의 ID: {detail.grants.map(g=>g.lecture_id).join(', ')}</p><label className={styles.check}><input required type="checkbox" checked={notOwned} onChange={event=>setNotOwned(event.target.checked)}/>위 학생이 모든 구성 강의를 보유하지 않은 것을 대치온에서 직접 확인했습니다. 하나라도 이미 보유했다면 승인하지 않습니다.</label></>}
         {action==='RETRY_ACCESS'&&<label>대상 강의<select required value={lecture} onChange={event=>setLecture(event.target.value)}>{retries.map(g=><option key={g.lecture_id} value={g.lecture_id}>강의 ID {g.lecture_id}</option>)}</select></label>}
-        {!retries.length&&<p>현재 재확인을 대기시킬 수 있는 강의가 없습니다. 오래된 결제 조회나 결과 불명 등록은 직접 상태를 확인해야 합니다.</p>}
+        {!retries.length&&action!=='APPROVE_EXISTING'&&action!=='RESUME_UNBILLED'&&<p>현재 재확인을 대기시킬 수 있는 강의가 없습니다. 오래된 결제 조회나 결과 불명 등록은 직접 상태를 확인해야 합니다.</p>}
         <label>담당자<input required maxLength={80} value={operator} onChange={event=>setOperator(event.target.value)}/></label><label>확인 근거·사유<textarea required maxLength={1000} value={reason} onChange={event=>setReason(event.target.value)}/></label>
         <label className={styles.check}><input type="checkbox" required checked={confirmed} onChange={event=>setConfirmed(event.target.checked)}/>{detail.order.contact_snapshot.studentName} 학생의 위 주문과 처리 내용을 확인했습니다.</label>
-      </fieldset><button type="submit" disabled={busy||reload||!uncertain&&(action==='HOLD'?!detail.canHold:!retries.length)}>{busy?'처리 확인 중…':uncertain?'같은 요청 결과 다시 확인':'확인 내용 저장'}</button></form>
-      <h3>관리자 처리 이력</h3>{detail.actions.length?detail.actions.map((item,index)=><p key={index}>{date(item.created_at)} · {item.operator_name} · {item.action==='HOLD'?'자동 처리 보류':`강의 ID ${item.lecture_id} 권한 재확인 대기`} · 버전 {item.before_version} → {item.after_version}<br/>{item.reason}</p>):<p>관리자 처리 이력이 없습니다.</p>}
+      </fieldset><button type="submit" disabled={busy||reload||!uncertain&&!canAct}>{busy?'처리 확인 중…':uncertain?'같은 요청 결과 다시 확인':'확인 내용 저장'}</button></form>
+      <h3>관리자 처리 이력</h3>{detail.actions.length?detail.actions.map((item,index)=><p key={index}>{date(item.created_at)} · {item.operator_name} · {actionLabel(item.action)}{item.lecture_id&&` · 강의 ID ${item.lecture_id}`}{item.student_id&&` · 학생 ID ${item.student_id} · 강의 ID ${item.target_ids?.join(', ')}`} · 버전 {item.before_version} → {item.after_version}<br/>{item.reason}</p>):<p>관리자 처리 이력이 없습니다.</p>}
     </section>}
   </main>
 }

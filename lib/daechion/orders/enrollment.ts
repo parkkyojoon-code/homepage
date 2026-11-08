@@ -5,6 +5,7 @@ import {resolveStudent} from '../identity'
 import type {EnrollmentPort} from '../enrollment'
 import {contactSchema,type OrderContact} from './checkout'
 import {orderTransaction,lockOrder,orderChanged,holdOrder,eligible,type OrderConnection} from './worker-store'
+import {latestReview,contextFromOrder,reviewContext,studentProfileFingerprint} from './manual-review'
 
 const ids=z.array(z.number().int().positive().safe()).min(1).max(1000).refine(v=>new Set(v).size===v.length)
 const sorted=(v:number[])=>[...v].sort((a,b)=>a-b)
@@ -26,7 +27,12 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
     const o=await lockOrder(c,id)
     if(!o||o.tenant_id!==ports.tenantId||!await eligible(c,id))return null
     const contact=contactOf(o)
-    if(o.identity_state==='PASSED')return {contact,studentId:Number(o.student_id),token:null}
+    const review=await latestReview(c,id)
+    if(review){
+      const context=await contextFromOrder(c,ports.tenantId,id)
+      if(!context||review.binding!==reviewContext(context).binding){await holdOrder(c,id,'identity_review');return null}
+    }
+    if(o.identity_state==='PASSED')return {contact,studentId:Number(o.student_id),token:null,review}
     if(o.identity_state!=='WAITING')return null
     if(o.identity_token){
       if(new Date(o.identity_until as string).getTime()<=new Date(o.observed_at as string).getTime()){
@@ -50,7 +56,7 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
     const token=randomUUID()
     await c.query("UPDATE daechion_orders.orders SET identity_token=$2,identity_until=now()+interval '10 minutes' WHERE id=$1",[id,token])
     await orderChanged(c,id,'identity_claimed')
-    return {contact,studentId:null,token}
+    return {contact,studentId:null,token,review}
   }))
   if(!claim)return null
   let resolved:DaechionStudent|undefined,createStarted=false
@@ -66,7 +72,8 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       createStarted=true;return ports.daechion.createStudent(input)
     }}
     resolved=(await resolveStudent(guarded,{name:claim.contact.studentName,studentPhone:claim.contact.studentPhone,guardianPhone:claim.contact.guardianPhone||undefined},
-      {history:claim.contact.studentHistory,...(claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
+      {history:claim.contact.studentHistory,...(claim.review?{manualApprovedId:claim.review.studentId}:claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
+    if(claim.review&&(studentProfileFingerprint(resolved)!==claim.review.profileFingerprint||claim.studentId&&resolved.id!==claim.studentId))throw new DaechionError('identity_changed')
     if(claim.token){
       await ports.withClient(c=>orderTransaction(c,async()=>{
         await lockOrder(c,id)
