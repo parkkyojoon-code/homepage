@@ -48,8 +48,9 @@ try{
     if(saved.has(body.requestKey)){assert.deepEqual(body,saved.get(body.requestKey));return send({success:true,replayed:true})}
     assert.equal(body.expectedVersion,detail.order.version);assert.equal(body.orderId,id);assert.equal(body.confirmed,true)
     saved.set(body.requestKey,body);const before=detail.order.version;detail.order.version=String(Number(before)+1)
-    detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:body.action==='APPROVE_EXISTING'?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:['MANUAL_ACCESS','RECORD_REVOKED'].includes(body.action)?{studentId:body.studentId,weeklyLectureIds:body.action==='MANUAL_ACCESS'?[2000]:[]}: {},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
-    if(body.action==='RETRY_ACCESS'){assert.equal(body.lectureId,20);detail.grants[0].state='PENDING';detail.grants[0].can_retry=false;detail.grants[0].review_code=null}
+    detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:['APPROVE_EXISTING','RECONCILE_IDENTITY'].includes(body.action)?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:['MANUAL_ACCESS','RECORD_REVOKED'].includes(body.action)?{studentId:body.studentId,weeklyLectureIds:body.action==='MANUAL_ACCESS'?[2000]:[]}: {},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
+    if(body.action==='RECONCILE_IDENTITY'){assert.equal(body.studentId,1001);assert.equal(body.confirmCreatedAccount,true);detail.order.identity_state='PASSED';detail.order.student_id='1001';detail.order.review_code='identity_reconciled';detail.canReconcileIdentity=false;detail.canResumePaid=true}
+    else if(body.action==='RETRY_ACCESS'){assert.equal(body.lectureId,20);detail.grants[0].state='PENDING';detail.grants[0].can_retry=false;detail.grants[0].review_code=null}
     else if(body.action==='APPROVE_EXISTING'){assert.equal(body.studentId,1001);assert.deepEqual(body.targetIds,[20,21]);assert.equal(body.confirmNotOwned,true);detail.order.checkout_state='READY';detail.order.review_code=null}
     else if(body.action==='RESUME_UNBILLED'){assert.equal(detail.canResumeUnbilled,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canResumeUnbilled=false}
     else if(body.action==='RESUME_PAID'){assert.equal(body.billId,detail.bills[0].bill_id);assert.equal(body.confirmPaid,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canResumePaid=false}
@@ -166,6 +167,22 @@ try{
     await page.getByText(`버전 ${Number(detail.order.version)-1} → ${detail.order.version}`,{exact:false}).first().waitFor()
   }
   assert.equal(saved.size,9);assert.deepEqual(errors,[])
+  detail.order.checkout_state='REVIEW';detail.order.payment_state='PAID';detail.order.identity_state='REVIEW';detail.order.student_id=null;detail.order.review_code='identity_create_unknown'
+  detail.canReconcileIdentity=true;detail.canApproveExisting=false;detail.canResumeUnbilled=false
+  await page.getByRole('button',{name:'새로 불러오기',exact:true}).click()
+  await page.getByLabel('처리 종류').selectOption('RECONCILE_IDENTITY')
+  await page.getByLabel('생성 결과를 확인한 대치온 학생 ID').fill('1001')
+  await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
+  await page.getByLabel('확인 근거·사유').fill('응답 유실 후 생성된 계정의 이름·학생·보호자 번호 확인')
+  await page.getByRole('checkbox',{name:/이 신청으로 생성된 학생 계정과/}).check()
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  await page.setViewportSize({width:1440,height:1000});await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
+  await page.screenshot({path:path.join(output,'identity-recovery-admin-20261109.png'),fullPage:true})
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))
+  await page.screenshot({path:path.join(output,'identity-recovery-mobile-20261109.png'),fullPage:true})
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByText('학생 생성 결과 대조 완료 — 현재 결제 재조회 후 재개 필요',{exact:true}).waitFor()
+  assert.equal(detail.order.checkout_state,'REVIEW');assert.equal(detail.order.student_id,'1001');assert.equal(saved.size,10);assert.deepEqual(errors,[])
   console.log(JSON.stringify({ok:true,uniqueActions:saved.size,replayedSameRequest:true,mobileFits:true,pageErrors:errors.length}))
 }finally{
   await browser?.close()

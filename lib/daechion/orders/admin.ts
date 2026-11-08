@@ -7,11 +7,13 @@ import {contextFromOrder,reviewContext,reviewEvidenceSchema,latestReview,type Re
 import {paidRecoveryAllowed,resumePaid,type PaidEvidence} from './paid-recovery'
 import {queueSheetRecovery} from './sheet-recovery'
 import {recordManualAccess,type AccessEvidence} from './manual-access'
+import {identityRecoveryAllowed,reconcileIdentity} from './identity-recovery'
 
 const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
 const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
 const common={requestKey:z.string().uuid(),orderId:z.string().uuid(),expectedVersion:z.string().regex(/^[1-9]\d{0,18}$/),operatorName:text(80),reason,confirmed:z.literal(true)}
 export const orderAdminActionSchema=z.discriminatedUnion('action',[
+  z.object({...common,action:z.literal('RECONCILE_IDENTITY'),studentId:z.number().int().positive().safe(),confirmCreatedAccount:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('HOLD')}).strict(),
   z.object({...common,action:z.literal('RETRY_ACCESS'),lectureId:z.number().int().positive().safe()}).strict(),
   z.object({...common,action:z.literal('APPROVE_EXISTING'),studentId:z.number().int().positive().safe(),
@@ -69,7 +71,7 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const sheetBlockers=(await c.query("SELECT id,state FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state IN ('UNKNOWN','RUNNING')",[id])).rows
   const activeRecovery=(await c.query("SELECT request_key FROM daechion_orders.sheet_recoveries WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0
   const sheetRecoveryJobId=!activeRecovery&&sheetBlockers.length===1&&sheetBlockers[0].state==='UNKNOWN'?String(sheetBlockers[0].id):null
-  const status=(await c.query('SELECT identity_write_started,identity_token,confirmed_at FROM daechion_orders.orders WHERE id=$1',[id])).rows[0]
+  const status=(await c.query('SELECT identity_write_started,identity_token,confirmed_at,identity_recovery_action_id FROM daechion_orders.orders WHERE id=$1',[id])).rows[0]
   const manualIdentity=order.identity_state==='PASSED'&&!status.identity_token&&!grants.some(g=>g.state==='RUNNING')
   const paidCurrent=(await c.query('SELECT daechion_orders.paid_eligible($1) AS ok',[id])).rows[0].ok===true
   const manualGrantIds=manualIdentity&&paidCurrent?grants.filter(g=>['PENDING','REVIEW'].includes(String(g.state))).map(g=>String(g.lecture_id)):[]
@@ -77,6 +79,7 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
   const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
   return {order,items,bills,grants,messages,jobs,actions,recoveries,manualGrantIds,manualRevokeIds,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
+    canReconcileIdentity:identityRecoveryAllowed({...order,...status})&&grants.length>0&&grants.every(g=>g.state==='PENDING'&&!g.enrollment_recorded),
     canResumePaid:!grants.some(g=>g.state==='REVOKED')&&paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT',canApproveExisting:unbilled,
     canResumeUnbilled:unbilled&&order.checkout_state==='REVIEW'&&order.review_code==='admin_hold'&&status.confirmed_at!==null&&(!reviewed||age>=0&&age<=15*60000)}
 }
@@ -107,6 +110,7 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
           JSON.stringify(review.targetIds)!==JSON.stringify(bound.targetIds)||JSON.stringify(ids)!==JSON.stringify(bound.targetIds))throw new OrderAdminError('STATE')
       }
     }
+    if(input.action==='RECONCILE_IDENTITY')review=reviewEvidenceSchema.parse(evidence)
     const nextVersion=(BigInt(input.expectedVersion)+1n).toString()
     const recoveryEvidence=input.action==='RESUME_PAID'?{billId:payment?.billId,amountWon:payment?.amountWon,paidAt:payment?.paidAt,checkedAt:payment?.checkedAt}:
       input.action==='RECONCILE_SHEETS'?{jobId:input.jobId}:input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED'?
@@ -115,11 +119,14 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
       student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb)`,[input.requestKey,input.orderId,fingerprint,input.action,'lectureId' in input?input.lectureId:null,
       input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??null,review?order.request_fingerprint:null,JSON.stringify(review?.targetIds??[]),review?.checkedAt??null,JSON.stringify(recoveryEvidence)])
-    const auditFirst=['APPROVE_EXISTING','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
+    const auditFirst=['APPROVE_EXISTING','RECONCILE_IDENTITY','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
     if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!access)throw new OrderAdminError('STATE')
     if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!(await c.query('SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2',[input.orderId,input.lectureId])).rows.length)throw new OrderAdminError('STATE')
     if(auditFirst)await writeAudit()
-    if(input.action==='HOLD'){
+    if(input.action==='RECONCILE_IDENTITY'){
+      if(!review||!await reconcileIdentity(c,order,input.studentId,input.requestKey,review))throw new OrderAdminError('STATE')
+      await orderChanged(c,input.orderId,'identity_reconciled')
+    }else if(input.action==='HOLD'){
       if(order.checkout_state==='DRAFT')throw new OrderAdminError('STATE')
       await holdOrder(c,input.orderId,'admin_hold')
     }else if(input.action==='RETRY_ACCESS'){

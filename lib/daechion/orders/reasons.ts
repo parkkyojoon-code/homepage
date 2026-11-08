@@ -5,6 +5,7 @@ const reasons:Record<string,string>={billing_preflight_review:'청구 전 학생
   manual_access_revoked:'대치온 수동 권한 회수 기록 — 자동 처리 보류',
   worker_execution_unknown:'주문 작업자 처리 결과 확인 필요 — 자동 재실행 보류',
   sheet_recovery_interrupted:'시트 복구 중단 — 기존 행과 반영 결과 재확인 필요',sheet_recovery_target_changed:'시트 복구 대상 상태 변경 확인 필요',sheet_recovery_unknown:'시트 복구 결과 확인 필요 — 자동 재시도 보류',
+  identity_reconciled:'학생 생성 결과 대조 완료 — 현재 결제 재조회 후 재개 필요',
   identity_unknown:'학생 조회·생성 처리 결과 확인 필요',identity_create_unknown:'학생 생성 결과 확인 필요 — 재생성 금지',identity_review:'학생·보호자 번호와 기존 수강 여부 대조 필요',identity_phone_busy:'같은 번호의 다른 등록 처리 확인 필요',
   grant_unknown:'강의 등록·영상·자료 권한 확인 필요',order_held:'주문 보류로 권한 처리 중단',payment_regressed:'기존 결제와 현재 조회 결과가 다름',
   message_result_unknown:'안내 문자 발송 결과 확인 필요 — 재발송 금지',message_lease_expired:'안내 문자 처리 중단·발송 결과 확인 필요',

@@ -64,6 +64,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/005_manual_review.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/006_recovery.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/007_manual_access.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/008_identity_recovery.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -708,6 +709,88 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const final=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
       await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',final))
       assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'DONE');assert.equal(state.inserts,1);assert.equal(state.updates,1)
+    })
+    const identityUnknownFixture=async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor()
+      const billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      api.failCreate=true
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,{withClient:db.withClient,tenantId:'fixture',daechion:api}),'SKIPPED')
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(row.review_code,'identity_create_unknown');assert.equal(row.student_id,null);assert.equal(api.creates,1)
+      const student=(await api.students(row.student_phone))[0]
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient,
+        inspectExisting:(context,id)=>manualReview.inspectExisting(context,id,api),inspectPaid:context=>paidRecovery.inspectPaid(context,payment)}
+      const input=await adminAction(orderId,'RECONCILE_IDENTITY',{studentId:student.id,confirmCreatedAccount:true})
+      return {orderId,payment,api,row,student,admin,input}
+    }
+    await t.test('unknown account creation is reconciled read-only to one exact profile, stays held and resumes only after a current payment read',async()=>{
+      const {orderId,payment,api,student,admin,input}=await identityUnknownFixture()
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canReconcileIdentity,true)
+      // A stale payment read does not prevent recording identity, but must not allow a grant.
+      await db.query("UPDATE daechion_orders.bills SET checked_at=now()-interval '5 minutes' WHERE order_id=$1",[orderId])
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,confirmCreatedAccount:false}),admin)).status,400)
+      const results=await Promise.all([0,1].map(()=>orderAdminHttp.orderAdminPost(request(input),admin)))
+      assert.ok(results.every(r=>r.status===200))
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(row.identity_state,'PASSED');assert.equal(Number(row.student_id),student.id);assert.equal(row.identity_write_started,true)
+      assert.equal(row.checkout_state,'REVIEW');assert.equal(row.review_code,'identity_reconciled');assert.equal(row.identity_recovery_action_id,input.requestKey)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.phone_claims WHERE order_id=$1',[orderId])).rows[0].n,0)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE request_key=$1',[input.requestKey])).rows[0].n,1)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('중복 수강생 확인')],'통과')
+      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/현재 결제 재조회/)
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,{withClient:db.withClient,tenantId:'fixture',daechion:api}),'SKIPPED')
+      assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[])
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectExisting:async()=>{throw Error('Replay must not query')}})).status,200)
+      const resume=await adminAction(orderId,'RESUME_PAID',{billId:payment.bill.billId,confirmPaid:true})
+      assert.equal((await orderAdminHttp.orderAdminPost(request(resume),admin)).status,200)
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,{withClient:db.withClient,tenantId:'fixture',daechion:api}),'VERIFIED')
+      assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[10])
+      assert.equal(Number((await db.query('SELECT student_id FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].student_id),student.id)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.ready_receipts WHERE order_id=$1',[orderId])).rows[0].n,0)
+    })
+    await t.test('identity reconciliation rejects profile drift, stale evidence, active leases and a different known account without changing the audit or claims',async()=>{
+      const {orderId,api,admin,input,student}=await identityUnknownFixture()
+      const context=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId)),proof=await manualReview.inspectExisting(context,student.id,api)
+      for(const changed of [{...proof,checkedAt:new Date(Date.now()-61000).toISOString()},{...proof,studentId:9999},{...proof,targetIds:[11]},{...proof,binding:'f'.repeat(64)}])
+        await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,changed)),/STATE/)
+      await assert.rejects(manualReview.inspectExisting(context,student.id,{...api,student:async()=>({...student,name:'동명이인 아님'})}))
+      await db.query("UPDATE daechion_orders.orders SET identity_token=$2,identity_until=now()+interval '10 minutes' WHERE id=$1",[orderId,randomUUID()])
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,409)
+      await db.query('UPDATE daechion_orders.orders SET identity_token=NULL,identity_until=NULL,student_id=$2 WHERE id=$1',[orderId,student.id+1])
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,409)
+      await db.query('UPDATE daechion_orders.orders SET student_id=NULL WHERE id=$1',[orderId])
+      await assert.rejects(db.query("UPDATE daechion_orders.orders SET identity_state='PASSED',student_id=$2 WHERE id=$1",[orderId,student.id]),/RECOVERY_APPROVAL_REQUIRED/)
+      await assert.rejects(db.withClient(c=>orderStore.orderTransaction(c,async()=>{
+        await orderStore.lockOrder(c,orderId)
+        await c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,operator_name,reason,before_version,after_version,
+          student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at)
+          VALUES($1,$2,$3,'RECONCILE_IDENTITY','검수','연결 누락 커밋 차단',$4,$5,$6,$7,$8,(SELECT request_fingerprint FROM daechion_orders.orders WHERE id=$2),'[10]'::jsonb,$9)`,
+          [randomUUID(),orderId,'a'.repeat(64),input.expectedVersion,(BigInt(input.expectedVersion)+1n).toString(),student.id,proof.profileFingerprint,proof.binding,proof.checkedAt])
+        await orderStore.orderChanged(c,orderId,'synthetic_incomplete_recovery')
+      })),/ORDER_ADMIN_COMMIT_INCOMPLETE/)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId])).rows[0].n,0)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.phone_claims WHERE order_id=$1',[orderId])).rows[0].n,1)
+      assert.equal(api.creates,1)
+    })
+    await t.test('reconciled identities keep their profile pin and failed audit writes leave unknown creation untouched',async()=>{
+      const f=await identityUnknownFixture(),{orderId,input,admin,api,payment,student}=f
+      const failed={...admin,withClient:run=>db.withClient(c=>run({query:(sql,values)=>{
+        if(sql.startsWith('INSERT INTO daechion_orders.admin_actions'))throw Error('Synthetic audit unavailable')
+        return c.query(sql,values)
+      }}))}
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),failed)).status,503)
+      assert.equal((await db.query('SELECT identity_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].identity_state,'REVIEW')
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,200)
+      await assert.rejects(db.query('UPDATE daechion_orders.orders SET identity_recovery_action_id=NULL WHERE id=$1',[orderId]),/RECOVERY_FROZEN/)
+      const resume=await adminAction(orderId,'RESUME_PAID',{billId:payment.bill.billId,confirmPaid:true})
+      assert.equal((await orderAdminHttp.orderAdminPost(request(resume),admin)).status,200)
+      // Keep name/student phone matching, but mutate an unselected guardian: the immutable profile pin still detects drift.
+      student.parentPhoneNumber='01000008888'
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,{withClient:db.withClient,tenantId:'fixture',daechion:api}),'SKIPPED')
+      assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[])
+      assert.equal((await db.query('SELECT checkout_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].checkout_state,'REVIEW')
     })
     const manualFixture=async()=>{
       const {orderId}=await workerOrder(['pack']),payment=providerFor(25000),api=enrollmentFor()

@@ -53,10 +53,10 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
     let evidence:ReviewEvidence|undefined
     let payment:PaidEvidence|undefined
     let access:AccessEvidence|undefined
-    if(['APPROVE_EXISTING','RESUME_PAID','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)){
+    if(['APPROVE_EXISTING','RECONCILE_IDENTITY','RESUME_PAID','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)){
       const replay=await readOnly(ports,c=>replayOrderAction(c,ports.tenantId,input))
       if(replay)return json({success:true,...replay})
-      if(input.action==='APPROVE_EXISTING'){
+      if(input.action==='APPROVE_EXISTING'||input.action==='RECONCILE_IDENTITY'){
         if(!ports.inspectExisting)throw new OrderAdminError('STATE')
         const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
         if(!context)throw new OrderAdminError('STALE')

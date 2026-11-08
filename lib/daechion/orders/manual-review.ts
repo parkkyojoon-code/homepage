@@ -44,7 +44,7 @@ export async function inspectExisting(context:BillingContext,studentId:number,ap
 export async function latestReview(c:LedgerClient,orderId:string):Promise<ReviewEvidence|null>{
   const row=(await c.query(`SELECT a.student_id,a.profile_fingerprint,a.context_fingerprint,a.target_ids,a.checked_at
     FROM daechion_orders.admin_actions a JOIN daechion_orders.orders o ON o.id=a.order_id
-    WHERE a.order_id=$1 AND a.action='APPROVE_EXISTING' AND a.order_request_fingerprint=o.request_fingerprint
+    WHERE a.order_id=$1 AND a.action IN ('APPROVE_EXISTING','RECONCILE_IDENTITY') AND a.order_request_fingerprint=o.request_fingerprint
     ORDER BY a.after_version DESC LIMIT 1`,[orderId])).rows[0]
   if(!row)return null
   return reviewEvidenceSchema.parse({studentId:Number(row.student_id),profileFingerprint:row.profile_fingerprint,binding:row.context_fingerprint,

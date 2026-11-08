@@ -32,7 +32,7 @@ export async function inspectPaid(context:PaidContext,provider:PaymentProvider):
   return paidEvidenceSchema.parse({orderId:context.orderId,tenantId:context.tenantId,version:context.version,requestFingerprint:context.requestFingerprint,
     recordId:context.bill.id,token:context.bill.token,accountId:provider.accountId,billId:p.billId,amountWon:p.amountWon,paidAt:p.paidAt,checkedAt:new Date().toISOString()})
 }
-const recoverable=new Set(['admin_hold','payment_query_unknown','unpaid_wait_closed','payment_amount_mismatch','payment_time_unknown','payment_evidence_changed','payment_regressed','worker_execution_unknown'])
+const recoverable=new Set(['identity_reconciled','admin_hold','payment_query_unknown','unpaid_wait_closed','payment_amount_mismatch','payment_time_unknown','payment_evidence_changed','payment_regressed','worker_execution_unknown'])
 export function paidRecoveryAllowed(o:Record<string,unknown>){
   return ['REVIEW','CLOSED'].includes(String(o.checkout_state))&&recoverable.has(String(o.review_code))&&o.payment_state!=='CANCELLED'&&
     ['WAITING','PASSED'].includes(String(o.identity_state))&&!o.identity_token&&(!o.identity_write_started||o.identity_state==='PASSED')&&Boolean(o.confirmed_at)

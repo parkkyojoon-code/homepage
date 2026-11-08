@@ -26,6 +26,7 @@ function ports(){
       await c.query('SELECT request_key,after_version,student_id,target_ids,context_fingerprint,recovery_evidence FROM daechion_orders.admin_actions LIMIT 0')
       await c.query('SELECT request_key,job_id,state FROM daechion_orders.sheet_recoveries LIMIT 0')
       await c.query('SELECT manual_action_id,revoked_at FROM daechion_orders.grants LIMIT 0')
+      await c.query('SELECT identity_recovery_action_id FROM daechion_orders.orders LIMIT 0')
     }}
 }
 export async function GET(request:Request){return orderAdminGet(request,ports())}
