@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { isOriginalProduct, purchaseProcessOf, type PurchaseProcess } from '@/lib/purchase-process'
 import LectureBindingPicker from '@/components/daechion/LectureBindingPicker'
 import type { StoredLectureBinding } from '@/lib/daechion/product-policy'
+import BundleProductPicker from '@/components/daechion/BundleProductPicker'
+import {bundleSource,bundleCompositionIssue,type BundleComponent} from '@/lib/daechion/orders/bundle-components'
 
 interface MediaItem { type: 'image' | 'youtube'; value: string }
 interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
@@ -14,6 +16,9 @@ interface ClassData {
   id: string; visible: boolean; name: string; category: string; badge: string
   purchaseProcess?: PurchaseProcess
   saleKind?: 'SINGLE'|'BUNDLE'
+  bundleComponents?:BundleComponent[]
+  bundleProductIds?:string[]
+  bundleCompositionIssue?:string|null
   daechionBinding?:StoredLectureBinding|null
   daechionLectureIds?:number[]
   image: string | null
@@ -60,10 +65,14 @@ export default function AdminClassesPage() {
 
   async function load() {
     setLoading(true)
-    const res = await fetch('/api/admin/classes')
-    if (res.status === 401) { router.push('/admin'); return }
-    setClasses(await res.json())
-    setLoading(false)
+    try{
+      const res = await fetch('/api/admin/classes',{cache:'no-store'})
+      if (res.status === 401) { router.push('/admin'); return }
+      const data=await res.json()
+      if(!res.ok||!Array.isArray(data))throw Error('catalog')
+      setClasses(data)
+    }catch{setMsg({type:'error',text:'상품 목록을 불러오지 못했습니다. 다시 불러와주세요.'})}
+    finally{setLoading(false)}
   }
 
   useEffect(() => { load() }, [])
@@ -107,13 +116,13 @@ export default function AdminClassesPage() {
 
   function openBundle(){
     setMsg(null)
-    setEditTarget({...JSON.parse(JSON.stringify(EMPTY_CLASS)),saleKind:'BUNDLE',purchaseProcess:'PROCESS_2'})
+    setEditTarget({...JSON.parse(JSON.stringify(EMPTY_CLASS)),saleKind:'BUNDLE',purchaseProcess:'PROCESS_2',bundleProductIds:[]})
     setIsNew(true)
   }
 
   function openEdit(cls: ClassData) {
     setMsg(null)
-    setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls),daechionLectureIds:cls.daechionBinding?.lectures.map(item=>item.id)??[] })
+    setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls),daechionLectureIds:cls.daechionBinding?.lectures.map(item=>item.id)??[],bundleProductIds:cls.bundleComponents?.map(item=>item.productId)??[] })
     setIsNew(false)
   }
 
@@ -125,6 +134,13 @@ export default function AdminClassesPage() {
     const method = isNew ? 'POST' : 'PUT'
     const url    = isNew ? '/api/admin/classes' : `/api/admin/classes/${editTarget.id}`
     const body={...editTarget,...(!isNew&&editTarget.saleKind==='BUNDLE'?{expectedUpdatedAt:editTarget.updatedAt}:{}),...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||undefined}:{})}
+    if(editTarget.saleKind==='BUNDLE'){
+      Object.assign(body,{bundleProductIds:editTarget.bundleProductIds??[],expectedBundleComponents:(editTarget.bundleProductIds??[]).map(id=>{
+        const product=classes.find(item=>item.id===id)
+        return product?bundleSource(product):null
+      })})
+      delete body.daechionLectureIds
+    }
     try{
     const res = await fetch(url, {
       method,
@@ -134,7 +150,7 @@ export default function AdminClassesPage() {
     if (res.ok) {
       const saved = await res.json()
       setMsg({ type: 'success', text: '저장됐습니다.' })
-      setEditTarget({...saved,daechionLectureIds:saved.daechionBinding?.lectures.map((item:{id:number})=>item.id)??[]});setIsNew(false)
+      setEditTarget({...saved,daechionLectureIds:saved.daechionBinding?.lectures.map((item:{id:number})=>item.id)??[],bundleProductIds:saved.bundleComponents?.map((item:BundleComponent)=>item.productId)??[]});setIsNew(false)
       load()
     } else {
       const d = await res.json()
@@ -332,6 +348,7 @@ export default function AdminClassesPage() {
                     {cls.badge && <span style={{ fontSize: 9, fontWeight: 800, color: '#f0c040', background: 'rgba(240,192,64,0.12)', border: '1px solid rgba(240,192,64,0.2)', borderRadius: 4, padding: '1px 6px' }}>{cls.badge}</span>}
                     {cls.saleKind==='BUNDLE'&&<span style={{fontSize:10,color:'#9ec3ff',whiteSpace:'nowrap'}}>묶음상품 · {cls.daechionBinding?.lectures.length??0}강의</span>}
                   </div>
+                  {cls.bundleCompositionIssue&&<p role="alert" style={{color:'#ffb0b0',fontSize:12}}>구성 확인 필요 · {cls.bundleCompositionIssue}</p>}
                   <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.35)' }}>
                     {cls.category} · {cls.modes.online.enabled ? `온라인 ${cls.modes.online.price.toLocaleString()}원` : ''}
                     {cls.modes.online.enabled && cls.modes.offline.enabled ? ' / ' : ''}
@@ -344,7 +361,7 @@ export default function AdminClassesPage() {
 
                 {/* 공개 토글 */}
                 <button onClick={() => toggleVisible(cls)} disabled={cls.saleKind==='BUNDLE'&&!cls.visible} title={cls.saleKind==='BUNDLE'?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
-                  padding: '5px 12px', fontSize: 11, fontWeight: 700, borderRadius: 20, border: 'none', cursor: 'pointer',
+                  padding: '5px 12px', fontSize: 11, fontWeight: 700, borderRadius: 20, cursor: 'pointer',
                   background: cls.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
                   color: cls.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
                   border: `1px solid ${cls.visible ? 'rgba(52,209,126,0.25)' : 'rgba(255,255,255,0.08)'}` as string,
@@ -375,7 +392,7 @@ export default function AdminClassesPage() {
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={() => upd(['visible'], !e.visible)} disabled={e.saleKind==='BUNDLE'&&!e.visible} title={e.saleKind==='BUNDLE'?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
-              padding: '8px 14px', fontSize: 12, fontWeight: 700, borderRadius: 20, border: 'none', cursor: 'pointer',
+              padding: '8px 14px', fontSize: 12, fontWeight: 700, borderRadius: 20, cursor: 'pointer',
               background: e.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
               color: e.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
               border: `1px solid ${e.visible ? 'rgba(52,209,126,0.25)' : 'rgba(255,255,255,0.1)'}` as string,
@@ -495,7 +512,11 @@ export default function AdminClassesPage() {
                 </label>
               ))}
             </div>}
-            {e.purchaseProcess==='PROCESS_2'&&<LectureBindingPicker key={isNew?'new':e.id} ids={e.daechionLectureIds??[]} saved={e.daechionBinding?.lectures} onChange={ids=>upd(['daechionLectureIds'],ids)}/>}
+            {e.saleKind==='BUNDLE'?<>
+              <BundleProductPicker products={classes} ids={e.bundleProductIds??[]} onChange={ids=>upd(['bundleProductIds'],ids)} onRefresh={()=>{void load()}} loading={loading}/>
+              {bundleCompositionIssue(e,classes)&&<p role="alert" style={{color:'#ffb0b0',fontSize:12}}>{bundleCompositionIssue(e,classes)}</p>}
+              {!isNew&&!e.bundleComponents&&<p style={{color:'#b8c6df',fontSize:12}}>기존 상품은 대치온 강의에 직접 연결되어 있습니다. 홈페이지 개별상품을 선택해 저장하면 새 구성으로 전환됩니다.</p>}
+            </>:e.purchaseProcess==='PROCESS_2'&&<LectureBindingPicker key={isNew?'new':e.id} ids={e.daechionLectureIds??[]} saved={e.daechionBinding?.lectures} onChange={ids=>upd(['daechionLectureIds'],ids)}/>}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
                 <label style={lbl}>수업 ID <span style={{ color: 'rgba(255,255,255,0.2)', fontWeight: 400, fontSize: 10 }}>URL에 사용됨</span></label>
@@ -579,7 +600,7 @@ export default function AdminClassesPage() {
           {e.saleKind==='BUNDLE'?<div style={{...card,padding:20}}>
             <label htmlFor="bundle-price" style={lbl}>최종 판매가 (원)</label>
             <input id="bundle-price" type="number" min={1} max={2147483647} step={1} style={inp} value={e.modes.online.price} onChange={ev=>upd(['modes','online','price'],Number(ev.target.value))}/>
-            <p style={{color:'#b8c6df',fontSize:12,marginTop:10}}>선택한 {e.daechionLectureIds?.length??0}개 강의 · {e.modes.online.price.toLocaleString('ko-KR')}원</p>
+            <p style={{color:'#b8c6df',fontSize:12,marginTop:10}}>선택한 {e.bundleProductIds?.length??0}개 상품 · 최종 판매가 {e.modes.online.price.toLocaleString('ko-KR')}원</p>
           </div>:<>
           {/* 운영 방식 */}
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -621,7 +642,7 @@ export default function AdminClassesPage() {
                             const cur = e.modes.offline.campuses || []
                             upd(['modes','offline','campuses'], selected ? cur.filter(c => c !== campus) : [...cur, campus])
                           }} style={{
-                            padding: '6px 14px', fontSize: 12, fontWeight: 600, borderRadius: 20, cursor: 'pointer', border: 'none',
+                            padding: '6px 14px', fontSize: 12, fontWeight: 600, borderRadius: 20, cursor: 'pointer',
                             background: selected ? 'rgba(77,139,245,0.15)' : 'rgba(255,255,255,0.05)',
                             color: selected ? '#4d8bf5' : 'rgba(255,255,255,0.4)',
                             border: `1px solid ${selected ? 'rgba(77,139,245,0.3)' : 'rgba(255,255,255,0.08)'}` as string,

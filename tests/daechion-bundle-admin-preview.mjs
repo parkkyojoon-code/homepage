@@ -9,7 +9,10 @@ const root=fileURLToPath(new URL('../',import.meta.url)),dir=await mkdtemp(path.
 const base={visible:true,name:'기존 수업 검수',category:'수리논술',badge:'',image:null,duration:'',description:'',keywords:['','',''],
   modes:{online:{enabled:true,price:900,campuses:[]},offline:{enabled:false,price:0,campuses:[]}},textbook:{included:false,price:0},
   createdAt:'2026-11-08T00:00:00Z',updatedAt:'2026-11-08T00:00:00Z'}
-await writeFile(path.join(dir,'classes.json'),JSON.stringify([{...base,id:'12course'},{...base,id:'chuweol'}]))
+await writeFile(path.join(dir,'classes.json'),JSON.stringify([{...base,id:'12course'},{...base,id:'chuweol'},
+  ...[101,102].map((id,index)=>({...base,id:`qa-single-${id}`,name:'동일 이름 검수 강의',visible:index===0,purchaseProcess:'PROCESS_2',saleKind:'SINGLE',
+    daechionBinding:{tenantId:'test-only',lectures:[{id,name:'가상 강의'}],verifiedAt:'2026-11-09T00:00:00Z'}})),
+]))
 const child=spawn(process.execPath,[path.join(root,'node_modules/next/dist/bin/next'),'start','--hostname','127.0.0.1','--port','3106'],{
   cwd:root,windowsHide:true,stdio:'ignore',env:{...process.env,NODE_ENV:'production',DATA_DIR:dir,
     ADMIN_PASSWORD:'local-bundle-preview',ADMIN_SECRET:'local-bundle-preview-session-only',

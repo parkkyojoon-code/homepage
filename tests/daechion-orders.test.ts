@@ -5,6 +5,47 @@ import {saleKindForWrite,validateBundle} from '../lib/daechion/orders/sale-polic
 import {prepareApplication} from '../lib/daechion/intake'
 import {preflightOrder} from '../lib/daechion/orders/preflight'
 import type {BillingContext} from '../lib/daechion/orders/billing'
+import {bundleSource,resolveBundleComponents,bundleCompositionIssue,type BundleProduct} from '../lib/daechion/orders/bundle-components'
+import {checkoutCatalog} from '../lib/daechion/orders/catalog'
+
+test('website bundle components bind exact product and lecture IDs, permit hidden singles, and reject stale or invalid sources',()=>{
+  const source=(id:string,lectureId:number):BundleProduct&{updatedAt:string}=>({id,name:'같은 상품명',visible:false,purchaseProcess:'PROCESS_2',saleKind:'SINGLE',
+    modes:{online:{enabled:true,price:900}},textbook:{included:false,price:0},updatedAt:'r1',
+    daechionBinding:{tenantId:'fixture',lectures:[{id:lectureId,name:'같은 강의명'}],verifiedAt:'2026-11-09T00:00:00Z'}})
+  const first=source('first',10),second=source('second',11),sources=[first,second]
+  const proof=sources.map(item=>bundleSource(item)!)
+  const saved=resolveBundleComponents(['second','first'],proof,sources,'fixture')
+  assert.deepEqual(saved,proof)
+  const bundle={...first,id:'pack',name:'두 상품 묶음',saleKind:'BUNDLE' as const,visible:true,bundleComponents:saved,
+    modes:{online:{enabled:true,price:1200},offline:{enabled:false,price:0}},updatedAt:'r1',
+    daechionBinding:{tenantId:'fixture',lectures:[{id:10,name:'첫 강의'},{id:11,name:'둘째 강의'}],verifiedAt:'2026-11-09T00:00:00Z'}}
+  const fullSources=sources.map(p=>({...p,modes:{...p.modes,offline:{enabled:false,price:0}}}))
+  assert.equal(bundleCompositionIssue(bundle,sources),null)
+  assert.equal(checkoutCatalog([...fullSources,bundle],'fixture').length,1)
+  const changedNamePrice={...first,name:'새 상품명',modes:{online:{enabled:true,price:9999}},updatedAt:'r2'}
+  assert.equal(bundleCompositionIssue(bundle,[changedNamePrice,second]),null)
+  assert.equal((checkoutCatalog([...fullSources,bundle],'fixture')[0] as {priceWon:number}).priceWon,1200)
+  for(const invalid of [{...first,purchaseProcess:'PROCESS_1' as const},{...first,id:'12course'},{...first,saleKind:'BUNDLE' as const},
+    {...first,subjectSelection:{}},{...first,textbook:{included:true,price:500}},{...first,modes:{online:{enabled:false,price:900}}},
+    {...first,daechionBinding:null},{...first,daechionBinding:{...first.daechionBinding!,tenantId:'other'}}]){
+    assert.equal(bundleSource(invalid,'fixture'),null)
+  }
+  const reconnected={...first,daechionBinding:{...first.daechionBinding!,lectures:[{id:12,name:'새 강의'}]}}
+  for(const changed of [[reconnected,second],[second],[{...first,purchaseProcess:'PROCESS_1' as const},second]]){
+    assert.ok(bundleCompositionIssue(bundle,changed))
+    assert.throws(()=>resolveBundleComponents(['first','second'],proof,changed,'fixture'))
+  }
+  assert.equal(checkoutCatalog([{...reconnected,modes:{...reconnected.modes,offline:{enabled:false,price:0}}},fullSources[1],bundle],'fixture').length,0)
+  assert.throws(()=>resolveBundleComponents(['first','first'],proof,sources,'fixture'))
+  assert.throws(()=>resolveBundleComponents(['first','second'],proof,[first,{...second,daechionBinding:first.daechionBinding}],'fixture'))
+  assert.throws(()=>resolveBundleComponents(['first','second'],undefined,sources,'fixture'))
+  assert.throws(()=>resolveBundleComponents(['first','second'],proof,[...sources,first],'fixture'))
+  assert.ok(bundleCompositionIssue({...bundle,daechionBinding:{...bundle.daechionBinding,lectures:[{id:10,name:'첫 강의'},{id:12,name:'잘못된 강의'}]}},sources))
+  const refreshed=resolveBundleComponents(['first','second'],[bundleSource(reconnected)!,bundleSource(second)!],[reconnected,second],'fixture')
+  assert.equal(refreshed[0].lectureId,12)
+  assert.equal(bundle.bundleComponents[0].lectureId,10)
+  assert.equal(bundleCompositionIssue({...bundle,bundleComponents:undefined},[]),null)
+})
 
 const single=(productId:string,id:number,priceWon=12900):CheckoutProduct=>({productId,title:'동일 강의명',saleKind:'SINGLE',purchaseProcess:'PROCESS_2',visible:true,priceWon,tenantId:'fixture',revision:'r1',lectures:[{id,name:'동일 강의명'}]})
 const a=single('a',10), b=single('b',11,18500)

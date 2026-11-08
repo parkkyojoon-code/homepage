@@ -4,11 +4,13 @@ import { loadClasses, saveClasses, generateId, ClassData } from '@/lib/classes'
 import { isOriginalProduct, parsePurchaseProcess } from '@/lib/purchase-process'
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
 import { saleKindForWrite, validateBundle, SalePolicyError } from '@/lib/daechion/orders/sale-policy'
+import {resolveBundleComponents,bundleCompositionIssue,BundleComponentError,type BundleComponent} from '@/lib/daechion/orders/bundle-components'
 
 // GET: 전체 수업 목록 (visible 무관)
 export async function GET() {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  return NextResponse.json(loadClasses(),{headers:{'Cache-Control':'no-store'}})
+  const classes=loadClasses()
+  return NextResponse.json(classes.map(item=>({...item,bundleCompositionIssue:bundleCompositionIssue(item,classes)})),{headers:{'Cache-Control':'no-store'}})
 }
 
 // POST: 새 수업 추가
@@ -28,19 +30,26 @@ export async function POST(req: NextRequest) {
   }
 
   let saleKind
+  let bundleComponents:BundleComponent[]|undefined
+  let bindingBody=body
   try{
     saleKind=saleKindForWrite(body.saleKind)
-    validateBundle({...body,purchaseProcess,saleKind},body.daechionLectureIds,false)
-  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
+    if(saleKind==='BUNDLE'){
+      bundleComponents=resolveBundleComponents(body.bundleProductIds,body.expectedBundleComponents,loadClasses(),process.env.DAECHION_TENANT_ID??'')
+      bindingBody={...body,daechionLectureIds:bundleComponents.map(item=>item.lectureId)}
+    }
+    validateBundle({...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds,false)
+  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
 
   let daechionBinding
-  try{daechionBinding=await resolveClassBinding(body,purchaseProcess,undefined,process.env)}catch(error){
+  try{daechionBinding=await resolveClassBinding(bindingBody,purchaseProcess,undefined,process.env)}catch(error){
     return NextResponse.json({error:error instanceof ClassBindingError?error.message:'대치온 연결을 확인하지 못했습니다.'},{status:400})
   }
   const newClass: ClassData = {
     id:          newId,
     purchaseProcess,
     saleKind,
+    bundleComponents,
     daechionBinding,
     visible:     body.visible ?? false,
     name:        body.name || '',
@@ -63,6 +72,10 @@ export async function POST(req: NextRequest) {
   }
 
   const classes = loadClasses()
+  if(bundleComponents){
+    try{resolveBundleComponents(bundleComponents.map(item=>item.productId),bundleComponents,classes,process.env.DAECHION_TENANT_ID??'')}
+    catch{return NextResponse.json({error:'구성 상품이 변경되었습니다. 다시 불러와주세요.'},{status:409})}
+  }
 
   if (classes.some(c => c.id === newId)) {
     return NextResponse.json({ error: `이미 사용 중인 ID입니다: "${newId}"` }, { status: 409 })

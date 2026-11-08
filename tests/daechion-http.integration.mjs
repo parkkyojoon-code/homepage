@@ -38,6 +38,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
     const productId = 'isolated-http-process-two'
     await writeFile(path.join(temp,'classes.json'),JSON.stringify([
       {...baseClass,id:productId,purchaseProcess:'PROCESS_2',daechionBinding:{tenantId:'test-only',lectures:[{id:101,name:'ID 연결 검수'}],verifiedAt:'2026-11-07T00:00:00Z'}},
+      {...baseClass,id:'hidden-http-single',visible:false,purchaseProcess:'PROCESS_2',daechionBinding:{tenantId:'test-only',lectures:[{id:102,name:'같은 이름 강의'}],verifiedAt:'2026-11-07T00:00:00Z'}},
       {...baseClass,id:'12course'}, {...baseClass,id:'chuweol'},
     ]))
     const reservation = createServer(); reservation.listen(0,'127.0.0.1'); await once(reservation,'listening')
@@ -76,16 +77,22 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       const before=JSON.parse(await readFile(path.join(temp,'classes.json'),'utf8'))
       const body={id:'bundle-http-fixture',saleKind:'BUNDLE',purchaseProcess:'PROCESS_2',visible:false,name:'가상 묶음상품',
         modes:{online:{enabled:true,price:900},offline:{enabled:false,price:0,campuses:[]}},textbook:{included:false,price:0},
-        duration:'가상 일정',daechionLectureIds:[101,102]}
+        duration:'가상 일정',bundleProductIds:[productId,'hidden-http-single'],expectedBundleComponents:[
+          {productId,lectureId:101,tenantId:'test-only'},{productId:'hidden-http-single',lectureId:102,tenantId:'test-only'}]}
       assert.equal((await request('/api/admin/classes',{body})).status,401)
       const login=await request('/api/admin/login',{body:{password:adminPassword}})
       const cookie=login.headers.get('set-cookie')?.split(';')[0];assert.ok(cookie)
-      for(const invalid of [{...body,visible:true},{...body,daechionLectureIds:[101,101]},{...body,purchaseProcess:'PROCESS_1'},
+      for(const invalid of [{...body,visible:true},{...body,bundleProductIds:[productId,productId]},{...body,purchaseProcess:'PROCESS_1'},
+        {...body,expectedBundleComponents:undefined},{...body,bundleProductIds:['12course',productId]},
+        {...body,expectedBundleComponents:[{productId,lectureId:102,tenantId:'test-only'},{productId:'hidden-http-single',lectureId:102,tenantId:'test-only'}]},
         {...body,modes:{...body.modes,online:{enabled:true,price:1.5}}}])assert.equal((await request('/api/admin/classes',{body:invalid,cookie})).status,400)
       const created=await request('/api/admin/classes',{body,cookie});assert.equal(created.status,201)
       const bundle=await created.json()
       assert.equal(bundle.saleKind,'BUNDLE');assert.equal(bundle.duration,'가상 일정');assert.equal(bundle.modes.online.price,900)
       assert.deepEqual(bundle.daechionBinding.lectures,[{id:101,name:'가상 강의'},{id:102,name:'가상 강의'}])
+      assert.deepEqual(bundle.bundleComponents.map(item=>item.productId).sort(),[productId,'hidden-http-single'].sort())
+      assert.equal(bundle.bundleProductIds,undefined)
+      assert.equal(bundle.expectedBundleComponents,undefined)
       const image=()=>{const form=new FormData();form.append('image',new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64')],{type:'image/png'}),'fixture.png');form.append('expectedUpdatedAt',bundle.updatedAt);return form}
       const uploaded=await fetch(origin+'/api/admin/classes/'+body.id+'/image',{method:'POST',headers:{Cookie:cookie},body:image()})
       assert.equal(uploaded.status,200)
@@ -93,10 +100,11 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       assert.equal((await fetch(origin+'/api/admin/classes/'+body.id+'/image',{method:'POST',headers:{Cookie:cookie},body:image()})).status,409)
       const update={expectedUpdatedAt:imageResult.updatedAt,modes:{...body.modes,online:{enabled:true,price:19900}}}
       const changed=await request('/api/admin/classes/'+body.id,{body:update,cookie,method:'PUT'})
-      assert.equal(changed.status,200);assert.equal((await changed.json()).modes.online.price,19900)
+      assert.equal(changed.status,200);const changedBundle=await changed.json();assert.equal(changedBundle.modes.online.price,19900)
       assert.equal((await request('/api/admin/classes/'+body.id,{body:update,cookie,method:'PUT'})).status,409)
       assert.equal((await request('/api/admin/classes/'+body.id,{body:{saleKind:'SINGLE'},cookie,method:'PUT'})).status,400)
       assert.equal((await request('/api/admin/classes/'+productId,{body:{saleKind:'BUNDLE'},cookie,method:'PUT'})).status,400)
+      assert.equal((await request('/api/admin/classes/'+body.id,{body:{expectedUpdatedAt:changedBundle.updatedAt,daechionLectureIds:[101,102]},cookie,method:'PUT'})).status,400)
       const after=JSON.parse(await readFile(path.join(temp,'classes.json'),'utf8'))
       assert.deepEqual(after.filter(c=>c.id!==body.id),before)
       assert.ok(!(await (await request('/api/classes')).json()).some(c=>c.id===body.id))
