@@ -7,7 +7,7 @@
     "build": "next build --turbopack",
     "start": "next start",
     "lint": "eslint",
-    "test:daechion": "tsc -p tsconfig.daechion-tests.json && node --test .daechion-test-build/tests/daechion.test.js .daechion-test-build/tests/daechion-orders.test.js tests/daechion-orders-ledger.test.mjs tests/daechion-ledger.test.mjs tests/daechion-worker.test.mjs tests/daechion-operations.test.mjs tests/daechion-content-browser.test.mjs && node --test tests/daechion-orders-service.test.mjs && node --test tests/daechion-order-migrations.test.mjs",
+    "test:daechion": "tsc -p tsconfig.daechion-tests.json && tsc -p tsconfig.daechion-worker.json && node --test .daechion-test-build/tests/daechion.test.js .daechion-test-build/tests/daechion-orders.test.js tests/daechion-orders-ledger.test.mjs tests/daechion-ledger.test.mjs tests/daechion-worker.test.mjs tests/daechion-order-worker.test.mjs tests/daechion-operations.test.mjs tests/daechion-content-browser.test.mjs && node --test tests/daechion-orders-service.test.mjs && node --test tests/daechion-order-migrations.test.mjs",
     "build:daechion-worker": "tsc -p tsconfig.daechion-worker.json",
     "db:daechion:status": "node scripts/daechion-db.cjs status",
     "db:daechion:check": "node scripts/daechion-db.cjs check",

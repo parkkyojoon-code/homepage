@@ -18,6 +18,7 @@ import orderPublisher from '../.daechion-test-build/lib/daechion/orders/sheets-p
 import orderView from '../.daechion-test-build/lib/daechion/orders/sheets-view.js'
 import orderStore from '../.daechion-test-build/lib/daechion/orders/worker-store.js'
 import orderDelivery from '../.daechion-test-build/lib/daechion/orders/delivery.js'
+import orderExecutable from '../workers/daechion/orders.cjs'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -69,6 +70,24 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       await assert.rejects(checkout.receiveOrder({...input,quoteToken:'0'.repeat(64)},ports),/QUOTE_UNAVAILABLE/)
       await assert.rejects(checkout.receiveOrder({...input,expectedTotalWon:1},ports),/REQUEST_CONFLICT/)
       await assert.rejects(checkout.receiveOrder({...input,requestKey:randomUUID()},ports),/REQUEST_CONFLICT/)
+    })
+    await t.test('targeted executable uses read-only preflight and sends one combined invoice without touching other orders',async()=>{
+      const q=await quote(),received=await checkout.receiveOrder(orderInput(q),ports)
+      const row=(await db.query('SELECT request_fingerprint FROM daechion_orders.orders WHERE id=$1',[received.orderId])).rows[0]
+      const sent=[],lookups=[]
+      const service=orderExecutable.runtime({DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_SEND_ENABLED:'true',
+        DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ORDER_ACCEPTANCE_ID:received.orderId,DAECHION_ORDER_ACCEPTANCE_FINGERPRINT:row.request_fingerprint,
+        DAECHION_TENANT_ID:'fixture',DAECHION_API_KEY:'fixture-only',DAECHION_ORDERS_SUBJECT_SECRET:'s'.repeat(32)},
+        {withClient:db.withClient,providers:{api:{me:async()=>({tenantId:'fixture'}),students:async phone=>{lookups.push(phone);return []},
+          lectures:async()=>[10,11].map(id=>({id,opened:true,weeklyLectures:[{id:id+100}]}))},
+          payment:{accountId:'executable-fixture',send:async job=>{sent.push(job);return 'SENT'}}}})
+      assert.deepEqual(await service.once(received.orderId),{processed:true,processingFailed:false,deliveryFailed:false})
+      assert.equal(sent.length,1);assert.equal(sent[0].amountWon,31400);assert.equal(sent[0].recipientPhone,'01000009999')
+      assert.equal(lookups.length,1);assert.notEqual(lookups[0],sent[0].recipientPhone)
+      assert.deepEqual(await service.once(received.orderId),{processed:true,processingFailed:false,deliveryFailed:false})
+      assert.equal(sent.length,1)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.bills WHERE order_id=$1',[received.orderId])).rows[0].n,1)
+      assert.equal((await db.query('SELECT student_id FROM daechion_orders.orders WHERE id=$1',[received.orderId])).rows[0].student_id,null)
     })
     await t.test('overlap never performs ownership lookup or saves a quote',async()=>{
       const result=await checkout.quoteCheckout({items:[{productId:'pack'},{productId:'overlap'}],contact:contact(),expectedTotalWon:25900},{...ports,ownership:()=>{throw Error('MUST_NOT_LOOKUP')}})

@@ -19,6 +19,7 @@ COPY workers/daechion/browser/provider.cjs ./workers/daechion/browser/provider.c
 COPY workers/daechion/browser/session-store.cjs ./workers/daechion/browser/session-store.cjs
 COPY workers/daechion/browser/token-state.cjs ./workers/daechion/browser/token-state.cjs
 COPY workers/daechion/billing.cjs ./workers/daechion/billing.cjs
+COPY workers/daechion/orders.cjs ./workers/daechion/orders.cjs
 COPY scripts/daechion-db.cjs scripts/daechion-migrations.cjs scripts/daechion-api-check.cjs ./scripts/
 COPY scripts/daechion-sheets-verify.cjs ./scripts/
 COPY scripts/daechion-content-verify.cjs ./scripts/

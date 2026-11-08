@@ -11,6 +11,7 @@ function base(target:OrderSheetTarget){
     target.spreadsheetId===target.singleIntake.spreadsheetId&&target.sheetId===target.singleIntake.sheetId)throw Error('INVALID_ORDER_SHEET_TARGET')
   return `/spreadsheets/${target.spreadsheetId}`
 }
+export function validateOrderSheetTarget(target:OrderSheetTarget){base(target)}
 type Metadata={metadataId:number;location:{sheetId?:number;dimensionRange?:{sheetId?:number;dimension:string;startIndex:number;endIndex:number}}}
 async function find(api:SheetsApi,target:OrderSheetTarget,key:string,value:string):Promise<Metadata[]>{
   const data=await api.call('POST',base(target)+'/developerMetadata:search',{dataFilters:[{developerMetadataLookup:{metadataKey:key,metadataValue:value,visibility:'DOCUMENT',

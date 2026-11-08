@@ -27,6 +27,7 @@ on:
       - 'tests/daechion-orders-ledger.test.mjs'
       - 'tests/daechion-orders-service.test.mjs'
       - 'tests/daechion-order-migrations.test.mjs'
+      - 'tests/daechion-order-worker.test.mjs'
       - 'tests/daechion-catalog-fixture.cjs'
       - 'tests/daechion-bundle-admin-preview.mjs'
       - 'tests/daechion-cart-preview.mjs'
@@ -102,6 +103,11 @@ jobs:
               exit 1
             fi
             test "$(cat order-db-default.log)" = "ORDER_INVALID_DATABASE_URL"
+            if docker run --rm --entrypoint node "$image" workers/daechion/orders.cjs > order-worker-default.log 2>&1; then
+              echo "An unconfigured order worker must refuse to start"
+              exit 1
+            fi
+            test "$(cat order-worker-default.log)" = "DAECHION_ORDER_WORKER_FAILED"
           done
       - name: Verify content rights UI with Chromium and synthetic data only
         run: docker run --rm -e DAECHION_BROWSER_FIXTURE_TEST=true -v "$PWD/tests:/app/tests:ro" --entrypoint node pkjmath-daechion-browser:ci --test tests/daechion-content-browser.test.mjs

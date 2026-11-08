@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {resolveCart,reviewOwnership,type CheckoutProduct,type ResolvedCart} from '../lib/daechion/orders/cart'
 import {saleKindForWrite,validateBundle} from '../lib/daechion/orders/sale-policy'
 import {prepareApplication} from '../lib/daechion/intake'
+import {preflightOrder} from '../lib/daechion/orders/preflight'
+import type {BillingContext} from '../lib/daechion/orders/billing'
 
 const single=(productId:string,id:number,priceWon=12900):CheckoutProduct=>({productId,title:'동일 강의명',saleKind:'SINGLE',purchaseProcess:'PROCESS_2',visible:true,priceWon,tenantId:'fixture',revision:'r1',lectures:[{id,name:'동일 강의명'}]})
 const a=single('a',10), b=single('b',11,18500)
@@ -98,4 +100,28 @@ test('ownership evidence is bound to one cart and student, complete, unique and 
     assert.throws(()=>reviewOwnership(cart,changed,key,now),/INVALID_OWNERSHIP_REPORT/)
   assert.throws(()=>reviewOwnership({...cart,totalWon:1},valid,key,now),/CART_CONFLICT/)
   assert.throws(()=>reviewOwnership({...cart,items:[{...a,priceWon:1},b]},valid,key,now),/CART_CONFLICT/)
+})
+
+test('invoice preflight reads current tenant, exact course IDs and identity without creating accounts or repricing',async()=>{
+  const context:BillingContext={orderId:'10000000-0000-4000-8000-000000000001',version:'1',tenantId:'fixture',totalWon:a.priceWon+b.priceWon,items:[a,b],
+    contact:{studentName:'검수',studentPhone:'01000001234',guardianName:'',guardianPhone:'',payerPhone:'01000009999',applicantType:'STUDENT',studentHistory:'NEW',agreePrivacy:true,confirmPayment:true}}
+  const reads:string[]=[]
+  const api={me:async()=>({tenantId:'fixture'}),students:async(phone:string)=>{reads.push(phone);return []},
+    lectures:async()=>[10,11].map(id=>({id,opened:true,weeklyLectures:[{id:id+100}]}))}
+  const ports={tenantId:'fixture',subjectSecret:'s'.repeat(32),api}
+  assert.equal(await preflightOrder(context,ports),'READY')
+  assert.deepEqual(reads,['01000001234']) // Payer never grants or decides identity.
+  for(const changed of [{...context,totalWon:1},{...context,tenantId:'other'},{...context,items:[a,{...b,lectures:a.lectures}]},
+    {...context,items:[{...a,productId:'12course'}]}, {...context,contact:{...context.contact,studentHistory:'EXISTING' as const}}])
+    assert.equal(await preflightOrder(changed,ports),'REVIEW')
+  for(const lectures of [[{id:10,opened:false,weeklyLectures:[{id:110}]}],[],
+    [10,11].map(id=>({id,opened:true,weeklyLectures:[]})),
+    [10,11].map(id=>({id,opened:true,weeklyLectures:[{id:110},{id:110}]})),
+    [10,10,11].map(id=>({id,opened:true,weeklyLectures:[{id:id+100}]}))])
+    assert.equal(await preflightOrder(context,{...ports,api:{...api,lectures:async()=>lectures}}),'REVIEW')
+  assert.equal(await preflightOrder(context,{...ports,api:{...api,me:async()=>({tenantId:'wrong'})}}),'REVIEW')
+  assert.equal(await preflightOrder(context,{...ports,api:{...api,students:async()=>[{id:1,name:'동명이인',active:false,studentPhoneNumber:context.contact.studentPhone}]}}),'REVIEW')
+  assert.equal(await preflightOrder(context,{...ports,api:{...api,students:async()=>{throw Error('private provider details')}}}),'REVIEW')
+  assert.equal(await preflightOrder({...context,contact:{...context.contact,guardianPhone:'01000005678'}},ports),'READY')
+  assert.deepEqual(reads.slice(-2),['01000001234','01000005678'])
 })
