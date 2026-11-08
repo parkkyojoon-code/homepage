@@ -1,10 +1,48 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {spawnSync} from 'node:child_process'
+import {EventEmitter} from 'node:events'
+import scheduler from '../.daechion-worker-build/lib/daechion/orders/scheduler.js'
 import worker from '../workers/daechion/orders.cjs'
 
 const id='10000000-0000-4000-8000-000000000001',fingerprint='a'.repeat(64)
 const base={DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_ACCEPTANCE_ID:id,DAECHION_ORDER_ACCEPTANCE_FINGERPRINT:fingerprint,DAECHION_TENANT_ID:'fixture'}
+
+test('loop requires a separate explicit switch, forbids acceptance credentials and drains on stop without overlapping cycles',async()=>{
+  const env={DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_LOOP_ENABLED:'true'}
+  assert.deepEqual(worker.argumentsFor(['--loop'],env),{command:'loop'})
+  for(const changed of [{...env,DAECHION_ORDER_LOOP_ENABLED:'false'},{...env,DAECHION_ORDER_ACCEPTANCE_ID:id},{...env,DAECHION_ORDER_ACCEPTANCE_FINGERPRINT:fingerprint},{}])
+    assert.throws(()=>worker.argumentsFor(['--loop'],changed),/ARGUMENTS_REJECTED/)
+  assert.throws(()=>worker.runtime({...env,DAECHION_ORDER_ENROLLMENT_ENABLED:'true',DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true'}),/SESSION_MAINTENANCE_REQUIRED/)
+  const controller=new AbortController(),events=[],writes=[]
+  await worker.main({argv:['--loop'],env,signal:controller.signal,write:r=>writes.push(r),
+    makeRuntime:()=>({check:async()=>{events.push('check')},cycle:async()=>{events.push('cycle');return {processed:1}}}),
+    wait:async(ms,{signal})=>{assert.equal(ms,30000);assert.equal(signal.aborted,false);events.push('wait');controller.abort()}})
+  assert.deepEqual(events,['check','cycle','wait']);assert.deepEqual(writes,[{processed:1}])
+  const stopped=new AbortController();stopped.abort()
+  await worker.main({argv:['--loop'],env,signal:stopped.signal,write:()=>assert.fail('No cycle after stop'),makeRuntime:()=>({check:async()=>{},cycle:async()=>assert.fail('Stopped')})})
+})
+
+test('scheduler session lock skips a competing replica and fences disconnects without exposing upstream errors',async()=>{
+  let held=false
+  const clients=[]
+  const withClient=async run=>{
+    const c=new EventEmitter();clients.push(c)
+    c.query=async sql=>{
+      if(sql.includes('pg_try_advisory_lock')){const locked=!held;if(locked)held=true;return {rows:[{locked}]}}
+      if(sql.includes('pg_advisory_unlock')){held=false;return {rows:[{unlocked:true}]}}
+      return {rows:[]}
+    }
+    return run(c)
+  }
+  let entered,release;const begun=new Promise(r=>{entered=r}),wait=new Promise(r=>{release=r})
+  const first=scheduler.withSchedulerLock(withClient,'fixture',async assert=>{await assert();entered();await wait;return 'done'})
+  await begun
+  assert.equal(await scheduler.withSchedulerLock(withClient,'fixture',async()=>assert.fail('Competing worker')),null)
+  release();assert.equal(await first,'done');assert.equal(held,false)
+  await assert.rejects(scheduler.withSchedulerLock(withClient,'fixture',async assert=>{clients.at(-1).emit('end');await assert()}),/SCHEDULER_CONNECTION_LOST/)
+  assert.ok(clients.every(c=>c.listenerCount('error')===0&&c.listenerCount('end')===0))
+})
 test('entrypoint defaults to checks and rejects untargeted or malformed execution before runtime construction',async()=>{
   let constructed=0,checked=0,processed=0
   const makeRuntime=()=>{constructed++;return {check:async()=>{checked++;return {schemaChecked:true}},once:async value=>{assert.equal(value,id);processed++}}}

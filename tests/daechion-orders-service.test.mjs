@@ -27,6 +27,7 @@ import paidRecovery from '../.daechion-test-build/lib/daechion/orders/paid-recov
 import sheetRecovery from '../.daechion-test-build/lib/daechion/orders/sheet-recovery.js'
 import manualAccess from '../.daechion-test-build/lib/daechion/orders/manual-access.js'
 import intakeReview from '../.daechion-test-build/lib/daechion/orders/intake-review.js'
+import scheduler from '../.daechion-test-build/lib/daechion/orders/scheduler.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -67,6 +68,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/007_manual_access.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/008_identity_recovery.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/009_intake_review.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/010_scheduler.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -712,6 +714,82 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const final=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
       await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',final))
       assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'DONE');assert.equal(state.inserts,1);assert.equal(state.updates,1)
+    })
+    const schedulerEnv={DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_LOOP_ENABLED:'true',DAECHION_TENANT_ID:'fixture',DAECHION_API_KEY:'fixture-only',
+      DAECHION_ORDER_SEND_ENABLED:'true',DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_ORDER_ENROLLMENT_ENABLED:'true',DAECHION_ORDER_READY_MESSAGE_ENABLED:'true',
+      DAECHION_ORDER_SESSION_MAINTENANCE_ENABLED:'true',DAECHION_BROWSER_CHECK_LECTURE_ID:'10',DAECHION_ORDERS_SUBJECT_SECRET:'s'.repeat(32),
+      DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true'}
+    const schedulerClient=process.env.DAECHION_TEST_POSTGRES_URL?db.withClient:async run=>run(db)
+    const quietScheduler=()=>db.query(`INSERT INTO daechion_orders.scheduler_orders(order_id,last_version,next_run_at)
+      SELECT id,version,now()+interval '1 day' FROM daechion_orders.orders
+      ON CONFLICT(order_id) DO UPDATE SET last_version=EXCLUDED.last_version,next_run_at=EXCLUDED.next_run_at`)
+    const makeDue=id=>db.query("UPDATE daechion_orders.scheduler_orders SET next_run_at=now()-interval '1 second' WHERE order_id=$1",[id])
+    await t.test('periodic worker resumes across restarts with one invoice, one student and every purchased lecture before one notice',async()=>{
+      await quietScheduler();await db.query('DELETE FROM daechion_orders.scheduler_sessions')
+      const {orderId}=await workerOrder(),payment=providerFor(43500),api=enrollmentFor(),messages=[],granted=[];let refreshes=0
+      const original=payment.send
+      payment.send=async job=>{const result=await original(job);payment.observation={state:'W',billId:job.billId,amountWon:null,paidAt:null};return result}
+      const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment,daechion:{...api,
+        refreshSession:async id=>{assert.equal(id,10);refreshes++;return {refreshed:true}},
+        ensureContentAccess:async input=>{await input.beforeWrite();granted.push(input.lectureId);return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}}},
+        message:{send:async job=>{messages.push(job);return {accepted:true,messageId:'scheduler-fixture'}}}}}
+      const first=await orderExecutable.runtime(schedulerEnv,options).cycle()
+      assert.equal(first.processed,1);assert.equal(first.failed,0);assert.equal(payment.sends,1);assert.equal(api.creates,0)
+      payment.paid();await makeDue(orderId)
+      const second=await orderExecutable.runtime(schedulerEnv,options).cycle()
+      assert.equal(second.processed,1);assert.equal(second.failed,0);assert.equal(api.creates,1);assert.equal(payment.sends,1)
+      assert.deepEqual(granted,[11,20,21]);assert.equal(messages.length,1);assert.equal(refreshes,1)
+      assert.equal((await orderExecutable.runtime(schedulerEnv,options).cycle()).processed,0)
+      await makeDue(orderId);await orderExecutable.runtime(schedulerEnv,options).cycle()
+      assert.equal(api.creates,1);assert.equal(messages.length,1);assert.deepEqual(granted,[11,20,21])
+      assert.equal((await db.query('SELECT result FROM daechion_orders.scheduler_orders WHERE order_id=$1',[orderId])).rows[0].result,'OK')
+    })
+    await t.test('failed browser maintenance blocks account and grant writes, persists a Sheets-visible issue and retries without resetting unknown work',async()=>{
+      await quietScheduler();await db.query('DELETE FROM daechion_orders.scheduler_sessions')
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor();let healthy=false,refreshes=0
+      await orderBilling.sendOrderBill(orderId,true,{withClient:db.withClient,provider:payment,preflight:async()=> 'READY'});payment.paid()
+      const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment,daechion:{...api,refreshSession:async()=>{refreshes++;if(!healthy)throw Error('private session credential');return {refreshed:true}}}}}
+      const env={...schedulerEnv,DAECHION_ORDER_SEND_ENABLED:'false',DAECHION_ORDER_READY_MESSAGE_ENABLED:'false'}
+      assert.equal((await orderExecutable.runtime(env,options).cycle()).sessionReady,false)
+      assert.equal(api.creates,0);assert.deepEqual(api.enrolled,[])
+      let view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/로그인 세션 확인 필요/)
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('처리 확인')],'확인 필요')
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).workerStatus.session_issue,true)
+      await makeDue(orderId);await orderExecutable.runtime(env,options).cycle();assert.equal(refreshes,1);assert.equal(api.creates,0)
+      healthy=true;await db.query("UPDATE daechion_orders.scheduler_sessions SET next_check_at=now()-interval '1 second'");await makeDue(orderId)
+      assert.equal((await orderExecutable.runtime(env,options).cycle()).sessionReady,true)
+      assert.equal(refreshes,2);assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[10])
+      view=await db.withClient(c=>orderView.orderSheetView(c,orderId));assert.ok(!JSON.stringify(view).includes('private session credential'))
+      assert.ok(!view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')].includes('로그인 세션'))
+    })
+    await t.test('bounded scheduler batches are fair and an uncertain invoice is never resent by later cycles',async()=>{
+      await quietScheduler()
+      const ids=[];for(let n=0;n<11;n++)ids.push((await workerOrder(['a'])).orderId)
+      const payment=providerFor(12900),api=enrollmentFor()
+      const env={...schedulerEnv,DAECHION_ORDER_PAYMENT_READ_ENABLED:'false',DAECHION_ORDER_ENROLLMENT_ENABLED:'false',DAECHION_ORDER_READY_MESSAGE_ENABLED:'false',DAECHION_ORDER_SESSION_MAINTENANCE_ENABLED:'false'}
+      const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment}}
+      const service=orderExecutable.runtime(env,options)
+      assert.equal((await service.cycle()).processed,10);assert.equal((await service.cycle()).processed,1);assert.equal(payment.sends,11)
+      assert.equal((await service.cycle()).processed,0)
+      await makeDue(ids[0]);await workerOrder(['a'])
+      const due=await db.withClient(c=>scheduler.selectScheduledOrders(c,'fixture',{send:true,read:true,enroll:false,message:false,sheets:false}))
+      assert.equal(due[0].id,ids[0])
+      assert.equal((await db.withClient(c=>scheduler.selectScheduledOrders(c,'other',{send:true,read:true,enroll:true,message:true,sheets:true}))).length,0)
+      await quietScheduler()
+      const next=await workerOrder(['a']),unknown=providerFor(12900)
+      const bad={...options,providers:{api,payment:{...unknown,send:async job=>{await unknown.send(job);return 'UNKNOWN'}}}}
+      await orderExecutable.runtime(env,bad).cycle();await makeDue(next.orderId);await orderExecutable.runtime(env,bad).cycle()
+      assert.equal(unknown.sends,1);assert.equal(api.creates,0)
+      assert.equal((await db.query('SELECT state FROM daechion_orders.bills WHERE order_id=$1',[next.orderId])).rows[0].state,'SEND_UNKNOWN')
+    })
+    await t.test('real PostgreSQL scheduler lock excludes a second connection and is released after completion',{skip:!process.env.DAECHION_TEST_POSTGRES_URL},async()=>{
+      let started,release;const begun=new Promise(r=>{started=r}),wait=new Promise(r=>{release=r})
+      const first=scheduler.withSchedulerLock(db.withClient,'fixture',async assert=>{await assert();started();await wait;return true})
+      await begun
+      try{assert.equal(await scheduler.withSchedulerLock(db.withClient,'fixture',async()=>assert.fail('Second replica')),null)}finally{release()}
+      assert.equal(await first,true)
+      assert.equal(await scheduler.withSchedulerLock(db.withClient,'fixture',async()=>true),true)
     })
     const newIntakeFixture=async(person=contact())=>{
       const q=await checkout.quoteCheckout({items:[{productId:'pack'}],contact:person,expectedTotalWon:25000},{...ports,

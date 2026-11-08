@@ -51,6 +51,7 @@ export async function listOrders(c:LedgerClient,tenantId:string,raw:unknown={}){
       OR strpos(lower(o.contact_snapshot->>'guardianName'),lower($2))>0
       OR ($3<>'' AND (strpos(o.student_phone,$3)>0 OR strpos(o.contact_snapshot->>'guardianPhone',$3)>0 OR strpos(o.contact_snapshot->>'payerPhone',$3)>0)))
     AND (NOT $4::boolean OR o.checkout_state='REVIEW' OR o.identity_state='REVIEW' OR (o.review_code IS NOT NULL AND o.review_code<>'intake_closed')
+      OR EXISTS(SELECT 1 FROM daechion_orders.scheduler_orders s WHERE s.order_id=o.id AND s.session_issue)
       OR o.notification_state IN ('UNKNOWN','FAILED') OR EXISTS(SELECT 1 FROM daechion_orders.grants g WHERE g.order_id=o.id AND g.state='REVIEW')
       OR EXISTS(SELECT 1 FROM daechion_orders.jobs j WHERE j.order_id=o.id AND j.state IN ('UNKNOWN','FAILED')))
     ORDER BY o.created_at DESC,o.id DESC LIMIT 51 OFFSET $5`,[tenantId,input.q,phone,input.reviewOnly,input.page*50])
@@ -70,6 +71,7 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const messages=(await c.query('SELECT phone,state,accepted_at FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows
   const jobs=(await c.query('SELECT id,kind,state,attempts,last_error,event_version::text FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
   const actions=(await c.query('SELECT action,lecture_id::text,student_id::text,target_ids,recovery_evidence,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
+  const workerStatus=(await c.query('SELECT session_issue,started_at,finished_at,result,next_run_at FROM daechion_orders.scheduler_orders WHERE order_id=$1',[id])).rows[0]??null
   const recoveries=(await c.query('SELECT request_key,job_id,state,result_code,created_at FROM daechion_orders.sheet_recoveries WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 10',[id])).rows
   const sheetBlockers=(await c.query("SELECT id,state FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state IN ('UNKNOWN','RUNNING')",[id])).rows
   const activeRecovery=(await c.query("SELECT request_key FROM daechion_orders.sheet_recoveries WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0
@@ -82,7 +84,7 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const manualRevokeIds=manualIdentity?grants.filter(g=>g.state!=='REVOKED').map(g=>String(g.lecture_id)):[]
   const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
   const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
-  return {order,items,bills,grants,messages,jobs,actions,recoveries,manualGrantIds,manualRevokeIds,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
+  return {order,items,bills,grants,messages,jobs,actions,recoveries,workerStatus,manualGrantIds,manualRevokeIds,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
     canCloseIntake:untouched,canConfirmNewIntake:untouched&&!reviewed&&order.checkout_state==='REVIEW'&&(order.contact_snapshot as {studentHistory?:string}).studentHistory==='NEW',
     canReconcileIdentity:identityRecoveryAllowed({...order,...status})&&grants.length>0&&grants.every(g=>g.state==='PENDING'&&!g.enrollment_recorded),
     canResumePaid:!grants.some(g=>g.state==='REVOKED')&&paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT'&&!status.closed_action_id,canApproveExisting:unbilled,

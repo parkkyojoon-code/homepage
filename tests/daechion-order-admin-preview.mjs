@@ -29,6 +29,7 @@ try{
   let id='10000000-0000-4000-8000-000000000001'
   const contact={studentName:'가상 학생',studentPhone:'01000001234',guardianName:'가상 보호자',guardianPhone:'01000005678',payerPhone:'01000009999',studentHistory:'EXISTING',applicantType:'STUDENT'}
   const detail={order:{id,version:'10',total_won:43500,checkout_state:'READY',payment_state:'PAID',identity_state:'PASSED',notification_state:'NOT_READY',student_id:'1001',review_code:null,contact_snapshot:contact},
+    workerStatus:{session_issue:true,started_at:new Date().toISOString(),finished_at:new Date().toISOString(),result:'OK',next_run_at:new Date(Date.now()+30000).toISOString()},
     canHold:true,canApproveExisting:false,canResumeUnbilled:false,canResumePaid:false,canReconcileSheets:false,sheetRecoveryJobId:null,recoveries:[],items:[{product_id:'bundle',title:'가상 파이널 묶음',sale_kind:'BUNDLE',price_won:25000},{product_id:'single',title:'가상 개별 강의',sale_kind:'SINGLE',price_won:18500}],
     bills:[{bill_id:'90000000000000000001',amount_won:43500,state:'SENT',is_current:true,checked_at:new Date().toISOString()}],
     grants:[{lecture_id:'20',state:'REVIEW',review_code:'grant_unknown',enrollment_recorded:true,can_retry:true},{lecture_id:'21',state:'VERIFIED',review_code:null,enrollment_recorded:true,can_retry:false}],messages:[],
@@ -64,6 +65,8 @@ try{
     return send({success:true,replayed:false})
   })
   await page.goto(origin+'/admin/daechion/orders');await page.getByRole('button',{name:'가상 학생',exact:true}).click()
+  await page.getByText('대치온 로그인 세션 확인 필요 — 자동 권한 부여 대기',{exact:false}).waitFor()
+  await page.screenshot({path:path.join(output,'order-scheduler-admin-20261109.png'),fullPage:true})
   await page.getByLabel('처리 종류').selectOption('RETRY_ACCESS')
   await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
   await page.getByLabel('확인 근거·사유').fill('API 등록 성공 확인\n영상·자료 권한 재검사')

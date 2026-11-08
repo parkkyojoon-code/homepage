@@ -2,7 +2,7 @@ const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { createHash } = require('node:crypto')
 
-const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql', '006_recovery.sql', '007_manual_access.sql', '008_identity_recovery.sql', '009_intake_review.sql'])
+const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql', '006_recovery.sql', '007_manual_access.sql', '008_identity_recovery.sql', '009_intake_review.sql', '010_scheduler.sql'])
 function loadMigrations() {
   return names.map(name => {
     const sql = readFileSync(join(__dirname, '../db/daechion-orders', name), 'utf8').replace(/\r\n/g, '\n')
@@ -38,6 +38,8 @@ async function checkSchema(client) {
     'SELECT phone,text_snapshot,state,provider_message_id,accepted_at FROM daechion_orders.ready_receipts LIMIT 0',
     'SELECT request_key,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence FROM daechion_orders.admin_actions LIMIT 0',
     'SELECT request_key,order_id,job_id,state,lease_token,lease_until,result_code FROM daechion_orders.sheet_recoveries LIMIT 0',
+    'SELECT order_id,next_run_at,last_version,started_at,finished_at,result,session_issue FROM daechion_orders.scheduler_orders LIMIT 0',
+    'SELECT tenant_id,state,checked_at,next_check_at FROM daechion_orders.scheduler_sessions LIMIT 0',
   ]) await client.query(sql)
   const guards = [
     ['orders', 'guard_order', 'guard_order'], ['orders', 'guard_worker_order', 'guard_worker_order'],

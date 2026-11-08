@@ -48,7 +48,8 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const intakeClosed=Boolean(o.closed_action_id)&&o.checkout_state==='CLOSED'
   const duplicateReason=intakeClosed?'청구·학생 생성 시도 없이 관리자 접수 종료':identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':newIntakeFresh?'신규 학생 번호 중복 재조회 완료 — 작업자 재검사 대기':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — ${bills.length?'청구 시 확인한 학생으로 결제 후 재검사':'청구 전 재검사 대기'}`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
   const duplicate=intakeClosed?'접수 종료':identityConcern?'확인 필요':o.identity_state==='PASSED'||reviewedFresh||newIntakeFresh?'통과':reviewed||quoteReasons.length?'확인 필요':'조회 대기'
-  const errors=[orderReason(o.review_code),...grants.filter(g=>g.state==='REVIEW').map(g=>`강의 ID ${g.lecture_id}: ${orderReason(g.review_code)}`),
+  const sessionIssue=(await c.query('SELECT session_issue FROM daechion_orders.scheduler_orders WHERE order_id=$1',[id])).rows[0]?.session_issue===true
+  const errors=[orderReason(o.review_code),...(sessionIssue?['대치온 로그인 세션 확인 필요 — 자동 권한 부여 대기']:[]),...grants.filter(g=>g.state==='REVIEW').map(g=>`강의 ID ${g.lecture_id}: ${orderReason(g.review_code)}`),
     ...(recovery&&['UNKNOWN','FAILED'].includes(String(recovery.state))?[`시트 복구: ${orderReason(recovery.result_code)}`]:[]),
     ...jobs.map(j=>`${j.kind==='SHEETS'?'시트':'안내 문자'}: ${orderReason(j.last_error)||state(j.state)}`),
     ...receipts.filter(r=>r.state==='UNKNOWN').map(r=>`${r.phone}: 문자 결과 확인 필요`)].filter(Boolean)

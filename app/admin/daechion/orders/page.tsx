@@ -14,6 +14,7 @@ interface Detail {
   bills:{bill_id:string;amount_won:number;state:string;is_current:boolean;checked_at:string|null}[]
   messages:{phone:string;state:string}[];jobs:{kind:string;state:string;attempts:number;last_error:string|null;event_version:string}[]
   actions:{action:string;lecture_id:string|null;student_id?:string|null;target_ids?:number[];recovery_evidence?:{billId?:string;amountWon?:number;paidAt?:string;jobId?:string;studentId?:number;weeklyLectureIds?:number[]};operator_name:string;reason:string;before_version:string;after_version:string;created_at:string}[];canHold:boolean;canConfirmNewIntake?:boolean;canCloseIntake?:boolean;canReconcileIdentity?:boolean;canApproveExisting:boolean;canResumeUnbilled:boolean;canResumePaid:boolean;canReconcileSheets:boolean;sheetRecoveryJobId:string|null;manualGrantIds?:string[];manualRevokeIds?:string[]
+  workerStatus?:{session_issue:boolean;started_at:string|null;finished_at:string|null;result:string|null;next_run_at:string}|null
   recoveries?:{request_key:string;state:string;result_code:string|null;created_at:string}[]
 }
 interface Page {rows:Row[];hasMore:boolean;page:number}
@@ -101,6 +102,7 @@ export default function OrdersPage(){
     {detail&&<section className={styles.detail}><div className={styles.heading}><h2>{detail.order.contact_snapshot.studentName} · {detail.order.total_won.toLocaleString()}원</h2><button disabled={busy} onClick={()=>open(detail.order.id)}>새로 불러오기</button></div>
       <p>주문 {detail.order.id} · 버전 {detail.order.version}</p>
       <dl className={styles.summary}>{[['학생 번호',detail.order.contact_snapshot.studentPhone],['학부모 이름',detail.order.contact_snapshot.guardianName],['보호자 로그인 번호',detail.order.contact_snapshot.guardianPhone],['결제 번호',detail.order.contact_snapshot.payerPhone],['기존·신규 선택',label(detail.order.contact_snapshot.studentHistory)],['대치온 학생 ID',detail.order.student_id],['확인 사유',orderReason(detail.order.review_code)]].map(([key,value])=><div key={key}><dt>{key}</dt><dd>{value||'—'}</dd></div>)}</dl>
+      {detail.workerStatus&&<p className={detail.workerStatus.session_issue?styles.error:undefined}>{detail.workerStatus.session_issue?'대치온 로그인 세션 확인 필요 — 자동 권한 부여 대기':'정기 작업자 기록'} · 마지막 완료 {date(detail.workerStatus.finished_at)} · 다음 확인 {date(detail.workerStatus.next_run_at)}</p>}
       <h3>상품·청구·강의별 상태</h3>{detail.items.map(item=><p key={item.product_id}>{item.title} · {item.sale_kind==='BUNDLE'?'묶음상품':'개별 강의'} · {item.price_won.toLocaleString()}원</p>)}
       {detail.bills.map(bill=><p key={bill.bill_id}>청구서 {bill.bill_id} · {bill.amount_won.toLocaleString()}원 · {label(bill.state)} · {bill.is_current?'현재 청구':'이전 청구'} · 마지막 조회 {date(bill.checked_at)}</p>)}
       {detail.grants.map(grant=><p key={grant.lecture_id}>강의 ID {grant.lecture_id} · {label(grant.state)} · {grant.enrollment_recorded?'API 등록 성공 기록 있음':'API 등록 성공 미확정'}{grant.revoked_at&&` · 회수 기록 ${date(grant.revoked_at)}`}{grant.review_code&&` · ${orderReason(grant.review_code)}`}</p>)}
