@@ -97,9 +97,10 @@ function runtime(env, overrides = {}) {
     // Sheets can still publish the recorded review state if business processing failed.
     // Do not announce completion after an unclassified processing failure.
     try {
-      await (overrides.deliverOrder ?? built('orders/delivery').deliverOrder)(id,
+      const delivered = await (overrides.deliverOrder ?? built('orders/delivery').deliverOrder)(id,
         { ...deliveryFlags, message: deliveryFlags.message && !processingFailed },
         { withClient, payment: provider, message: ready, api: sheets?.api, target: sheets?.target })
+      deliveryFailed = delivered?.message === 'UNKNOWN' || delivered?.sheets === 'UNKNOWN'
     } catch { deliveryFailed = true }
     return { processed: true, processingFailed, deliveryFailed }
   }

@@ -68,6 +68,9 @@ test('one selected order flows through processing then delivery; a processing ex
     deliverOrder:async(value,flags)=>{assert.equal(value,id);assert.equal(flags.message,true);phase.push('deliver')}}
   assert.deepEqual(await worker.runtime(env,options).once(id),{processed:true,processingFailed:false,deliveryFailed:false})
   assert.deepEqual(phase,['process','deliver'])
+  for(const delivered of [{message:'UNKNOWN',sheets:'DISABLED'},{message:'SENT',sheets:'UNKNOWN'}]){
+    assert.deepEqual(await worker.runtime(env,{...options,deliverOrder:async()=>delivered}).once(id),{processed:true,processingFailed:false,deliveryFailed:true})
+  }
   const failed=worker.runtime(env,{...options,processOrder:async()=>{throw Error('private upstream data')},deliverOrder:async(_value,flags)=>{
     assert.equal(flags.message,false);assert.ok(events.some(e=>e.args?.includes('worker_execution_unknown')))
   }})
