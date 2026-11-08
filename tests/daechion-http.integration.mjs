@@ -89,7 +89,7 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       const created=await request('/api/admin/classes',{body,cookie});assert.equal(created.status,201)
       const bundle=await created.json()
       assert.equal(bundle.saleKind,'BUNDLE');assert.equal(bundle.duration,'가상 일정');assert.equal(bundle.modes.online.price,900)
-      assert.deepEqual(bundle.daechionBinding.lectures,[{id:101,name:'가상 강의'},{id:102,name:'가상 강의'}])
+      assert.deepEqual([...bundle.daechionBinding.lectures].sort((a,b)=>a.id-b.id),[{id:101,name:'가상 강의'},{id:102,name:'가상 강의'}])
       assert.deepEqual(bundle.bundleComponents.map(item=>item.productId).sort(),[productId,'hidden-http-single'].sort())
       assert.equal(bundle.bundleProductIds,undefined)
       assert.equal(bundle.expectedBundleComponents,undefined)
