@@ -6,6 +6,7 @@ import {retryRecordedAccessInTransaction} from './enrollment'
 import {contextFromOrder,reviewContext,reviewEvidenceSchema,latestReview,type ReviewEvidence} from './manual-review'
 import {paidRecoveryAllowed,resumePaid,type PaidEvidence} from './paid-recovery'
 import {queueSheetRecovery} from './sheet-recovery'
+import {recordManualAccess,type AccessEvidence} from './manual-access'
 
 const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
 const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
@@ -18,6 +19,9 @@ export const orderAdminActionSchema=z.discriminatedUnion('action',[
   z.object({...common,action:z.literal('RESUME_UNBILLED')}).strict(),
   z.object({...common,action:z.literal('RESUME_PAID'),billId:z.string().regex(/^\d{20}$/),confirmPaid:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('RECONCILE_SHEETS'),jobId:z.string().uuid(),confirmExistingRow:z.literal(true)}).strict(),
+  z.object({...common,action:z.literal('MANUAL_ACCESS'),studentId:z.number().int().positive().safe(),lectureId:z.number().int().positive().safe(),
+    confirmVideo:z.literal(true),confirmLessonMaterials:z.literal(true),confirmCourseMaterials:z.literal(true)}).strict(),
+  z.object({...common,action:z.literal('RECORD_REVOKED'),studentId:z.number().int().positive().safe(),lectureId:z.number().int().positive().safe(),confirmRevoked:z.literal(true)}).strict(),
 ])
 export type OrderAdminAction=z.infer<typeof orderAdminActionSchema>
 export class OrderAdminError extends Error {
@@ -54,7 +58,7 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   if(!order)return null
   const items=(await c.query('SELECT product_id,title,sale_kind,price_won FROM daechion_orders.items WHERE order_id=$1 ORDER BY product_id',[id])).rows
   const bills=(await c.query('SELECT bill_id,amount_won,state,is_current,sent_at,due_at,checked_at,last_payment_state FROM daechion_orders.bills WHERE order_id=$1 ORDER BY revision DESC',[id])).rows
-  const grants=(await c.query(`SELECT g.lecture_id::text,g.state,g.review_code,g.enrollment_recorded,g.verified_at,
+  const grants=(await c.query(`SELECT g.lecture_id::text,g.state,g.review_code,g.enrollment_recorded,g.verified_at,g.revoked_at,
     (g.state='REVIEW' AND g.enrollment_recorded AND jsonb_array_length(g.weekly_ids)>0
       AND o.identity_state='PASSED' AND daechion_orders.paid_eligible(o.id)) AS can_retry
     FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id WHERE g.order_id=$1 ORDER BY g.lecture_id`,[id])).rows
@@ -66,13 +70,17 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const activeRecovery=(await c.query("SELECT request_key FROM daechion_orders.sheet_recoveries WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0
   const sheetRecoveryJobId=!activeRecovery&&sheetBlockers.length===1&&sheetBlockers[0].state==='UNKNOWN'?String(sheetBlockers[0].id):null
   const status=(await c.query('SELECT identity_write_started,identity_token,confirmed_at FROM daechion_orders.orders WHERE id=$1',[id])).rows[0]
+  const manualIdentity=order.identity_state==='PASSED'&&!status.identity_token&&!grants.some(g=>g.state==='RUNNING')
+  const paidCurrent=(await c.query('SELECT daechion_orders.paid_eligible($1) AS ok',[id])).rows[0].ok===true
+  const manualGrantIds=manualIdentity&&paidCurrent?grants.filter(g=>['PENDING','REVIEW'].includes(String(g.state))).map(g=>String(g.lecture_id)):[]
+  const manualRevokeIds=manualIdentity?grants.filter(g=>g.state!=='REVOKED').map(g=>String(g.lecture_id)):[]
   const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
   const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
-  return {order,items,bills,grants,messages,jobs,actions,recoveries,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
-    canResumePaid:paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT',canApproveExisting:unbilled,
+  return {order,items,bills,grants,messages,jobs,actions,recoveries,manualGrantIds,manualRevokeIds,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
+    canResumePaid:!grants.some(g=>g.state==='REVOKED')&&paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT',canApproveExisting:unbilled,
     canResumeUnbilled:unbilled&&order.checkout_state==='REVIEW'&&order.review_code==='admin_hold'&&status.confirmed_at!==null&&(!reviewed||age>=0&&age<=15*60000)}
 }
-export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence,payment?:PaidEvidence){
+export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence,payment?:PaidEvidence,access?:AccessEvidence){
   const input=orderAdminActionSchema.parse(raw)
   const fingerprint=createHash('sha256').update(JSON.stringify(input)).digest('hex')
   return orderTransaction(c,async()=>{
@@ -101,12 +109,16 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
     }
     const nextVersion=(BigInt(input.expectedVersion)+1n).toString()
     const recoveryEvidence=input.action==='RESUME_PAID'?{billId:payment?.billId,amountWon:payment?.amountWon,paidAt:payment?.paidAt,checkedAt:payment?.checkedAt}:
-      input.action==='RECONCILE_SHEETS'?{jobId:input.jobId}:{}
+      input.action==='RECONCILE_SHEETS'?{jobId:input.jobId}:input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED'?
+        {studentId:access?.studentId,lectureId:access?.lectureId,weeklyLectureIds:access?.weeklyLectureIds,checkedAt:access?.checkedAt,profileFingerprint:access?.profileFingerprint,contextFingerprint:access?.binding,requestFingerprint:order.request_fingerprint}:{}
     const writeAudit=()=>c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,
       student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb)`,[input.requestKey,input.orderId,fingerprint,input.action,input.action==='RETRY_ACCESS'?input.lectureId:null,
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb)`,[input.requestKey,input.orderId,fingerprint,input.action,'lectureId' in input?input.lectureId:null,
       input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??null,review?order.request_fingerprint:null,JSON.stringify(review?.targetIds??[]),review?.checkedAt??null,JSON.stringify(recoveryEvidence)])
-    if(input.action==='APPROVE_EXISTING')await writeAudit()
+    const auditFirst=['APPROVE_EXISTING','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
+    if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!access)throw new OrderAdminError('STATE')
+    if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!(await c.query('SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2',[input.orderId,input.lectureId])).rows.length)throw new OrderAdminError('STATE')
+    if(auditFirst)await writeAudit()
     if(input.action==='HOLD'){
       if(order.checkout_state==='DRAFT')throw new OrderAdminError('STATE')
       await holdOrder(c,input.orderId,'admin_hold')
@@ -118,13 +130,17 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
     }else if(input.action==='RECONCILE_SHEETS'){
       if(!await queueSheetRecovery(c,input.orderId,input.jobId,input.requestKey))throw new OrderAdminError('STATE')
       await orderChanged(c,input.orderId,'sheet_recovery_requested')
+    }else if(input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED'){
+      if(!await recordManualAccess(c,order,input,access,input.action==='RECORD_REVOKED'))throw new OrderAdminError('STATE')
+      if(input.action==='RECORD_REVOKED')await holdOrder(c,input.orderId,'manual_access_revoked')
+      else await orderChanged(c,input.orderId,'manual_access_recorded')
     }else{
       await c.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL WHERE id=$1",[input.orderId])
       await orderChanged(c,input.orderId,input.action==='APPROVE_EXISTING'?'existing_review_approved':'unbilled_order_resumed')
     }
     const version=String((await c.query('SELECT version::text FROM daechion_orders.orders WHERE id=$1',[input.orderId])).rows[0].version)
     if(version!==nextVersion)throw new OrderAdminError('STATE')
-    if(input.action!=='APPROVE_EXISTING')await writeAudit()
+    if(!auditFirst)await writeAudit()
     return {replayed:false,version}
   })
 }

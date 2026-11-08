@@ -2,7 +2,7 @@ const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { createHash } = require('node:crypto')
 
-const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql', '006_recovery.sql'])
+const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql', '006_recovery.sql', '007_manual_access.sql'])
 function loadMigrations() {
   return names.map(name => {
     const sql = readFileSync(join(__dirname, '../db/daechion-orders', name), 'utf8').replace(/\r\n/g, '\n')
@@ -30,7 +30,7 @@ async function checkSchema(client) {
     'SELECT token_hash,cart_fingerprint,subject_key,snapshot,expires_at FROM daechion_orders.quotes LIMIT 0',
     'SELECT contact_snapshot,total_won,checkout_state,payment_state,identity_state,student_id,version,review_code,paid_at,identity_token,identity_until,identity_write_started FROM daechion_orders.orders LIMIT 0',
     'SELECT product_id,sale_kind,price_won,snapshot FROM daechion_orders.items LIMIT 0',
-    'SELECT lecture_id,state,lease_token,lease_until,review_code,enrollment_recorded,weekly_ids FROM daechion_orders.grants LIMIT 0',
+    'SELECT lecture_id,state,lease_token,lease_until,review_code,enrollment_recorded,weekly_ids,manual_action_id,revoked_at FROM daechion_orders.grants LIMIT 0',
     'SELECT provider_account,bill_id,revision,is_current,amount_won,due_at,checked_at FROM daechion_orders.bills LIMIT 0',
     'SELECT phone,order_id FROM daechion_orders.phone_claims LIMIT 0',
     'SELECT kind,event_version,state,available_at,last_error FROM daechion_orders.jobs LIMIT 0',
@@ -49,6 +49,7 @@ async function checkSchema(client) {
     ['admin_actions', 'guard_admin_commit', 'guard_admin_commit'],
     ['sheet_recoveries', 'guard_sheet_recovery', 'guard_sheet_recovery'],
     ['sheet_recoveries', 'guard_sheet_recovery_commit', 'guard_sheet_recovery_commit'],
+    ['grants', 'guard_manual_access', 'guard_manual_access'], ['orders', 'guard_revoked_order', 'guard_revoked_order'],
   ]
   const triggers = await client.query(`SELECT c.relname AS table_name,t.tgname AS name,t.tgenabled AS enabled,
     p.proname AS function_name,pn.nspname AS function_schema FROM pg_trigger t

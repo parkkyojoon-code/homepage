@@ -48,12 +48,14 @@ try{
     if(saved.has(body.requestKey)){assert.deepEqual(body,saved.get(body.requestKey));return send({success:true,replayed:true})}
     assert.equal(body.expectedVersion,detail.order.version);assert.equal(body.orderId,id);assert.equal(body.confirmed,true)
     saved.set(body.requestKey,body);const before=detail.order.version;detail.order.version=String(Number(before)+1)
-    detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:body.studentId?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:{},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
+    detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:body.action==='APPROVE_EXISTING'?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:['MANUAL_ACCESS','RECORD_REVOKED'].includes(body.action)?{studentId:body.studentId,weeklyLectureIds:body.action==='MANUAL_ACCESS'?[2000]:[]}: {},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
     if(body.action==='RETRY_ACCESS'){assert.equal(body.lectureId,20);detail.grants[0].state='PENDING';detail.grants[0].can_retry=false;detail.grants[0].review_code=null}
     else if(body.action==='APPROVE_EXISTING'){assert.equal(body.studentId,1001);assert.deepEqual(body.targetIds,[20,21]);assert.equal(body.confirmNotOwned,true);detail.order.checkout_state='READY';detail.order.review_code=null}
     else if(body.action==='RESUME_UNBILLED'){assert.equal(detail.canResumeUnbilled,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canResumeUnbilled=false}
     else if(body.action==='RESUME_PAID'){assert.equal(body.billId,detail.bills[0].bill_id);assert.equal(body.confirmPaid,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canResumePaid=false}
     else if(body.action==='RECONCILE_SHEETS'){assert.equal(body.jobId,detail.sheetRecoveryJobId);assert.equal(body.confirmExistingRow,true);detail.canReconcileSheets=false;detail.recoveries.push({request_key:body.requestKey,state:'PENDING',result_code:null,created_at:new Date().toISOString()})}
+    else if(body.action==='MANUAL_ACCESS'){assert.equal(body.studentId,1001);assert.equal(body.lectureId,20);assert.ok(body.confirmVideo&&body.confirmLessonMaterials&&body.confirmCourseMaterials);detail.grants[0].state='MANUAL';detail.manualGrantIds=[]}
+    else if(body.action==='RECORD_REVOKED'){assert.equal(body.studentId,1001);assert.equal(body.lectureId,20);assert.equal(body.confirmRevoked,true);detail.grants[0].state='REVOKED';detail.grants[0].revoked_at=new Date().toISOString();detail.manualRevokeIds=['21'];detail.order.checkout_state='REVIEW';detail.order.review_code='manual_access_revoked';detail.canResumePaid=false}
     else{assert.equal(body.action,'HOLD');detail.order.checkout_state='REVIEW';detail.order.review_code='admin_hold';detail.canResumeUnbilled=detail.bills.length===0;detail.canResumePaid=detail.bills.length>0}
     if(loseReply){loseReply=false;return send({error:'가상 응답 유실 — 같은 요청으로 확인'},503)}
     return send({success:true,replayed:false})
@@ -109,10 +111,36 @@ try{
   await page.getByRole('button',{name:'같은 요청 결과 다시 확인'}).click()
   await page.getByText(/Sheets 복구 · 대기/).waitFor()
   assert.equal(detail.recoveries.length,1);assert.equal(saved.size,4)
+  detail.manualGrantIds=['20'];detail.manualRevokeIds=['20','21']
+  await page.setViewportSize({width:1440,height:1000})
+  await page.getByRole('button',{name:'새로 불러오기',exact:true}).click()
+  await page.getByLabel('처리 종류').selectOption('MANUAL_ACCESS')
+  await page.getByLabel('수동 처리한 강의').selectOption('20')
+  await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
+  await page.getByLabel('확인 근거·사유').fill('대치온에서 학생 ID 1001의 영상·자료 권한 직접 확인')
+  for(const name of [/위 학생의 차시 영상/,/위 학생의 차시 자료/,/위 학생의 강의 자료/])await page.getByRole('checkbox',{name}).check()
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
+  await page.screenshot({path:path.join(output,'manual-access-record-20261109.png'),fullPage:true})
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByText(/학생 ID 1001 · 확인한 차시 ID 2000/).waitFor()
+  await page.getByLabel('처리 종류').selectOption('RECORD_REVOKED')
+  await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
+  await page.getByLabel('확인 근거·사유').fill('대치온에서 강의 ID 20 권한 회수 완료')
+  await page.getByRole('checkbox',{name:/위 학생의 선택 강의 권한을 직접 회수/}).check()
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
+  await page.screenshot({path:path.join(output,'manual-revoke-record-20261109.png'),fullPage:true})
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))
+  await page.screenshot({path:path.join(output,'manual-revoke-mobile-20261109.png'),fullPage:true})
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByText('대치온 수동 권한 회수 기록 — 자동 처리 보류',{exact:true}).first().waitFor()
+  assert.equal(detail.grants[0].state,'REVOKED');assert.equal(detail.canResumePaid,false)
   // A separate synthetic unpaid scenario exercises the exact-ID attestation UI.
   id='10000000-0000-4000-8000-000000000002';detail.order.id=id;detail.order.version='1';detail.order.payment_state='PENDING';detail.order.identity_state='WAITING';detail.order.student_id=null;detail.order.review_code=null;detail.bills=[];detail.actions=[];detail.canApproveExisting=true;detail.canResumeUnbilled=false
   detail.canResumePaid=false;detail.canReconcileSheets=false;detail.sheetRecoveryJobId=null;detail.recoveries=[]
-  detail.grants=detail.grants.map(grant=>({...grant,state:'PENDING',review_code:null,enrollment_recorded:false,can_retry:false}))
+  detail.manualGrantIds=[];detail.manualRevokeIds=[]
+  detail.grants=detail.grants.map(grant=>({...grant,state:'PENDING',review_code:null,enrollment_recorded:false,can_retry:false,revoked_at:null}))
   await page.setViewportSize({width:1440,height:1000})
   await page.getByRole('button',{name:'검색',exact:true}).click()
   await page.getByRole('button',{name:'가상 학생',exact:true}).click()
@@ -137,7 +165,7 @@ try{
     await page.getByRole('button',{name:'확인 내용 저장'}).click()
     await page.getByText(`버전 ${Number(detail.order.version)-1} → ${detail.order.version}`,{exact:false}).first().waitFor()
   }
-  assert.equal(saved.size,7);assert.deepEqual(errors,[])
+  assert.equal(saved.size,9);assert.deepEqual(errors,[])
   console.log(JSON.stringify({ok:true,uniqueActions:saved.size,replayedSameRequest:true,mobileFits:true,pageErrors:errors.length}))
 }finally{
   await browser?.close()

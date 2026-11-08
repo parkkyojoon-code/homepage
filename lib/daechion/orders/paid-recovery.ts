@@ -40,6 +40,7 @@ export function paidRecoveryAllowed(o:Record<string,unknown>){
 // Caller owns the order row lock and its audit transaction. Never calls a provider.
 export async function resumePaid(c:LedgerClient,o:Record<string,unknown>,raw:unknown){
   if(!paidRecoveryAllowed(o))return false
+  if((await c.query("SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND state='REVOKED'",[o.id])).rows.length)return false
   const e=paidEvidenceSchema.parse(raw),age=Date.now()-Date.parse(e.checkedAt)
   if(age<0||age>60000||e.orderId!==o.id||e.tenantId!==o.tenant_id||e.version!==String(o.version)||e.requestFingerprint!==o.request_fingerprint||
     e.amountWon!==Number(o.total_won)||o.paid_at&&time(o.paid_at)!==Date.parse(e.paidAt))return false
@@ -51,6 +52,10 @@ export async function resumePaid(c:LedgerClient,o:Record<string,unknown>,raw:unk
   if((await c.query('SELECT id FROM daechion_automation.bills WHERE provider_account=$1 AND bill_id=$2',[e.accountId,e.billId])).rows.length)return false
   await c.query(`UPDATE daechion_orders.bills SET last_payment_state='PAID',checked_at=GREATEST(clock_timestamp(),COALESCE(checked_at+interval '1 microsecond',clock_timestamp())) WHERE id=$1`,[e.recordId])
   await c.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL,payment_state='PAID',paid_at=$2 WHERE id=$1",[o.id,e.paidAt])
+  await queueUnattemptedNotice(c,o)
+  return true
+}
+export async function queueUnattemptedNotice(c:LedgerClient,o:Record<string,unknown>){
   // A known never-attempted notice may resume. Unknown or blocked recipients never reset.
   const attempted=['UNKNOWN','SENT'].includes(String(o.notification_state))||(await c.query(`SELECT 1 FROM daechion_orders.ready_receipts WHERE order_id=$1 UNION ALL
     SELECT 1 FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE' AND (attempts>0 OR state IN ('RUNNING','UNKNOWN','DONE')) LIMIT 1`,[o.id])).rows.length
@@ -63,5 +68,4 @@ export async function resumePaid(c:LedgerClient,o:Record<string,unknown>,raw:unk
       await c.query("INSERT INTO daechion_orders.jobs(id,order_id,kind,event_version) VALUES($1,$2,'READY_MESSAGE',$3) ON CONFLICT DO NOTHING",[randomUUID(),o.id,(BigInt(String(o.version))+1n).toString()])
     }
   }
-  return true
 }

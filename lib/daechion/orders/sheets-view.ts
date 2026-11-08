@@ -12,7 +12,7 @@ export const ORDER_HEADERS=Object.freeze(['주문번호','신청시각','프로�
 const labels:Record<string,string>={DRAFT:'접수 준비',READY:'자동 처리 대기',REVIEW:'확인 필요',CLOSED:'대기 종료',
   NOT_CREATED:'미발송',RESERVED:'청구 준비',SEND_UNKNOWN:'발송 결과 확인 필요',SENT:'발송 접수 완료',CANCELLED:'취소',DESTROYED:'파기',
   PENDING:'대기',PAID:'결제 완료',UNKNOWN:'결과 확인 필요',RUNNING:'처리 중',VERIFIED:'권한 검증 완료',MANUAL:'수동 권한 확인',
-  NOT_READY:'전체 권한 확인 후 발송',FAILED:'처리 중단',BLOCKED:'미발송·처리 중단',DONE:'완료'}
+  NOT_READY:'전체 권한 확인 후 발송',FAILED:'처리 중단',BLOCKED:'미발송·처리 중단',DONE:'완료',REVOKED:'수동 회수 확인'}
 const state=(value:unknown)=>{const text=labels[String(value)];if(!text)throw Error('INVALID_ORDER_SHEET_STATE');return text}
 function koreanTime(value:unknown){
   if(!value)return ''

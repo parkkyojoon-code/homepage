@@ -25,6 +25,7 @@ import manualReview from '../.daechion-test-build/lib/daechion/orders/manual-rev
 import orderPreflight from '../.daechion-test-build/lib/daechion/orders/preflight.js'
 import paidRecovery from '../.daechion-test-build/lib/daechion/orders/paid-recovery.js'
 import sheetRecovery from '../.daechion-test-build/lib/daechion/orders/sheet-recovery.js'
+import manualAccess from '../.daechion-test-build/lib/daechion/orders/manual-access.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -62,6 +63,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/004_admin.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/005_manual_review.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/006_recovery.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/007_manual_access.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -706,6 +708,91 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const final=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
       await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',final))
       assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'DONE');assert.equal(state.inserts,1);assert.equal(state.updates,1)
+    })
+    const manualFixture=async()=>{
+      const {orderId}=await workerOrder(['pack']),payment=providerFor(25000),api=enrollmentFor()
+      api.failEnroll=20
+      await orderBilling.sendOrderBill(orderId,true,{withClient:db.withClient,provider:payment,preflight:async()=> 'READY'})
+      payment.paid();await orderBilling.checkOrderPayment(orderId,true,{withClient:db.withClient,provider:payment})
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,{withClient:db.withClient,tenantId:'fixture',daechion:api}),'REVIEW')
+      const studentId=Number((await db.query('SELECT student_id FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].student_id)
+      let inspections=0
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient,
+        inspectAccess:async(ctx,sid,lid,revoke)=>{inspections++;return manualAccess.inspectManualAccess(ctx,sid,lid,revoke,api)}}
+      return {orderId,payment,api,studentId,admin,get inspections(){return inspections}}
+    }
+    await t.test('manual access records human-confirmed permissions for the fixed account without fabricating API enrollment or replaying a message',async()=>{
+      const f=await manualFixture(),{orderId,api,studentId,admin,payment}=f
+      const action=await adminAction(orderId,'MANUAL_ACCESS',{studentId,lectureId:20,confirmVideo:true,confirmLessonMaterials:true,confirmCourseMaterials:true})
+      for(const changed of [{confirmVideo:false},{confirmLessonMaterials:false},{confirmCourseMaterials:false}])assert.equal((await orderAdminHttp.orderAdminPost(request({...action,...changed}),admin)).status,400)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...action,studentId:studentId+99}),admin)).status,409)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...action,lectureId:999}),admin)).status,409)
+      const context=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId)),proof=await manualAccess.inspectManualAccess(context,studentId,20,false,api)
+      for(const changed of [{...proof,checkedAt:new Date(Date.now()-61000).toISOString()},{...proof,binding:'f'.repeat(64)}])
+        await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',action,undefined,undefined,changed)),/STATE/)
+      await assert.rejects(db.query("UPDATE daechion_orders.grants SET state='MANUAL',verified_at=now() WHERE order_id=$1 AND lecture_id=20",[orderId]),/APPROVAL_REQUIRED/)
+      const writes={creates:api.creates,enrollments:api.enrolled.length,access:api.access.length,bills:payment.sends}
+      assert.equal((await orderAdminHttp.orderAdminPost(request(action),admin)).status,200)
+      const count=f.inspections;assert.equal((await orderAdminHttp.orderAdminPost(request(action),{...admin,inspectAccess:async()=>{throw Error('Replay must not query API')}})).status,200);assert.equal(f.inspections,count)
+      let grant=(await db.query('SELECT state,enrollment_recorded,manual_action_id FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=20',[orderId])).rows[0]
+      assert.equal(grant.state,'MANUAL');assert.equal(grant.enrollment_recorded,false);assert.equal(grant.manual_action_id,action.requestKey)
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[orderId])).rows[0].n,0)
+      const second=await adminAction(orderId,'MANUAL_ACCESS',{studentId,lectureId:21,confirmVideo:true,confirmLessonMaterials:true,confirmCourseMaterials:true})
+      assert.equal((await orderAdminHttp.orderAdminPost(request(second),admin)).status,200)
+      assert.equal((await db.query('SELECT notification_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].notification_state,'PENDING')
+      assert.deepEqual({creates:api.creates,enrollments:api.enrolled.length,access:api.access.length,bills:payment.sends},writes)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId));assert.match(view.values[orderView.ORDER_HEADERS.indexOf('강의별 등록·권한 상태')],/수동 권한 확인/)
+      let messages=0
+      await orderMessage.sendOrderReady(orderId,true,{withClient:db.withClient,payment,message:{send:async()=>{messages++;return {outcome:'UNKNOWN'}}}})
+      await db.query("UPDATE daechion_orders.grants SET state='REVIEW',review_code='grant_unknown' WHERE order_id=$1 AND lecture_id=21",[orderId])
+      const reconfirm=await adminAction(orderId,'MANUAL_ACCESS',{studentId,lectureId:21,confirmVideo:true,confirmLessonMaterials:true,confirmCourseMaterials:true})
+      assert.equal((await orderAdminHttp.orderAdminPost(request(reconfirm),admin)).status,200)
+      assert.equal((await db.query('SELECT notification_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].notification_state,'UNKNOWN')
+      assert.equal(messages,1)
+    })
+    await t.test('manual revocation is a permanent per-course record that blocks automatic reopening and permits recording after cancellation',async()=>{
+      const {orderId,studentId,admin,api,payment}=await manualFixture()
+      const action=await adminAction(orderId,'RECORD_REVOKED',{studentId,lectureId:20,confirmRevoked:true})
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...action,confirmRevoked:false}),admin)).status,400)
+      const before={creates:api.creates,enrollments:api.enrolled.length,access:api.access.length,bills:payment.sends}
+      assert.equal((await orderAdminHttp.orderAdminPost(request(action),admin)).status,200)
+      assert.equal((await orderAdminHttp.orderAdminPost(request(action),admin)).status,200)
+      const grant=(await db.query('SELECT state,revoked_at,manual_action_id FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=20',[orderId])).rows[0]
+      assert.equal(grant.state,'REVOKED');assert.ok(grant.revoked_at);assert.equal(grant.manual_action_id,action.requestKey)
+      assert.equal((await db.query('SELECT checkout_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].checkout_state,'REVIEW')
+      assert.equal((await db.query('SELECT state FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=21',[orderId])).rows[0].state,'PENDING')
+      await assert.rejects(db.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL WHERE id=$1",[orderId]),/REVOKED_ACCESS_BLOCKS_READY/)
+      await assert.rejects(db.query("UPDATE daechion_orders.grants SET state='PENDING' WHERE order_id=$1 AND lecture_id=20",[orderId]),/REVOKED_ACCESS_FROZEN/)
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canResumePaid,false)
+      const input=await adminAction(orderId,'RESUME_PAID',{billId:payment.bill.billId,confirmPaid:true})
+      const context=await db.withClient(c=>paidRecovery.paidContext(c,'fixture',orderId,input.expectedVersion,input.billId)),proof=await paidRecovery.inspectPaid(context,payment)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,proof)),/STATE/)
+      payment.observation={state:'C',billId:payment.bill.billId,amountWon:25000,paidAt:null};await orderBilling.checkOrderPayment(orderId,true,{withClient:db.withClient,provider:payment})
+      const second=await adminAction(orderId,'RECORD_REVOKED',{studentId,lectureId:21,confirmRevoked:true})
+      const closedCourse={...admin,inspectAccess:(ctx,sid,lid,revoke)=>manualAccess.inspectManualAccess(ctx,sid,lid,revoke,{...api,lectures:async()=>{throw Error('Closed course does not need a lecture lookup for revocation')}})}
+      assert.equal((await orderAdminHttp.orderAdminPost(request(second),closedCourse)).status,200)
+      assert.deepEqual({creates:api.creates,enrollments:api.enrolled.length,access:api.access.length,bills:payment.sends},before)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId));assert.match(view.values[orderView.ORDER_HEADERS.indexOf('강의별 등록·권한 상태')],/수동 회수 확인/)
+    })
+    await t.test('manual access rejects old payment, active grants, different profiles and failed audit writes atomically',async()=>{
+      const {orderId,studentId,admin,api}=await manualFixture()
+      const input=await adminAction(orderId,'MANUAL_ACCESS',{studentId,lectureId:20,confirmVideo:true,confirmLessonMaterials:true,confirmCourseMaterials:true})
+      const context=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId)),proof=await manualAccess.inspectManualAccess(context,studentId,20,false,api)
+      await db.query("UPDATE daechion_orders.grants SET state='RUNNING',lease_token=$2,lease_until=now()+interval '1 minute' WHERE order_id=$1 AND lecture_id=21",[orderId,randomUUID()])
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,undefined,proof)),/STATE/)
+      await db.query("UPDATE daechion_orders.grants SET state='PENDING',lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=21",[orderId])
+      await db.query("UPDATE daechion_orders.bills SET checked_at=now()-interval '4 minutes' WHERE order_id=$1",[orderId])
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,undefined,proof)),/STATE/)
+      await db.query('UPDATE daechion_orders.bills SET checked_at=now() WHERE order_id=$1',[orderId])
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectAccess:async()=>{throw Error('private student lookup failure')}})).status,503)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction({query:async(sql,args)=>{
+        if(sql.startsWith('INSERT INTO daechion_orders.admin_actions'))throw Error('TEST_AUDIT_UNAVAILABLE')
+        return c.query(sql,args)
+      }},'fixture',input,undefined,undefined,proof)),/TEST_AUDIT_UNAVAILABLE/)
+      assert.equal((await db.query('SELECT state FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=20',[orderId])).rows[0].state,'REVIEW')
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId])).rows[0].n,0)
+      const wrong={...api,student:async()=>({...await api.student(studentId),studentPhoneNumber:'01000009998'})}
+      await assert.rejects(manualAccess.inspectManualAccess(context,studentId,20,false,wrong))
     })
   }finally{await db.close()}
 })

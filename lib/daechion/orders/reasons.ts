@@ -2,6 +2,7 @@ import {reviewReasonLabel} from '../review-reasons'
 
 const reasons:Record<string,string>={billing_preflight_review:'청구 전 학생·상품 확인 필요',bill_collision:'청구 번호 중복 확인 필요',billing_account_mismatch:'결제선생 계정 연결 불일치',
   admin_hold:'관리자가 자동 처리를 보류함',
+  manual_access_revoked:'대치온 수동 권한 회수 기록 — 자동 처리 보류',
   worker_execution_unknown:'주문 작업자 처리 결과 확인 필요 — 자동 재실행 보류',
   sheet_recovery_interrupted:'시트 복구 중단 — 기존 행과 반영 결과 재확인 필요',sheet_recovery_target_changed:'시트 복구 대상 상태 변경 확인 필요',sheet_recovery_unknown:'시트 복구 결과 확인 필요 — 자동 재시도 보류',
   identity_unknown:'학생 조회·생성 처리 결과 확인 필요',identity_create_unknown:'학생 생성 결과 확인 필요 — 재생성 금지',identity_review:'학생·보호자 번호와 기존 수강 여부 대조 필요',identity_phone_busy:'같은 번호의 다른 등록 처리 확인 필요',
