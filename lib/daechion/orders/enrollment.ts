@@ -157,13 +157,16 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
 // resume permission verification; an unknown enrollment needs reconciliation.
 export async function retryRecordedAccess(input:{orderId:string;lectureId:number;expectedVersion:string},ports:OrderConnection&{authorise():Promise<boolean>}){
   if(!await ports.authorise())return false
+  return ports.withClient(c=>orderTransaction(c,()=>retryRecordedAccessInTransaction(c,input)))
+}
+// Server-only transaction primitive: the authenticated admin ledger uses this
+// inside the same transaction as its idempotent audit record.
+export async function retryRecordedAccessInTransaction(c:Parameters<typeof lockOrder>[0],input:{orderId:string;lectureId:number;expectedVersion:string}){
   z.string().uuid().parse(input.orderId);z.number().int().positive().safe().parse(input.lectureId)
-  return ports.withClient(c=>orderTransaction(c,async()=>{
     const o=await lockOrder(c,input.orderId)
     if(!o||String(o.version)!==input.expectedVersion||o.identity_state!=='PASSED'||!await eligible(c,input.orderId))return false
     const row=(await c.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2 FOR UPDATE',[input.orderId,input.lectureId])).rows[0]
     if(!row||row.state!=='REVIEW'||row.enrollment_recorded!==true||!ids.safeParse(row.weekly_ids).success)return false
     await c.query("UPDATE daechion_orders.grants SET state='PENDING',review_code=NULL,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2",[input.orderId,input.lectureId])
     await orderChanged(c,input.orderId,'grant_access_retry');return true
-  }))
 }

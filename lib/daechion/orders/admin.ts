@@ -1,0 +1,73 @@
+import {createHash} from 'node:crypto'
+import {z} from 'zod'
+import type {LedgerClient} from '../ledger'
+import {orderTransaction,lockOrder,holdOrder} from './worker-store'
+import {retryRecordedAccessInTransaction} from './enrollment'
+
+const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
+const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
+const common={requestKey:z.string().uuid(),orderId:z.string().uuid(),expectedVersion:z.string().regex(/^[1-9]\d{0,18}$/),operatorName:text(80),reason,confirmed:z.literal(true)}
+export const orderAdminActionSchema=z.discriminatedUnion('action',[
+  z.object({...common,action:z.literal('HOLD')}).strict(),
+  z.object({...common,action:z.literal('RETRY_ACCESS'),lectureId:z.number().int().positive().safe()}).strict(),
+])
+export type OrderAdminAction=z.infer<typeof orderAdminActionSchema>
+export class OrderAdminError extends Error {
+  constructor(public readonly code:'NOT_FOUND'|'STALE'|'CONFLICT'|'STATE'){super(code)}
+}
+export const orderSearchSchema=z.object({q:z.string().trim().max(80).default(''),reviewOnly:z.boolean().default(false),page:z.number().int().min(0).max(1000).default(0)}).strict()
+export async function listOrders(c:LedgerClient,tenantId:string,raw:unknown={}){
+  const input=orderSearchSchema.parse(raw),phone=input.q.replace(/[\s-]/g,'')
+  const result=await c.query(`SELECT o.id,o.contact_snapshot->>'studentName' AS student_name,o.student_phone,o.total_won,
+    o.checkout_state,o.payment_state,o.identity_state,o.notification_state,o.review_code,o.version::text,o.created_at,
+    (SELECT string_agg(i.title,' · ' ORDER BY i.product_id) FROM daechion_orders.items i WHERE i.order_id=o.id) AS titles
+    FROM daechion_orders.orders o WHERE o.tenant_id=$1
+    AND ($2='' OR strpos(lower(o.contact_snapshot->>'studentName'),lower($2))>0
+      OR strpos(lower(o.contact_snapshot->>'guardianName'),lower($2))>0
+      OR ($3<>'' AND (strpos(o.student_phone,$3)>0 OR strpos(o.contact_snapshot->>'guardianPhone',$3)>0 OR strpos(o.contact_snapshot->>'payerPhone',$3)>0)))
+    AND (NOT $4::boolean OR o.checkout_state='REVIEW' OR o.identity_state='REVIEW' OR o.review_code IS NOT NULL
+      OR o.notification_state IN ('UNKNOWN','FAILED') OR EXISTS(SELECT 1 FROM daechion_orders.grants g WHERE g.order_id=o.id AND g.state='REVIEW')
+      OR EXISTS(SELECT 1 FROM daechion_orders.jobs j WHERE j.order_id=o.id AND j.state IN ('UNKNOWN','FAILED')))
+    ORDER BY o.created_at DESC,o.id DESC LIMIT 51 OFFSET $5`,[tenantId,input.q,phone,input.reviewOnly,input.page*50])
+  return {rows:result.rows.slice(0,50),hasMore:result.rows.length>50,page:input.page}
+}
+export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
+  z.string().uuid().parse(id)
+  const order=(await c.query(`SELECT id,tenant_id,contact_snapshot,total_won,checkout_state,payment_state,identity_state,student_id,
+    notification_state,review_code,version::text,created_at,paid_at FROM daechion_orders.orders WHERE id=$1 AND tenant_id=$2`,[id,tenantId])).rows[0]
+  if(!order)return null
+  const items=(await c.query('SELECT product_id,title,sale_kind,price_won FROM daechion_orders.items WHERE order_id=$1 ORDER BY product_id',[id])).rows
+  const bills=(await c.query('SELECT bill_id,amount_won,state,is_current,sent_at,due_at,checked_at,last_payment_state FROM daechion_orders.bills WHERE order_id=$1 ORDER BY revision DESC',[id])).rows
+  const grants=(await c.query(`SELECT g.lecture_id::text,g.state,g.review_code,g.enrollment_recorded,g.verified_at,
+    (g.state='REVIEW' AND g.enrollment_recorded AND jsonb_array_length(g.weekly_ids)>0
+      AND o.identity_state='PASSED' AND daechion_orders.paid_eligible(o.id)) AS can_retry
+    FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id WHERE g.order_id=$1 ORDER BY g.lecture_id`,[id])).rows
+  const messages=(await c.query('SELECT phone,state,accepted_at FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows
+  const jobs=(await c.query('SELECT kind,state,attempts,last_error,event_version::text FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
+  const actions=(await c.query('SELECT action,lecture_id::text,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
+  return {order,items,bills,grants,messages,jobs,actions,canHold:order.checkout_state!=='DRAFT'}
+}
+export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown){
+  const input=orderAdminActionSchema.parse(raw)
+  const fingerprint=createHash('sha256').update(JSON.stringify(input)).digest('hex')
+  return orderTransaction(c,async()=>{
+    await c.query('SELECT pg_advisory_xact_lock(61132,hashtext($1))',[input.requestKey])
+    const previous=(await c.query(`SELECT a.fingerprint,a.after_version::text,o.tenant_id FROM daechion_orders.admin_actions a
+      JOIN daechion_orders.orders o ON o.id=a.order_id WHERE a.request_key=$1`,[input.requestKey])).rows[0]
+    if(previous){
+      if(previous.tenant_id!==tenantId||previous.fingerprint!==fingerprint)throw new OrderAdminError('CONFLICT')
+      return {replayed:true,version:String(previous.after_version)}
+    }
+    const order=await lockOrder(c,input.orderId)
+    if(!order||order.tenant_id!==tenantId)throw new OrderAdminError('NOT_FOUND')
+    if(String(order.version)!==input.expectedVersion)throw new OrderAdminError('STALE')
+    if(input.action==='HOLD'){
+      if(order.checkout_state==='DRAFT')throw new OrderAdminError('STATE')
+      await holdOrder(c,input.orderId,'admin_hold')
+    }else if(!await retryRecordedAccessInTransaction(c,input))throw new OrderAdminError('STATE')
+    const version=String((await c.query('SELECT version::text FROM daechion_orders.orders WHERE id=$1',[input.orderId])).rows[0].version)
+    await c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[input.requestKey,input.orderId,fingerprint,input.action,input.action==='RETRY_ACCESS'?input.lectureId:null,input.operatorName,input.reason,input.expectedVersion,version])
+    return {replayed:false,version}
+  })
+}

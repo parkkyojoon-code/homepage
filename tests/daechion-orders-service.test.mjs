@@ -19,6 +19,8 @@ import orderView from '../.daechion-test-build/lib/daechion/orders/sheets-view.j
 import orderStore from '../.daechion-test-build/lib/daechion/orders/worker-store.js'
 import orderDelivery from '../.daechion-test-build/lib/daechion/orders/delivery.js'
 import orderExecutable from '../workers/daechion/orders.cjs'
+import orderAdmin from '../.daechion-test-build/lib/daechion/orders/admin.js'
+import orderAdminHttp from '../.daechion-test-build/lib/daechion/orders/admin-http.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -53,6 +55,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion/002_identity.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/002_workers.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/003_delivery.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/004_admin.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -446,6 +449,87 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const result=await orderDelivery.deliverOrder(orderId,{message:true,sheets:true},{withClient:db.withClient,payment,api,target,message:{send:async()=>({accepted:true,messageId:'coordinator'})}})
       assert.deepEqual(result,{message:'SENT',sheets:'DONE'})
       assert.equal(state.row[orderView.ORDER_HEADERS.indexOf('안내 발송 상태')],'발송 접수 완료')
+    })
+    await t.test('order admin reads are authenticated, tenant-scoped and no-store; unsafe requests never reach the database',async()=>{
+      const q=await quote(['a'],{contact:{...contact(),studentName:"가상 %'_검색"}}),order=await checkout.receiveOrder(orderInput(q),ports)
+      let calls=0
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:async run=>{calls++;return db.withClient(run)}}
+      const get=new Request('https://fixture.invalid/api/admin/daechion/orders?id='+order.orderId)
+      assert.equal((await orderAdminHttp.orderAdminGet(get,{...admin,authed:async()=>false})).status,401)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({kind:'SEARCH'}),{...admin,authed:async()=>false})).status,401)
+      assert.equal((await orderAdminHttp.orderAdminGet(get,{...admin,enabled:false})).status,503);assert.equal(calls,0)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({}, {origin:'https://wrong.invalid'}),admin)).status,403)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({}, {'content-type':'text/plain'}),admin)).status,415)
+      assert.equal(calls,0)
+      assert.equal((await orderAdminHttp.orderAdminPost(request('x'.repeat(9000)),admin)).status,413)
+      const response=await orderAdminHttp.orderAdminGet(get,admin),detail=await response.json()
+      assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(detail.order.id,order.orderId)
+      const search=await orderAdminHttp.orderAdminPost(request({kind:'SEARCH',q:"%'_",reviewOnly:false,page:0}),admin)
+      assert.equal(search.status,200);assert.deepEqual((await search.json()).rows.map(r=>r.id),[order.orderId])
+      assert.equal((await orderAdminHttp.orderAdminGet(get,{...admin,tenantId:'other'})).status,404)
+      const hidden=await orderAdminHttp.orderAdminPost(request({kind:'SEARCH'}),{...admin,tenantId:'other'})
+      assert.deepEqual((await hidden.json()).rows,[])
+      assert.equal((await orderAdminHttp.orderAdminGet(new Request(get.url+'&id='+order.orderId),admin)).status,400)
+      const failed=await orderAdminHttp.orderAdminGet(get,{...admin,ready:async()=>{throw Error('private SQL credentials')}})
+      assert.equal(failed.status,503);assert.equal((await failed.text()).includes('private'),false)
+    })
+    const adminAction=async(orderId,action='HOLD',extra={})=>({requestKey:randomUUID(),orderId,
+      expectedVersion:String((await db.query('SELECT version FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].version),
+      action,operatorName:'검수 담당자',reason:'대치온 상태 직접 확인',confirmed:true,...extra})
+    await t.test('manual holds and audit history are atomic, versioned and replay-safe across concurrent requests',async()=>{
+      const {orderId}=await workerOrder(['a']),input=await adminAction(orderId)
+      const results=await Promise.all([0,1].map(()=>db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input))))
+      assert.deepEqual(results.map(r=>r.replayed).sort(),[false,true])
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId])).rows[0].n,1)
+      const row=(await db.query('SELECT checkout_state,review_code,version FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(row.checkout_state,'REVIEW');assert.equal(row.review_code,'admin_hold');assert.equal(BigInt(row.version),BigInt(input.expectedVersion)+1n)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',{...input,reason:'다른 내용'})),/CONFLICT/)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',{...input,requestKey:randomUUID()})),/STALE/)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'other',input)),/CONFLICT/)
+      await assert.rejects(db.query('DELETE FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId]),/ORDER_ADMIN_HISTORY_IMMUTABLE/)
+      await assert.rejects(db.query("UPDATE daechion_orders.admin_actions SET reason='changed' WHERE order_id=$1",[orderId]),/ORDER_ADMIN_HISTORY_IMMUTABLE/)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('처리 확인')],'확인 필요')
+      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/관리자/)
+      const rollback=await workerOrder(['b']),pending=await adminAction(rollback.orderId)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction({query:async(sql,args)=>{
+        if(sql.startsWith('INSERT INTO daechion_orders.admin_actions'))throw Error('TEST_AUDIT_UNAVAILABLE')
+        return c.query(sql,args)
+      }},'fixture',pending)),/TEST_AUDIT_UNAVAILABLE/)
+      const unchanged=(await db.query('SELECT checkout_state,version FROM daechion_orders.orders WHERE id=$1',[rollback.orderId])).rows[0]
+      assert.equal(unchanged.checkout_state,'READY');assert.equal(String(unchanged.version),pending.expectedVersion)
+    })
+    await t.test('admin retry queues only recorded content access and rejects stale payment, cancellation, unknown enrollment and blind resume',async()=>{
+      const {orderId}=await workerOrder(['pack']),provider=providerFor(25000),api=enrollmentFor(),enrollment={withClient:db.withClient,tenantId:'fixture',daechion:api}
+      const billing={withClient:db.withClient,provider,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);provider.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'REVIEW')
+      const detail=await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))
+      assert.equal(detail.grants.find(g=>g.lecture_id==='20').can_retry,true)
+      const input=await adminAction(orderId,'RETRY_ACCESS',{lectureId:20}),before=api.enrolled.length
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient}
+      for(const change of [{confirmed:false},{action:'RESUME'},{action:'CONFIRM_PAYMENT'},{lectureId:999}]){
+        const response=await orderAdminHttp.orderAdminPost(request({...input,...change}),admin)
+        assert.equal(response.status,change.lectureId?409:400)
+      }
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,200)
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,200)
+      assert.equal(api.enrolled.length,before)
+      assert.equal((await db.query('SELECT state FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=20',[orderId])).rows[0].state,'PENDING')
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED');assert.equal(api.enrolled.length,before)
+      const rejected=await adminAction(orderId,'RETRY_ACCESS',{lectureId:20})
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',rejected)),/STATE/)
+      for(const mode of ['old-payment','cancelled','unknown-enrollment']){
+        const next=await workerOrder(['pack']),p=providerFor(25000),a=enrollmentFor(),bill={withClient:db.withClient,provider:p,preflight:async()=> 'READY'}
+        if(mode==='unknown-enrollment')a.failEnroll=20
+        await orderBilling.sendOrderBill(next.orderId,true,bill);p.paid();await orderBilling.checkOrderPayment(next.orderId,true,bill)
+        await orderEnrollment.runOrderGrant(next.orderId,true,{withClient:db.withClient,tenantId:'fixture',daechion:a})
+        if(mode==='old-payment')await db.query("UPDATE daechion_orders.bills SET checked_at=now()-interval '4 minutes' WHERE order_id=$1",[next.orderId])
+        if(mode==='cancelled'){p.observation={state:'C',billId:p.bill.billId,amountWon:25000,paidAt:null};await orderBilling.checkOrderPayment(next.orderId,true,bill)}
+        const action=await adminAction(next.orderId,'RETRY_ACCESS',{lectureId:20})
+        await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',action)),/STATE/)
+        assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[next.orderId])).rows[0].n,0)
+      }
     })
   }finally{await db.close()}
 })

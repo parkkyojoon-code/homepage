@@ -148,6 +148,11 @@ test('real HTTP intake persists to PostgreSQL and reaches the Sheets outbox', {s
       const response=await request(route,{cookie:adminCookie});assert.equal(response.status,200)
       assert.ok(JSON.stringify(await response.json()).includes(applicationId))
     })
+    await t.test('separate order admin route requires existing authentication and stays disabled by default',async()=>{
+      assert.equal((await request('/api/admin/daechion/orders')).status,401)
+      assert.equal((await request('/api/admin/daechion/orders',{cookie:adminCookie})).status,503)
+      assert.equal((await request('/api/admin/daechion/orders',{body:{kind:'SEARCH'},cookie:adminCookie})).status,503)
+    })
     await t.test('public callbacks cannot assert paid status or grant access, even with a valid receipt key',async()=>{
       const route='/api/daechion/payssam/notification'
       const receipt={apikey:callbackKey,bill_id:'20261107000000000001',appr_state:'F',appr_price:'1'}
