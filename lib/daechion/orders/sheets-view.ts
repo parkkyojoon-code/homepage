@@ -57,11 +57,22 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const attention=errors.length>(expectedExpiry?1:0)||duplicate==='확인 필요'
   const current=bills.find(b=>b.is_current)
   for(const b of bills)if(!/^\d{20}$/.test(String(b.bill_id)))throw Error('INVALID_ORDER_SHEET_BILL')
+  // Use the purchased snapshot, never today's editable catalog or a name match.
+  // Keep one row/total per order while identifying every bundle entitlement.
+  const grantLabels=new Map(items.map(item=>[String(item.id),{
+    title:String(item.title),
+    lectures:z.object({lectures:z.array(z.object({id:z.number().int().positive().safe(),name:z.string()}))}).parse(item.snapshot).lectures,
+  }]))
+  const grantLine=(g:Record<string,unknown>)=>{
+    const item=grantLabels.get(String(g.item_id)),lecture=item?.lectures.find(l=>l.id===Number(g.lecture_id))
+    if(!item||!lecture)throw Error('ORDER_SHEET_GRANT_ITEM_MISMATCH')
+    return `${item.title} / ${lecture.name} · ID ${g.lecture_id}: ${state(g.state)}${g.review_code?' — '+orderReason(g.review_code):''}`
+  }
   const values:(string|number)[]=[id,koreanTime(o.created_at),'프로세스2',contact.applicantType==='STUDENT'?'학생 본인':'학부모',contact.studentName,contact.guardianName,contact.studentPhone,contact.guardianPhone,contact.payerPhone,
     contact.studentHistory==='NEW'?'신규 수강생':'기존 수강생',items.map(i=>String(i.title)).join('\n'),items.map(i=>String(i.product_id)).join('\n'),items.map(i=>i.sale_kind==='BUNDLE'?'묶음상품':'개별 강의').join('\n'),
     items.map(i=>`${i.title}: ${Number(i.price_won).toLocaleString('ko-KR')}원`).join('\n'),Number(o.total_won),'확인','동의',String(noticeVersion??''),String(o.quote_id),state(o.checkout_state),state(current?.state??'NOT_CREATED'),
     current?String(current.bill_id):'',bills.map(b=>String(b.bill_id)).join('\n'),koreanTime(current?.sent_at),koreanTime(current?.due_at),o.payment_state==='PENDING'?'미납':state(o.payment_state),koreanTime(o.paid_at),o.student_id?String(o.student_id):'',
-    grants.map(g=>`ID ${g.lecture_id}: ${state(g.state)}${g.review_code?' — '+orderReason(g.review_code):''}`).join('\n'),state(o.notification_state),receipts.map(r=>`${r.phone}: ${state(r.state)}`).join('\n'),
+    grants.map(grantLine).join('\n'),state(o.notification_state),receipts.map(r=>`${r.phone}: ${state(r.state)}`).join('\n'),
     duplicate,duplicateReason,attention?'확인 필요':intakeClosed?'접수 종료':expectedExpiry?'대기 종료':'정상',[...new Set(errors)].join('\n'),String(o.version),koreanTime(new Date())]
   if(values.length!==ORDER_HEADERS.length)throw Error('ORDER_SHEET_COLUMNS_MISMATCH')
   return {id,version:String(o.version),values}

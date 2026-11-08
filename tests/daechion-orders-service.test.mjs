@@ -418,6 +418,22 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal(await orderSheets.syncOrderSheet(orderId,true,sheet),'DONE')
       assert.equal(state.inserts,1);assert.equal(state.updates,2);assert.equal(state.memo,'직원 메모 유지')
     })
+    await t.test('single, multiple and mixed bundle purchases each project one row with one exact total and snapshot-linked grants',async()=>{
+      for(const ids of [['a'],['a','b'],['a','pack']]){
+        const q=await quote(ids),{orderId}=await checkout.receiveOrder(orderInput(q),ports),{state,api}=sheetFixture()
+        await orderPublisher.setupOrderSheet(api,target)
+        await orderSheets.syncOrderSheet(orderId,true,{withClient:db.withClient,api,target})
+        const value=label=>state.row[orderView.ORDER_HEADERS.indexOf(label)]
+        assert.equal(state.inserts,1)
+        assert.equal(value('총 청구 금액'),ids.reduce((sum,id)=>sum+products.find(p=>p.productId===id).priceWon,0))
+        assert.deepEqual(value('상품명').split('\n'),[...ids].sort())
+        const expected=products.filter(p=>ids.includes(p.productId)).flatMap(p=>p.lectures.map(l=>`${p.title} / ${l.name} · ID ${l.id}: 대기`))
+        assert.deepEqual(value('강의별 등록·권한 상태').split('\n'),expected)
+        assert.equal(value('상품별 판매가').split('\n').length,ids.length)
+        const again=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+        assert.equal(again.values[orderView.ORDER_HEADERS.indexOf('강의별 등록·권한 상태')],expected.join('\n'))
+      }
+    })
     await t.test('a lost sheet insert response blocks duplicates and reconciles only an existing bound row',async()=>{
       const order=await workerOrder(['a']),{state,api}=sheetFixture();await orderPublisher.setupOrderSheet(api,target)
       const sheet={withClient:db.withClient,api,target,authorise:async()=>true};state.failInsert=true
