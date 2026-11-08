@@ -30,6 +30,7 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const bills=(await c.query('SELECT * FROM daechion_orders.bills WHERE order_id=$1 ORDER BY revision',[id])).rows
   const receipts=(await c.query('SELECT * FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows
   const jobs=(await c.query("SELECT kind,state,last_error FROM daechion_orders.jobs WHERE order_id=$1 AND (state IN ('UNKNOWN','FAILED') OR last_error IS NOT NULL)",[id])).rows
+  const recovery=(await c.query('SELECT state,result_code FROM daechion_orders.sheet_recoveries WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 1',[id])).rows[0]
   const quote=(await c.query('SELECT snapshot FROM daechion_orders.quotes WHERE id=$1',[o.quote_id])).rows[0]
   const quoteReasons=z.array(z.object({productId:z.string(),code:z.enum(['BUNDLE_ALREADY_OWNED','OWNERSHIP_UNKNOWN'])})).parse((quote?.snapshot as {reviewReasons?:unknown})?.reviewReasons??[])
   const itemTitle=(productId:string)=>String(items.find(i=>i.product_id===productId)?.title??productId)
@@ -43,6 +44,7 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const duplicateReason=identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — ${bills.length?'청구 시 확인한 학생으로 결제 후 재검사':'청구 전 재검사 대기'}`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
   const duplicate=identityConcern?'확인 필요':o.identity_state==='PASSED'||reviewedFresh?'통과':reviewed||quoteReasons.length?'확인 필요':'조회 대기'
   const errors=[orderReason(o.review_code),...grants.filter(g=>g.state==='REVIEW').map(g=>`강의 ID ${g.lecture_id}: ${orderReason(g.review_code)}`),
+    ...(recovery&&['UNKNOWN','FAILED'].includes(String(recovery.state))?[`시트 복구: ${orderReason(recovery.result_code)}`]:[]),
     ...jobs.map(j=>`${j.kind==='SHEETS'?'시트':'안내 문자'}: ${orderReason(j.last_error)||state(j.state)}`),
     ...receipts.filter(r=>r.state==='UNKNOWN').map(r=>`${r.phone}: 문자 결과 확인 필요`)].filter(Boolean)
   const expectedExpiry=o.checkout_state==='CLOSED'&&o.review_code==='unpaid_wait_closed'

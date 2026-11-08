@@ -49,7 +49,7 @@ test('isolated order migration operations fail closed and preserve the existing 
       await assert.rejects(migrations.status(db),/ORDER_MIGRATION_HISTORY_MISMATCH/)
       await db.query('INSERT INTO daechion_orders.schema_migrations(name,checksum) VALUES($1,$2)',[first.name,first.checksum])
       await assert.rejects(migrations.checkReady(db),/ORDER_SCHEMA_NOT_READY/)
-      assert.deepEqual(await migrations.migrate(db),['002_workers.sql','003_delivery.sql','004_admin.sql','005_manual_review.sql'])
+      assert.deepEqual(await migrations.migrate(db),['002_workers.sql','003_delivery.sql','004_admin.sql','005_manual_review.sql','006_recovery.sql'])
       await migrations.checkReady(db)
       await db.query('DELETE FROM daechion_orders.schema_migrations WHERE name=$1',[first.name])
       await assert.rejects(migrations.status(db),/ORDER_MIGRATION_HISTORY_MISMATCH/)

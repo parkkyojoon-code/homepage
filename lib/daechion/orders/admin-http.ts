@@ -3,11 +3,13 @@ import type {LedgerClient} from '../ledger'
 import {listOrders,orderDetail,applyOrderAdminAction,OrderAdminError,orderSearchSchema,orderAdminActionSchema,replayOrderAction} from './admin'
 import {contextFromOrder,type ReviewEvidence} from './manual-review'
 import type {BillingContext} from './billing'
+import {paidContext,type PaidContext,type PaidEvidence} from './paid-recovery'
 export interface OrderAdminPorts {
   enabled:boolean;tenantId:string;origins:string[];authed():Promise<boolean>
   withClient<T>(run:(c:LedgerClient)=>Promise<T>):Promise<T>
   ready(c:LedgerClient):Promise<void>
   inspectExisting?(context:BillingContext,studentId:number):Promise<ReviewEvidence>
+  inspectPaid?(context:PaidContext):Promise<PaidEvidence|null>
 }
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Robots-Tag':'noindex'}})
 async function guard(ports:OrderAdminPorts){
@@ -47,20 +49,30 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
     }
     const input=orderAdminActionSchema.parse(raw)
     let evidence:ReviewEvidence|undefined
-    if(input.action==='APPROVE_EXISTING'){
+    let payment:PaidEvidence|undefined
+    if(input.action==='APPROVE_EXISTING'||input.action==='RESUME_PAID'){
       const replay=await readOnly(ports,c=>replayOrderAction(c,ports.tenantId,input))
       if(replay)return json({success:true,...replay})
-      if(!ports.inspectExisting)throw new OrderAdminError('STATE')
-      const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
-      if(!context)throw new OrderAdminError('STALE')
-      evidence=await ports.inspectExisting(context,input.studentId)
+      if(input.action==='APPROVE_EXISTING'){
+        if(!ports.inspectExisting)throw new OrderAdminError('STATE')
+        const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
+        if(!context)throw new OrderAdminError('STALE')
+        evidence=await ports.inspectExisting(context,input.studentId)
+      }else{
+        if(!ports.inspectPaid)throw new OrderAdminError('STATE')
+        const context=await readOnly(ports,c=>paidContext(c,ports.tenantId,input.orderId,input.expectedVersion,input.billId))
+        if(!context)throw new OrderAdminError('STALE')
+        const checked=await ports.inspectPaid(context)
+        if(!checked)throw new OrderAdminError('PAYMENT')
+        payment=checked
+      }
     }
-    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence)})})
+    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence,payment)})})
   }catch(error){
     if(error instanceof z.ZodError||error instanceof SyntaxError)return json({error:'담당자·사유·확인 항목과 입력 내용을 확인해주세요.'},400)
     if(error instanceof OrderAdminError){
       if(error.code==='NOT_FOUND')return json({error:'주문을 찾을 수 없습니다.'},404)
-      const messages={STALE:'다른 작업으로 주문이 변경되었습니다. 새로 불러온 뒤 확인해주세요.',CONFLICT:'같은 처리 번호에 다른 내용이 있습니다. 결과를 새로 불러와 확인해주세요.',STATE:'현재 결제 확인·권한 상태에서는 이 작업을 진행할 수 없습니다.'}
+      const messages={STALE:'다른 작업으로 주문이 변경되었습니다. 새로 불러온 뒤 확인해주세요.',CONFLICT:'같은 처리 번호에 다른 내용이 있습니다. 결과를 새로 불러와 확인해주세요.',STATE:'현재 결제 확인·권한 상태에서는 이 작업을 진행할 수 없습니다.',PAYMENT:'현재 청구서의 결제 완료·금액·승인일시를 확인할 수 없어 보류를 해제하지 않았습니다.'}
       return json({error:messages[error.code]},409)
     }
     return json({error:'처리 결과를 확인하지 못했습니다. 같은 요청으로 결과를 확인하거나 주문을 새로 불러와 주세요.'},503)

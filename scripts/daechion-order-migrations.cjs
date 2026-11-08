@@ -2,7 +2,7 @@ const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { createHash } = require('node:crypto')
 
-const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql'])
+const names = Object.freeze(['001_initial.sql', '002_workers.sql', '003_delivery.sql', '004_admin.sql', '005_manual_review.sql', '006_recovery.sql'])
 function loadMigrations() {
   return names.map(name => {
     const sql = readFileSync(join(__dirname, '../db/daechion-orders', name), 'utf8').replace(/\r\n/g, '\n')
@@ -36,7 +36,8 @@ async function checkSchema(client) {
     'SELECT kind,event_version,state,available_at,last_error FROM daechion_orders.jobs LIMIT 0',
     'SELECT kind,created_at FROM daechion_orders.events LIMIT 0',
     'SELECT phone,text_snapshot,state,provider_message_id,accepted_at FROM daechion_orders.ready_receipts LIMIT 0',
-    'SELECT request_key,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at FROM daechion_orders.admin_actions LIMIT 0',
+    'SELECT request_key,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence FROM daechion_orders.admin_actions LIMIT 0',
+    'SELECT request_key,order_id,job_id,state,lease_token,lease_until,result_code FROM daechion_orders.sheet_recoveries LIMIT 0',
   ]) await client.query(sql)
   const guards = [
     ['orders', 'guard_order', 'guard_order'], ['orders', 'guard_worker_order', 'guard_worker_order'],
@@ -46,6 +47,8 @@ async function checkSchema(client) {
     ['jobs', 'guard_ready_job', 'guard_ready_job'], ['ready_receipts', 'guard_ready_receipt', 'guard_ready_receipt'],
     ['admin_actions', 'guard_admin_action', 'guard_admin_action'],
     ['admin_actions', 'guard_admin_commit', 'guard_admin_commit'],
+    ['sheet_recoveries', 'guard_sheet_recovery', 'guard_sheet_recovery'],
+    ['sheet_recoveries', 'guard_sheet_recovery_commit', 'guard_sheet_recovery_commit'],
   ]
   const triggers = await client.query(`SELECT c.relname AS table_name,t.tgname AS name,t.tgenabled AS enabled,
     p.proname AS function_name,pn.nspname AS function_schema FROM pg_trigger t

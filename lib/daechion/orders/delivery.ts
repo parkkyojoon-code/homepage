@@ -5,7 +5,7 @@ import type {SheetsApi} from '../sheets-publisher'
 import type {OrderConnection} from './worker-store'
 import type {OrderSheetTarget} from './sheets-publisher'
 import {sendOrderReady} from './ready-message'
-import {syncOrderSheet} from './sheets-worker'
+import {deliverOrderSheet} from './sheet-recovery'
 
 export function orderDeliverySettings(env:Record<string,string|undefined>){
   if(env.DAECHION_ORDER_WORKER_ENABLED!=='true')return {message:false,sheets:false}
@@ -25,6 +25,6 @@ export async function deliverOrder(id:string,rawFlags:unknown,ports:OrderConnect
   z.string().uuid().parse(id)
   // A provider/DB failure is a bounded status, never a serialized error with PII.
   const message=flags.message?await sendOrderReady(id,true,ports).catch(()=> 'UNKNOWN'):'DISABLED'
-  const sheets=flags.sheets?await syncOrderSheet(id,true,ports).catch(()=> 'UNKNOWN'):'DISABLED'
+  const sheets=flags.sheets?await deliverOrderSheet(id,true,ports).catch(()=> 'UNKNOWN'):'DISABLED'
   return {message,sheets}
 }

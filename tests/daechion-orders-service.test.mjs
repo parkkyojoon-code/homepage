@@ -23,6 +23,8 @@ import orderAdmin from '../.daechion-test-build/lib/daechion/orders/admin.js'
 import orderAdminHttp from '../.daechion-test-build/lib/daechion/orders/admin-http.js'
 import manualReview from '../.daechion-test-build/lib/daechion/orders/manual-review.js'
 import orderPreflight from '../.daechion-test-build/lib/daechion/orders/preflight.js'
+import paidRecovery from '../.daechion-test-build/lib/daechion/orders/paid-recovery.js'
+import sheetRecovery from '../.daechion-test-build/lib/daechion/orders/sheet-recovery.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -59,6 +61,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/003_delivery.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/004_admin.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/005_manual_review.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/006_recovery.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -606,6 +609,103 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const wrong={id:55,name:'다른 학생',active:true,studentPhoneNumber:'01000005555'}
       await assert.rejects(manualReview.inspectExisting(ctx,55,{me:async()=>({tenantId:'fixture'}),student:async()=>wrong,students:async()=>[wrong]}))
       await assert.rejects(manualReview.inspectExisting(ctx,55,{me:async()=>({tenantId:'other'}),student:async()=>wrong,students:async()=>[wrong]}),/TENANT/)
+    })
+    await t.test('paid recovery uses a fresh exact provider read and atomically resumes only never-attempted notices',async()=>{
+      const {orderId,payment}=await completeReady()
+      const hold=await adminAction(orderId);await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',hold))
+      const input=await adminAction(orderId,'RESUME_PAID',{billId:payment.bill.billId,confirmPaid:true})
+      const context=await db.withClient(c=>paidRecovery.paidContext(c,'fixture',orderId,input.expectedVersion,input.billId))
+      const stale=await paidRecovery.inspectPaid(context,payment);assert.ok(stale)
+      await orderBilling.checkOrderPayment(orderId,true,{withClient:db.withClient,provider:payment})
+      assert.equal(String((await db.query('SELECT version FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].version),input.expectedVersion)
+      await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,stale)),/STATE/)
+      let reads=0
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient,
+        inspectPaid:async value=>{reads++;return paidRecovery.inspectPaid(value,payment)}}
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,confirmPaid:false}),admin)).status,400)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,billId:'90000000000000000099'}),admin)).status,409)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,amountWon:1}),admin)).status,400)
+      const result=await orderAdminHttp.orderAdminPost(request(input),admin);assert.equal(result.status,200)
+      const row=(await db.query('SELECT checkout_state,payment_state,notification_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.deepEqual(row,{checkout_state:'READY',payment_state:'PAID',notification_state:'PENDING'})
+      const job=(await db.query("SELECT state,attempts FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[orderId])).rows[0]
+      assert.deepEqual(job,{state:'PENDING',attempts:0});assert.equal(payment.sends,1)
+      const count=reads;assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectPaid:async()=>{throw Error('Replay must not query payment')}})).status,200);assert.equal(reads,count)
+      const audit=(await db.query("SELECT recovery_evidence FROM daechion_orders.admin_actions WHERE request_key=$1",[input.requestKey])).rows[0].recovery_evidence
+      assert.equal(audit.billId,payment.bill.billId);assert.equal(audit.amountWon,12900)
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.grants WHERE order_id=$1 AND state<>'VERIFIED'",[orderId])).rows[0].n,0)
+    })
+    await t.test('paid recovery rejects ambiguity, cancellations, late or changed evidence and keeps unknown notifications blocked',async()=>{
+      const {orderId,payment}=await completeReady()
+      let messages=0
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,{withClient:db.withClient,payment,message:{send:async()=>{messages++;return {outcome:'UNKNOWN'}}}}),'UNKNOWN')
+      const hold=await adminAction(orderId);await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',hold))
+      const input=await adminAction(orderId,'RESUME_PAID',{billId:payment.bill.billId,confirmPaid:true})
+      const context=await db.withClient(c=>paidRecovery.paidContext(c,'fixture',orderId,input.expectedVersion,input.billId)),proof=await paidRecovery.inspectPaid(context,payment)
+      assert.ok(proof)
+      for(const changed of [{...proof,checkedAt:new Date(Date.now()-61000).toISOString()},{...proof,recordId:randomUUID()},{...proof,amountWon:1},{...proof,orderId:randomUUID()}])
+        await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,changed)),/STATE/)
+      const paid=await payment.read()
+      for(const observation of [{state:'UNKNOWN'},{...paid,state:'W'},{...paid,state:'C'}, {...paid,amountWon:1}, {...paid,paidAt:new Date(Date.now()+120000).toISOString()}])
+        assert.equal(await paidRecovery.inspectPaid(context,{accountId:payment.accountId,read:async()=>observation}),null)
+      assert.equal(await paidRecovery.inspectPaid({...context,bill:{...context.bill,state:'SEND_UNKNOWN'}},payment),null)
+      assert.equal(await paidRecovery.inspectPaid({...context,paymentState:'CANCELLED'},payment),null)
+      assert.equal(await paidRecovery.inspectPaid({...context,bill:{...context.bill,due_at:new Date(Date.now()-1000).toISOString()}},payment),null)
+      assert.equal(await paidRecovery.inspectPaid(context,{accountId:'other-account',read:payment.read}),null)
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,proof))
+      assert.equal((await db.query('SELECT notification_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].notification_state,'UNKNOWN')
+      assert.equal(await orderMessage.sendOrderReady(orderId,true,{withClient:db.withClient,payment,message:{send:async()=>{messages++;return {outcome:'UNKNOWN'}}}}),'SKIPPED');assert.equal(messages,1)
+      const next=await workerOrder(['a']),p=providerFor(12900),bill={withClient:db.withClient,provider:p,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(next.orderId,true,bill);p.paid();await orderBilling.checkOrderPayment(next.orderId,true,bill)
+      await db.query("UPDATE daechion_orders.orders SET identity_state='REVIEW',identity_write_started=true WHERE id=$1",[next.orderId])
+      await db.withClient(c=>orderStore.orderTransaction(c,async()=>{await orderStore.lockOrder(c,next.orderId);await orderStore.holdOrder(c,next.orderId,'identity_create_unknown')}))
+      const denied=await adminAction(next.orderId,'RESUME_PAID',{billId:p.bill.billId,confirmPaid:true}),ctx=await db.withClient(c=>paidRecovery.paidContext(c,'fixture',next.orderId,denied.expectedVersion,denied.billId))
+      await assert.rejects(db.withClient(async c=>orderAdmin.applyOrderAdminAction(c,'fixture',denied,undefined,await paidRecovery.inspectPaid(ctx,p))),/STATE/)
+    })
+    await t.test('a durable sheet recovery approval updates the bound existing row once and never inserts a duplicate',async()=>{
+      const {orderId}=await workerOrder(['a']),{state,api}=sheetFixture(),sheet={withClient:db.withClient,api,target}
+      await orderPublisher.setupOrderSheet(api,target);state.failInsert=true
+      assert.equal(await orderSheets.syncOrderSheet(orderId,true,sheet),'UNKNOWN')
+      const job=(await db.query("SELECT id FROM daechion_orders.jobs WHERE order_id=$1 AND state='UNKNOWN'",[orderId])).rows[0]
+      const unrelated=await adminAction(orderId)
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',unrelated))
+      await assert.rejects(db.query('INSERT INTO daechion_orders.sheet_recoveries(request_key,order_id,job_id) VALUES($1,$2,$3)',[unrelated.requestKey,orderId,job.id]),/APPROVAL_MISMATCH/)
+      const input=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient}
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,confirmExistingRow:false}),admin)).status,400)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,jobId:randomUUID()}),admin)).status,409)
+      const replies=await Promise.all([0,1].map(()=>orderAdminHttp.orderAdminPost(request(input),admin)))
+      assert.ok(replies.every(r=>r.status===200));assert.equal(state.inserts,1);assert.equal(state.updates,0)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.sheet_recoveries WHERE order_id=$1',[orderId])).rows[0].n,1)
+      assert.equal(await orderSheets.syncOrderSheet(orderId,true,{...sheet,authorise:async()=>true,recovery:{requestKey:input.requestKey,jobId:input.jobId,leaseToken:randomUUID()}},true),'SKIPPED')
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,false,sheet),'DISABLED')
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'DONE')
+      assert.equal(state.inserts,1);assert.equal(state.updates,1);assert.equal(state.memo,'직원 메모 유지')
+      assert.equal((await db.query('SELECT state FROM daechion_orders.sheet_recoveries WHERE request_key=$1',[input.requestKey])).rows[0].state,'DONE')
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),admin)).status,200)
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'SKIPPED');assert.equal(state.updates,1)
+      await assert.rejects(db.query("UPDATE daechion_orders.sheet_recoveries SET state='PENDING' WHERE request_key=$1",[input.requestKey]),/CANNOT_REPLAY/)
+      await assert.rejects(db.query('DELETE FROM daechion_orders.sheet_recoveries WHERE request_key=$1',[input.requestKey]),/CANNOT_DELETE/)
+    })
+    await t.test('missing rows or interrupted sheet recovery remain unknown until a new explicit approval',async()=>{
+      const {orderId}=await workerOrder(['b']),{state,api}=sheetFixture(),sheet={withClient:db.withClient,api,target}
+      await orderPublisher.setupOrderSheet(api,target);state.failInsert=true
+      await orderSheets.syncOrderSheet(orderId,true,sheet)
+      const original=[...state.row],job=(await db.query("SELECT id FROM daechion_orders.jobs WHERE order_id=$1 AND state='UNKNOWN'",[orderId])).rows[0]
+      const input=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input));state.row=null
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'UNKNOWN');assert.equal(state.inserts,1);assert.equal(state.updates,0)
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'SKIPPED');assert.equal(state.inserts,1)
+      state.row=original
+      const next=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',next))
+      await db.query("UPDATE daechion_orders.sheet_recoveries SET state='RUNNING',lease_token=$2,lease_until=now()-interval '1 second' WHERE request_key=$1",[next.requestKey,randomUUID()])
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'SKIPPED')
+      assert.equal((await db.query('SELECT state FROM daechion_orders.sheet_recoveries WHERE request_key=$1',[next.requestKey])).rows[0].state,'UNKNOWN')
+      assert.equal(state.updates,0)
+      const final=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',final))
+      assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'DONE');assert.equal(state.inserts,1);assert.equal(state.updates,1)
     })
   }finally{await db.close()}
 })

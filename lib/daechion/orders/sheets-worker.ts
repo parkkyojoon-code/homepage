@@ -5,17 +5,20 @@ import {orderTransaction,lockOrder,type OrderConnection} from './worker-store'
 import {orderSheetView} from './sheets-view'
 import {publishOrder,type OrderSheetTarget} from './sheets-publisher'
 
-interface SheetPorts extends OrderConnection {api:SheetsApi;target:OrderSheetTarget;authorise?():Promise<boolean>}
+export interface SheetPorts extends OrderConnection {api:SheetsApi;target:OrderSheetTarget;authorise?():Promise<boolean>;recovery?:{requestKey:string;jobId:string;leaseToken:string}}
 export async function syncOrderSheet(id:string,enabled:boolean,ports:SheetPorts,reconcileUnknown=false){
   if(!enabled)return 'DISABLED'
   z.string().uuid().parse(id)
   if(reconcileUnknown&&(!ports.authorise||!await ports.authorise()))return 'SKIPPED'
   const job=await ports.withClient(c=>orderTransaction(c,async()=>{
     if(!await lockOrder(c,id))return null
+    if(ports.recovery&&(!reconcileUnknown||!(await c.query(`SELECT request_key FROM daechion_orders.sheet_recoveries
+      WHERE request_key=$1 AND order_id=$2 AND job_id=$3 AND state='RUNNING' AND lease_token=$4 AND lease_until>now()`,
+      [ports.recovery.requestKey,id,ports.recovery.jobId,ports.recovery.leaseToken])).rows.length))return null
     await c.query("UPDATE daechion_orders.jobs SET state='UNKNOWN',last_error='sheet_publish_unknown',lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND kind='SHEETS' AND state='RUNNING' AND lease_until<=now()",[id])
     const blockers=(await c.query("SELECT state FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state IN ('RUNNING','UNKNOWN')",[id])).rows
     if(blockers.some(b=>b.state==='RUNNING')||(!reconcileUnknown&&blockers.length)||(reconcileUnknown&&blockers.filter(b=>b.state==='UNKNOWN').length!==1))return null
-    const next=(await c.query("SELECT id FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state=$2 AND available_at<=now() ORDER BY event_version LIMIT 1",[id,reconcileUnknown?'UNKNOWN':'PENDING'])).rows[0]
+    const next=(await c.query("SELECT id FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state=$2 AND available_at<=now() AND ($3::uuid IS NULL OR id=$3) ORDER BY event_version LIMIT 1",[id,reconcileUnknown?'UNKNOWN':'PENDING',ports.recovery?.jobId??null])).rows[0]
     if(!next)return null
     const token=randomUUID()
     await c.query("UPDATE daechion_orders.jobs SET state='RUNNING',attempts=attempts+1,lease_token=$2,lease_until=now()+interval '120 seconds',last_error=NULL WHERE id=$1",[next.id,token])
@@ -29,6 +32,9 @@ export async function syncOrderSheet(id:string,enabled:boolean,ports:SheetPorts,
     if(write){
       const current=await ports.withClient(c=>c.query("SELECT id FROM daechion_orders.jobs WHERE id=$1 AND state='RUNNING' AND lease_token=$2 AND lease_until>now()",[job.id,job.token]))
       if(!current.rows.length)throw Error('ORDER_SHEET_FENCE_CHANGED')
+      if(ports.recovery&&!(await ports.withClient(c=>c.query(`SELECT request_key FROM daechion_orders.sheet_recoveries
+        WHERE request_key=$1 AND order_id=$2 AND job_id=$3 AND state='RUNNING' AND lease_token=$4 AND lease_until>now()`,
+        [ports.recovery!.requestKey,id,ports.recovery!.jobId,ports.recovery!.leaseToken]))).rows.length)throw Error('ORDER_SHEET_RECOVERY_FENCE_CHANGED')
       writeAttempted=true
     }
     return ports.api.call(method,path,body)

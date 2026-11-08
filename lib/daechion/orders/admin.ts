@@ -4,6 +4,8 @@ import type {LedgerClient} from '../ledger'
 import {orderTransaction,lockOrder,holdOrder,orderChanged} from './worker-store'
 import {retryRecordedAccessInTransaction} from './enrollment'
 import {contextFromOrder,reviewContext,reviewEvidenceSchema,latestReview,type ReviewEvidence} from './manual-review'
+import {paidRecoveryAllowed,resumePaid,type PaidEvidence} from './paid-recovery'
+import {queueSheetRecovery} from './sheet-recovery'
 
 const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
 const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
@@ -14,10 +16,12 @@ export const orderAdminActionSchema=z.discriminatedUnion('action',[
   z.object({...common,action:z.literal('APPROVE_EXISTING'),studentId:z.number().int().positive().safe(),
     targetIds:z.array(z.number().int().positive().safe()).min(1).max(30).refine(ids=>new Set(ids).size===ids.length),confirmNotOwned:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('RESUME_UNBILLED')}).strict(),
+  z.object({...common,action:z.literal('RESUME_PAID'),billId:z.string().regex(/^\d{20}$/),confirmPaid:z.literal(true)}).strict(),
+  z.object({...common,action:z.literal('RECONCILE_SHEETS'),jobId:z.string().uuid(),confirmExistingRow:z.literal(true)}).strict(),
 ])
 export type OrderAdminAction=z.infer<typeof orderAdminActionSchema>
 export class OrderAdminError extends Error {
-  constructor(public readonly code:'NOT_FOUND'|'STALE'|'CONFLICT'|'STATE'){super(code)}
+  constructor(public readonly code:'NOT_FOUND'|'STALE'|'CONFLICT'|'STATE'|'PAYMENT'){super(code)}
 }
 export const orderSearchSchema=z.object({q:z.string().trim().max(80).default(''),reviewOnly:z.boolean().default(false),page:z.number().int().min(0).max(1000).default(0)}).strict()
 export async function replayOrderAction(c:LedgerClient,tenantId:string,input:OrderAdminAction){
@@ -55,15 +59,20 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
       AND o.identity_state='PASSED' AND daechion_orders.paid_eligible(o.id)) AS can_retry
     FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id WHERE g.order_id=$1 ORDER BY g.lecture_id`,[id])).rows
   const messages=(await c.query('SELECT phone,state,accepted_at FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows
-  const jobs=(await c.query('SELECT kind,state,attempts,last_error,event_version::text FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
-  const actions=(await c.query('SELECT action,lecture_id::text,student_id::text,target_ids,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
+  const jobs=(await c.query('SELECT id,kind,state,attempts,last_error,event_version::text FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
+  const actions=(await c.query('SELECT action,lecture_id::text,student_id::text,target_ids,recovery_evidence,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
+  const recoveries=(await c.query('SELECT request_key,job_id,state,result_code,created_at FROM daechion_orders.sheet_recoveries WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 10',[id])).rows
+  const sheetBlockers=(await c.query("SELECT id,state FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state IN ('UNKNOWN','RUNNING')",[id])).rows
+  const activeRecovery=(await c.query("SELECT request_key FROM daechion_orders.sheet_recoveries WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0
+  const sheetRecoveryJobId=!activeRecovery&&sheetBlockers.length===1&&sheetBlockers[0].state==='UNKNOWN'?String(sheetBlockers[0].id):null
   const status=(await c.query('SELECT identity_write_started,identity_token,confirmed_at FROM daechion_orders.orders WHERE id=$1',[id])).rows[0]
   const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
   const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
-  return {order,items,bills,grants,messages,jobs,actions,canHold:order.checkout_state!=='DRAFT',canApproveExisting:unbilled,
+  return {order,items,bills,grants,messages,jobs,actions,recoveries,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
+    canResumePaid:paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT',canApproveExisting:unbilled,
     canResumeUnbilled:unbilled&&order.checkout_state==='REVIEW'&&order.review_code==='admin_hold'&&status.confirmed_at!==null&&(!reviewed||age>=0&&age<=15*60000)}
 }
-export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence){
+export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence,payment?:PaidEvidence){
   const input=orderAdminActionSchema.parse(raw)
   const fingerprint=createHash('sha256').update(JSON.stringify(input)).digest('hex')
   return orderTransaction(c,async()=>{
@@ -91,16 +100,24 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
       }
     }
     const nextVersion=(BigInt(input.expectedVersion)+1n).toString()
+    const recoveryEvidence=input.action==='RESUME_PAID'?{billId:payment?.billId,amountWon:payment?.amountWon,paidAt:payment?.paidAt,checkedAt:payment?.checkedAt}:
+      input.action==='RECONCILE_SHEETS'?{jobId:input.jobId}:{}
     const writeAudit=()=>c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,
-      student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)`,[input.requestKey,input.orderId,fingerprint,input.action,input.action==='RETRY_ACCESS'?input.lectureId:null,
-      input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??null,review?order.request_fingerprint:null,JSON.stringify(review?.targetIds??[]),review?.checkedAt??null])
+      student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb)`,[input.requestKey,input.orderId,fingerprint,input.action,input.action==='RETRY_ACCESS'?input.lectureId:null,
+      input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??null,review?order.request_fingerprint:null,JSON.stringify(review?.targetIds??[]),review?.checkedAt??null,JSON.stringify(recoveryEvidence)])
     if(input.action==='APPROVE_EXISTING')await writeAudit()
     if(input.action==='HOLD'){
       if(order.checkout_state==='DRAFT')throw new OrderAdminError('STATE')
       await holdOrder(c,input.orderId,'admin_hold')
     }else if(input.action==='RETRY_ACCESS'){
       if(!await retryRecordedAccessInTransaction(c,input))throw new OrderAdminError('STATE')
+    }else if(input.action==='RESUME_PAID'){
+      if(!payment||input.billId!==payment.billId||!await resumePaid(c,order,payment))throw new OrderAdminError('STATE')
+      await orderChanged(c,input.orderId,'paid_order_resumed')
+    }else if(input.action==='RECONCILE_SHEETS'){
+      if(!await queueSheetRecovery(c,input.orderId,input.jobId,input.requestKey))throw new OrderAdminError('STATE')
+      await orderChanged(c,input.orderId,'sheet_recovery_requested')
     }else{
       await c.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL WHERE id=$1",[input.orderId])
       await orderChanged(c,input.orderId,input.action==='APPROVE_EXISTING'?'existing_review_approved':'unbilled_order_resumed')
