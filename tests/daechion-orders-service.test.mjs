@@ -26,6 +26,7 @@ import orderPreflight from '../.daechion-test-build/lib/daechion/orders/prefligh
 import paidRecovery from '../.daechion-test-build/lib/daechion/orders/paid-recovery.js'
 import sheetRecovery from '../.daechion-test-build/lib/daechion/orders/sheet-recovery.js'
 import manualAccess from '../.daechion-test-build/lib/daechion/orders/manual-access.js'
+import intakeReview from '../.daechion-test-build/lib/daechion/orders/intake-review.js'
 
 async function database(){
   const connectionString=process.env.DAECHION_TEST_POSTGRES_URL
@@ -65,6 +66,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion-orders/006_recovery.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/007_manual_access.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/008_identity_recovery.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion-orders/009_intake_review.sql',import.meta.url),'utf8'))
     await t.test('one exact total produces immutable items, grants, one Sheets job and no bill or student',async()=>{
       const q=await quote(),input=orderInput(q)
       assert.equal(q.status,'READY');assert.equal(q.totalWon,31400)
@@ -579,6 +581,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal(await orderPreflight.preflightOrder(context,{...preflight,api:{...api,student:async()=>({...profile,parentPhoneNumber2:'01000009998'})}}),'REVIEW')
       const payment=providerFor(25000),billing={withClient:db.withClient,provider:payment,preflight:ctx=>orderPreflight.preflightOrder(ctx,preflight)}
       assert.equal(await orderBilling.sendOrderBill(orderId,true,billing),'SENT');assert.equal(payment.sends,1)
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canConfirmNewIntake,false)
       const awaiting=await db.withClient(c=>orderView.orderSheetView(c,orderId))
       assert.match(awaiting.values[orderView.ORDER_HEADERS.indexOf('중복 확인 사유')],/청구 시 확인한 학생으로 결제 후 재검사/)
       payment.paid();assert.equal(await orderBilling.checkOrderPayment(orderId,true,billing),'PAID')
@@ -709,6 +712,105 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const final=await adminAction(orderId,'RECONCILE_SHEETS',{jobId:String(job.id),confirmExistingRow:true})
       await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',final))
       assert.equal(await sheetRecovery.deliverOrderSheet(orderId,true,sheet),'DONE');assert.equal(state.inserts,1);assert.equal(state.updates,1)
+    })
+    const newIntakeFixture=async(person=contact())=>{
+      const q=await checkout.quoteCheckout({items:[{productId:'pack'}],contact:person,expectedTotalWon:25000},{...ports,
+        ownership:async(cart,_person,key)=>({...report(cart,key),identity:'REVIEW'})})
+      const {orderId}=await checkout.receiveOrder(orderInput(q),ports),api=enrollmentFor()
+      const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient,
+        inspectNewIntake:context=>intakeReview.inspectNewIntake(context,api,'s'.repeat(32))}
+      return {orderId,q,api,admin,person}
+    }
+    await t.test('a fresh read-only new-student check confirms the full reviewed intake and billing independently rechecks it',async()=>{
+      const {orderId,q,api,admin}=await newIntakeFixture()
+      const input=await adminAction(orderId,'CONFIRM_NEW_INTAKE',{confirmNewStudent:true})
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canConfirmNewIntake,true)
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,confirmNewStudent:false}),admin)).status,400)
+      const results=await Promise.all([0,1].map(()=>orderAdminHttp.orderAdminPost(request(input),admin)))
+      assert.ok(results.every(r=>r.status===200));assert.equal(api.creates,0);assert.deepEqual(api.enrolled,[])
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(row.checkout_state,'READY');assert.ok(row.confirmed_at);assert.equal(row.identity_state,'WAITING');assert.equal(row.student_id,null)
+      assert.equal(row.intake_action_id,input.requestKey);assert.equal(row.total_won,25000)
+      assert.equal((await db.query('SELECT state FROM daechion_orders.quotes WHERE id=$1',[q.quoteId])).rows[0].state,'CONSUMED')
+      const audit=(await db.query('SELECT student_id,target_ids FROM daechion_orders.admin_actions WHERE request_key=$1',[input.requestKey])).rows[0]
+      assert.equal(audit.student_id,null);assert.deepEqual(audit.target_ids,[20,21])
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectNewIntake:async()=>{throw Error('Replay is local')}})).status,200)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('중복 수강생 확인')],'통과')
+      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('중복 확인 사유')],/신규 학생 번호 중복 재조회/)
+      const payment=providerFor(25000)
+      assert.equal(await orderBilling.sendOrderBill(orderId,true,{withClient:db.withClient,provider:payment,
+        preflight:context=>orderPreflight.preflightOrder(context,{tenantId:'fixture',subjectSecret:'s'.repeat(32),api})}),'SENT')
+      assert.equal(payment.sends,1);assert.equal(api.creates,0)
+    })
+    await t.test('new intake approval rejects existing guardian matches, old or different evidence, unavailable courses and false declarations',async()=>{
+      const {orderId,admin,api,person}=await newIntakeFixture({...contact(),guardianName:'보호자',guardianPhone:'01000007654'})
+      const input=await adminAction(orderId,'CONFIRM_NEW_INTAKE',{confirmNewStudent:true})
+      const context=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId)),proof=await intakeReview.inspectNewIntake(context,api,'s'.repeat(32))
+      assert.ok(proof)
+      for(const changed of [{...proof,checkedAt:new Date(Date.now()-61000).toISOString()},{...proof,targetIds:[20]},{...proof,binding:'a'.repeat(64)}])
+        await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',input,undefined,undefined,undefined,changed)),/STATE/)
+      const old={id:999,name:'다른 학생',active:false,studentPhoneNumber:'01000007653',parentPhoneNumber2:person.guardianPhone}
+      const duplicate={...api,students:async phone=>phone===person.guardianPhone?[old]:[]}
+      assert.equal(await intakeReview.inspectNewIntake(context,duplicate,'s'.repeat(32)),null)
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectNewIntake:ctx=>intakeReview.inspectNewIntake(ctx,duplicate,'s'.repeat(32))})).status,409)
+      for(const changed of [{...api,me:async()=>({tenantId:'other'})},{...api,students:async()=>{throw Error('Unknown lookup')}},{...api,lectures:async()=>[]},
+        {...api,lectures:async()=>[{id:20,opened:true,weeklyLectures:[]},{id:21,opened:true,weeklyLectures:[{id:2100}]}]}])
+        assert.equal(await intakeReview.inspectNewIntake(context,changed,'s'.repeat(32)),null)
+      assert.equal(await intakeReview.inspectNewIntake({...context,contact:{...context.contact,studentHistory:'EXISTING'}},api,'s'.repeat(32)),null)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId])).rows[0].n,0)
+      assert.equal(api.creates,0)
+      await assert.rejects(db.query("UPDATE daechion_orders.orders SET checkout_state='READY' WHERE id=$1",[orderId]),/ORDER_QUOTE_NOT_READY/)
+    })
+    await t.test('closing an untouched reviewed intake is audited, final and permits a new application without deleting history',async()=>{
+      const {orderId,q,admin,person}=await newIntakeFixture()
+      const input=await adminAction(orderId,'CLOSE_INTAKE',{confirmClose:true})
+      assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canCloseIntake,true)
+      await assert.rejects(db.query("UPDATE daechion_orders.orders SET closed_action_id=$2,checkout_state='CLOSED',review_code='intake_closed' WHERE id=$1",[orderId,randomUUID()]),/CLOSURE_APPROVAL_REQUIRED/)
+      const failed={...admin,withClient:run=>db.withClient(c=>run({query:(sql,values)=>{
+        if(sql.startsWith('INSERT INTO daechion_orders.admin_actions'))throw Error('Synthetic audit unavailable')
+        return c.query(sql,values)
+      }}))}
+      assert.equal((await orderAdminHttp.orderAdminPost(request(input),failed)).status,503)
+      assert.equal((await db.query('SELECT checkout_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].checkout_state,'REVIEW')
+
+      assert.equal((await orderAdminHttp.orderAdminPost(request({...input,confirmClose:false}),admin)).status,400)
+      const replies=await Promise.all([0,1].map(()=>orderAdminHttp.orderAdminPost(request(input),admin)))
+      assert.ok(replies.every(r=>r.status===200))
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(row.checkout_state,'CLOSED');assert.equal(row.closed_action_id,input.requestKey);assert.equal(row.payment_state,'PENDING');assert.equal(row.confirmed_at,null)
+      assert.equal((await db.query('SELECT state FROM daechion_orders.quotes WHERE id=$1',[q.quoteId])).rows[0].state,'EXPIRED')
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.items WHERE order_id=$1',[orderId])).rows[0].n,1)
+      const detail=await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))
+      assert.equal(detail.canCloseIntake,false);assert.equal(detail.canConfirmNewIntake,false);assert.equal(detail.canHold,false)
+      for(const action of ['HOLD','RESUME_UNBILLED'])await assert.rejects(db.withClient(async c=>orderAdmin.applyOrderAdminAction(c,'fixture',await adminAction(orderId,action))),/STATE/)
+      await assert.rejects(db.query("UPDATE daechion_orders.orders SET checkout_state='REVIEW',review_code='admin_hold' WHERE id=$1",[orderId]),/CLOSED_INTAKE_FROZEN/)
+      await assert.rejects(db.query(`INSERT INTO daechion_orders.bills(id,order_id,amount_won,provider_account,bill_id,revision) VALUES($1,$2,25000,'fixture','90000000000000000991',1)`,[randomUUID(),orderId]),/ORDER_(CLOSED_INTAKE_CANNOT_BILL|NOT_BILLABLE)/)
+      const view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('중복 수강생 확인')],'접수 종료')
+      assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('처리 확인')],'접수 종료')
+      const newer=await checkout.receiveOrder(orderInput(await quote(['pack'],{contact:person})),ports)
+      assert.notEqual(newer.orderId,orderId)
+      assert.ok(!(await db.withClient(c=>orderAdmin.listOrders(c,'fixture',{q:person.studentPhone,reviewOnly:true}))).rows.some(r=>r.id===orderId))
+    })
+    await t.test('closure fences an in-flight billing preflight and refuses attempted or financially ambiguous orders',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900)
+      let started,finish;const begun=new Promise(resolve=>{started=resolve}),wait=new Promise(resolve=>{finish=resolve})
+      const sending=orderBilling.sendOrderBill(orderId,true,{withClient:db.withClient,provider:payment,preflight:async()=>{started();await wait;return 'READY'}})
+      await begun
+      await db.withClient(async c=>orderAdmin.applyOrderAdminAction(c,'fixture',await adminAction(orderId,'CLOSE_INTAKE',{confirmClose:true})))
+      finish();assert.equal(await sending,'SKIPPED');assert.equal(payment.sends,0)
+      for(const mode of ['bill','write','token','grant','unknown-payment']){
+        const next=await workerOrder(['a'])
+        if(mode==='bill')await orderBilling.sendOrderBill(next.orderId,true,{withClient:db.withClient,provider:providerFor(12900),preflight:async()=> 'READY'})
+        if(mode==='write')await db.query('UPDATE daechion_orders.orders SET identity_write_started=true WHERE id=$1',[next.orderId])
+        if(mode==='token')await db.query("UPDATE daechion_orders.orders SET identity_token=$2,identity_until=now()+interval '10 minutes' WHERE id=$1",[next.orderId,randomUUID()])
+        if(mode==='grant')await db.query("UPDATE daechion_orders.grants SET state='REVIEW' WHERE order_id=$1",[next.orderId])
+        if(mode==='unknown-payment')await db.query("UPDATE daechion_orders.orders SET payment_state='UNKNOWN' WHERE id=$1",[next.orderId])
+        const action=await adminAction(next.orderId,'CLOSE_INTAKE',{confirmClose:true})
+        await assert.rejects(db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',action)),/STATE/)
+        assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[next.orderId])).rows[0].n,0)
+      }
     })
     const identityUnknownFixture=async()=>{
       const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor()

@@ -41,13 +41,18 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   // awaiting payment. Expiry only requests reapproval before billing starts.
   const reviewedFresh=reviewed&&reviewed.binding===bound?.binding&&reviewAge>=0&&(reviewAge<=15*60000||bills.length>0)
   const identityConcern=o.identity_state==='REVIEW'||typeof o.review_code==='string'&&(/^identity_/.test(o.review_code)&&o.review_code!=='identity_reconciled'||o.review_code==='billing_preflight_review')
-  const duplicateReason=identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — ${bills.length?'청구 시 확인한 학생으로 결제 후 재검사':'청구 전 재검사 대기'}`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
-  const duplicate=identityConcern?'확인 필요':o.identity_state==='PASSED'||reviewedFresh?'통과':reviewed||quoteReasons.length?'확인 필요':'조회 대기'
+  const intakeCheck=o.intake_action_id?(await c.query("SELECT checked_at,context_fingerprint FROM daechion_orders.admin_actions WHERE request_key=$1 AND order_id=$2 AND action='CONFIRM_NEW_INTAKE'",[o.intake_action_id,id])).rows[0]:null
+  const intakeAge=intakeCheck?Date.now()-new Date(intakeCheck.checked_at as string).getTime():NaN
+  const intakeBound=intakeCheck?reviewContext({orderId:id,version:String(o.version),tenantId:String(o.tenant_id),totalWon:Number(o.total_won),contact,items:items.map(i=>i.snapshot)}):null
+  const newIntakeFresh=!reviewed&&intakeCheck&&intakeCheck.context_fingerprint===intakeBound?.binding&&intakeAge>=0&&(intakeAge<=15*60000||bills.length>0)
+  const intakeClosed=Boolean(o.closed_action_id)&&o.checkout_state==='CLOSED'
+  const duplicateReason=intakeClosed?'청구·학생 생성 시도 없이 관리자 접수 종료':identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':newIntakeFresh?'신규 학생 번호 중복 재조회 완료 — 작업자 재검사 대기':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — ${bills.length?'청구 시 확인한 학생으로 결제 후 재검사':'청구 전 재검사 대기'}`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
+  const duplicate=intakeClosed?'접수 종료':identityConcern?'확인 필요':o.identity_state==='PASSED'||reviewedFresh||newIntakeFresh?'통과':reviewed||quoteReasons.length?'확인 필요':'조회 대기'
   const errors=[orderReason(o.review_code),...grants.filter(g=>g.state==='REVIEW').map(g=>`강의 ID ${g.lecture_id}: ${orderReason(g.review_code)}`),
     ...(recovery&&['UNKNOWN','FAILED'].includes(String(recovery.state))?[`시트 복구: ${orderReason(recovery.result_code)}`]:[]),
     ...jobs.map(j=>`${j.kind==='SHEETS'?'시트':'안내 문자'}: ${orderReason(j.last_error)||state(j.state)}`),
     ...receipts.filter(r=>r.state==='UNKNOWN').map(r=>`${r.phone}: 문자 결과 확인 필요`)].filter(Boolean)
-  const expectedExpiry=o.checkout_state==='CLOSED'&&o.review_code==='unpaid_wait_closed'
+  const expectedExpiry=intakeClosed||o.checkout_state==='CLOSED'&&o.review_code==='unpaid_wait_closed'
   const attention=errors.length>(expectedExpiry?1:0)||duplicate==='확인 필요'
   const current=bills.find(b=>b.is_current)
   for(const b of bills)if(!/^\d{20}$/.test(String(b.bill_id)))throw Error('INVALID_ORDER_SHEET_BILL')
@@ -56,7 +61,7 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
     items.map(i=>`${i.title}: ${Number(i.price_won).toLocaleString('ko-KR')}원`).join('\n'),Number(o.total_won),'확인','동의',String(noticeVersion??''),String(o.quote_id),state(o.checkout_state),state(current?.state??'NOT_CREATED'),
     current?String(current.bill_id):'',bills.map(b=>String(b.bill_id)).join('\n'),koreanTime(current?.sent_at),koreanTime(current?.due_at),o.payment_state==='PENDING'?'미납':state(o.payment_state),koreanTime(o.paid_at),o.student_id?String(o.student_id):'',
     grants.map(g=>`ID ${g.lecture_id}: ${state(g.state)}${g.review_code?' — '+orderReason(g.review_code):''}`).join('\n'),state(o.notification_state),receipts.map(r=>`${r.phone}: ${state(r.state)}`).join('\n'),
-    duplicate,duplicateReason,attention?'확인 필요':expectedExpiry?'대기 종료':'정상',[...new Set(errors)].join('\n'),String(o.version),koreanTime(new Date())]
+    duplicate,duplicateReason,attention?'확인 필요':intakeClosed?'접수 종료':expectedExpiry?'대기 종료':'정상',[...new Set(errors)].join('\n'),String(o.version),koreanTime(new Date())]
   if(values.length!==ORDER_HEADERS.length)throw Error('ORDER_SHEET_COLUMNS_MISMATCH')
   return {id,version:String(o.version),values}
 }

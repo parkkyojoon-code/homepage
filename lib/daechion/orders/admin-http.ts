@@ -5,10 +5,12 @@ import {contextFromOrder,type ReviewEvidence} from './manual-review'
 import type {BillingContext} from './billing'
 import {paidContext,type PaidContext,type PaidEvidence} from './paid-recovery'
 import type {AccessEvidence} from './manual-access'
+import type {IntakeEvidence} from './intake-review'
 export interface OrderAdminPorts {
   enabled:boolean;tenantId:string;origins:string[];authed():Promise<boolean>
   withClient<T>(run:(c:LedgerClient)=>Promise<T>):Promise<T>
   ready(c:LedgerClient):Promise<void>
+  inspectNewIntake?(context:BillingContext):Promise<IntakeEvidence|null>
   inspectExisting?(context:BillingContext,studentId:number):Promise<ReviewEvidence>
   inspectPaid?(context:PaidContext):Promise<PaidEvidence|null>
   inspectAccess?(context:BillingContext,studentId:number,lectureId:number,revoke:boolean):Promise<AccessEvidence>
@@ -53,10 +55,16 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
     let evidence:ReviewEvidence|undefined
     let payment:PaidEvidence|undefined
     let access:AccessEvidence|undefined
-    if(['APPROVE_EXISTING','RECONCILE_IDENTITY','RESUME_PAID','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)){
+    let intake:IntakeEvidence|undefined
+    if(['CONFIRM_NEW_INTAKE','APPROVE_EXISTING','RECONCILE_IDENTITY','RESUME_PAID','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)){
       const replay=await readOnly(ports,c=>replayOrderAction(c,ports.tenantId,input))
       if(replay)return json({success:true,...replay})
-      if(input.action==='APPROVE_EXISTING'||input.action==='RECONCILE_IDENTITY'){
+      if(input.action==='CONFIRM_NEW_INTAKE'){
+        if(!ports.inspectNewIntake)throw new OrderAdminError('STATE')
+        const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
+        if(!context)throw new OrderAdminError('STALE')
+        const checked=await ports.inspectNewIntake(context);if(!checked)throw new OrderAdminError('STATE');intake=checked
+      }else if(input.action==='APPROVE_EXISTING'||input.action==='RECONCILE_IDENTITY'){
         if(!ports.inspectExisting)throw new OrderAdminError('STATE')
         const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
         if(!context)throw new OrderAdminError('STALE')
@@ -80,7 +88,7 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
         access=await ports.inspectAccess(context,input.studentId,input.lectureId,input.action==='RECORD_REVOKED')
       }
     }
-    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence,payment,access)})})
+    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence,payment,access,intake)})})
   }catch(error){
     if(error instanceof z.ZodError||error instanceof SyntaxError)return json({error:'담당자·사유·확인 항목과 입력 내용을 확인해주세요.'},400)
     if(error instanceof OrderAdminError){

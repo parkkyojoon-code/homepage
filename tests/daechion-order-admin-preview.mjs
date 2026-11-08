@@ -49,7 +49,9 @@ try{
     assert.equal(body.expectedVersion,detail.order.version);assert.equal(body.orderId,id);assert.equal(body.confirmed,true)
     saved.set(body.requestKey,body);const before=detail.order.version;detail.order.version=String(Number(before)+1)
     detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:['APPROVE_EXISTING','RECONCILE_IDENTITY'].includes(body.action)?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:['MANUAL_ACCESS','RECORD_REVOKED'].includes(body.action)?{studentId:body.studentId,weeklyLectureIds:body.action==='MANUAL_ACCESS'?[2000]:[]}: {},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
-    if(body.action==='RECONCILE_IDENTITY'){assert.equal(body.studentId,1001);assert.equal(body.confirmCreatedAccount,true);detail.order.identity_state='PASSED';detail.order.student_id='1001';detail.order.review_code='identity_reconciled';detail.canReconcileIdentity=false;detail.canResumePaid=true}
+    if(body.action==='CONFIRM_NEW_INTAKE'){assert.equal(body.confirmNewStudent,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canConfirmNewIntake=false}
+    else if(body.action==='CLOSE_INTAKE'){assert.equal(body.confirmClose,true);detail.order.checkout_state='CLOSED';detail.order.review_code='intake_closed';detail.canCloseIntake=false;detail.canConfirmNewIntake=false;detail.canHold=false}
+    else if(body.action==='RECONCILE_IDENTITY'){assert.equal(body.studentId,1001);assert.equal(body.confirmCreatedAccount,true);detail.order.identity_state='PASSED';detail.order.student_id='1001';detail.order.review_code='identity_reconciled';detail.canReconcileIdentity=false;detail.canResumePaid=true}
     else if(body.action==='RETRY_ACCESS'){assert.equal(body.lectureId,20);detail.grants[0].state='PENDING';detail.grants[0].can_retry=false;detail.grants[0].review_code=null}
     else if(body.action==='APPROVE_EXISTING'){assert.equal(body.studentId,1001);assert.deepEqual(body.targetIds,[20,21]);assert.equal(body.confirmNotOwned,true);detail.order.checkout_state='READY';detail.order.review_code=null}
     else if(body.action==='RESUME_UNBILLED'){assert.equal(detail.canResumeUnbilled,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canResumeUnbilled=false}
@@ -181,8 +183,37 @@ try{
   await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))
   await page.screenshot({path:path.join(output,'identity-recovery-mobile-20261109.png'),fullPage:true})
   await page.getByRole('button',{name:'확인 내용 저장'}).click()
-  await page.getByText('학생 생성 결과 대조 완료 — 현재 결제 재조회 후 재개 필요',{exact:true}).waitFor()
+  await page.getByText('학생 생성 결과 대조 완료 — 현재 결제 재조회 후 재개 필요',{exact:true}).first().waitFor()
   assert.equal(detail.order.checkout_state,'REVIEW');assert.equal(detail.order.student_id,'1001');assert.equal(saved.size,10);assert.deepEqual(errors,[])
+  detail.order.checkout_state='REVIEW';detail.order.payment_state='PENDING';detail.order.identity_state='WAITING';detail.order.student_id=null;detail.order.review_code=null
+  detail.order.contact_snapshot={...contact,studentHistory:'NEW'};detail.bills=[];detail.canReconcileIdentity=false;detail.canResumePaid=false
+  detail.canConfirmNewIntake=true;detail.canCloseIntake=true;detail.canHold=true
+  await page.getByRole('button',{name:'새로 불러오기',exact:true}).click()
+  await page.getByLabel('처리 종류').selectOption('CONFIRM_NEW_INTAKE')
+  await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
+  await page.getByLabel('확인 근거·사유').fill('신규 학생 번호 중복·연결 강의 재조회')
+  await page.getByRole('checkbox',{name:/이 학생이 신규 수강생이며/}).check()
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  await page.setViewportSize({width:1440,height:1000});await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
+  await page.screenshot({path:path.join(output,'intake-confirm-admin-20261109.png'),fullPage:true})
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByText(`버전 ${Number(detail.order.version)-1} → ${detail.order.version}`,{exact:false}).first().waitFor()
+  assert.equal(detail.order.checkout_state,'READY')
+  await page.getByLabel('처리 종류').selectOption('CLOSE_INTAKE')
+  await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
+  await page.getByLabel('확인 근거·사유').fill('신청 오류 확인 후 청구 전 종료')
+  await page.getByRole('checkbox',{name:/이 신청을 종료하며/}).check()
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
+  await page.screenshot({path:path.join(output,'intake-close-admin-20261109.png'),fullPage:true})
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))
+  await page.screenshot({path:path.join(output,'intake-close-mobile-20261109.png'),fullPage:true})
+  loseReply=true
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByRole('button',{name:'같은 요청 결과 다시 확인'}).click()
+  await page.getByText('관리자가 청구 전 신청을 종료함',{exact:true}).first().waitFor()
+  assert.equal(detail.order.checkout_state,'CLOSED');assert.equal(saved.size,12);assert.deepEqual(errors,[])
+  assert.equal(await page.getByRole('button',{name:'확인 내용 저장'}).isDisabled(),true)
   console.log(JSON.stringify({ok:true,uniqueActions:saved.size,replayedSameRequest:true,mobileFits:true,pageErrors:errors.length}))
 }finally{
   await browser?.close()

@@ -8,6 +8,7 @@ import type {BillingContext} from '@/lib/daechion/orders/billing'
 import {inspectPaid,type PaidContext} from '@/lib/daechion/orders/paid-recovery'
 import {payssamBillingProvider} from '@/lib/daechion/payssam'
 import {inspectManualAccess} from '@/lib/daechion/orders/manual-access'
+import {inspectNewIntake} from '@/lib/daechion/orders/intake-review'
 export const runtime='nodejs'
 export const dynamic='force-dynamic'
 function ports(){
@@ -15,7 +16,10 @@ function ports(){
   const valid=origins.every(value=>{try{const url=new URL(value);return url.origin===value&&(url.protocol==='https:'||url.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(url.hostname))}catch{return false}})
   return {authed:isAdminAuthed,tenantId:process.env.DAECHION_TENANT_ID?.trim()??'',origins,
     enabled:process.env.DAECHION_ADMIN_ENABLED==='true'&&process.env.DAECHION_ORDER_ADMIN_ENABLED==='true'&&Boolean(process.env.DAECHION_DATABASE_URL)&&valid,
-    withClient:withAutomationClient,inspectExisting:async(context:BillingContext,studentId:number)=>{
+    withClient:withAutomationClient,inspectNewIntake:(context:BillingContext)=>{
+      if(!process.env.DAECHION_API_KEY)throw Error('ORDER_REVIEW_API_REQUIRED')
+      return inspectNewIntake(context,daechionClient({apiKey:process.env.DAECHION_API_KEY}),process.env.DAECHION_ORDERS_SUBJECT_SECRET??'')
+    },inspectExisting:async(context:BillingContext,studentId:number)=>{
       if(!process.env.DAECHION_API_KEY)throw Error('ORDER_REVIEW_API_REQUIRED')
       return inspectExisting(context,studentId,daechionClient({apiKey:process.env.DAECHION_API_KEY}))
     },inspectAccess:(context:BillingContext,studentId:number,lectureId:number,revoke:boolean)=>{
@@ -26,7 +30,7 @@ function ports(){
       await c.query('SELECT request_key,after_version,student_id,target_ids,context_fingerprint,recovery_evidence FROM daechion_orders.admin_actions LIMIT 0')
       await c.query('SELECT request_key,job_id,state FROM daechion_orders.sheet_recoveries LIMIT 0')
       await c.query('SELECT manual_action_id,revoked_at FROM daechion_orders.grants LIMIT 0')
-      await c.query('SELECT identity_recovery_action_id FROM daechion_orders.orders LIMIT 0')
+      await c.query('SELECT identity_recovery_action_id,intake_action_id,closed_action_id FROM daechion_orders.orders LIMIT 0')
     }}
 }
 export async function GET(request:Request){return orderAdminGet(request,ports())}
