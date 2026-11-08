@@ -31,7 +31,7 @@ export async function preflightOrder(context:BillingContext,ports:{tenantId:stri
       const proof=reviewEvidenceSchema.parse(reviewed),age=Date.now()-Date.parse(proof.checkedAt),bound=reviewContext(context)
       if(age<0||age>15*60000||proof.binding!==bound.binding||JSON.stringify(proof.targetIds)!==JSON.stringify(bound.targetIds)||!ports.api.student)return 'REVIEW'
       const current=await inspectExisting(context,proof.studentId,{...ports.api,me:()=>ports.api.me(),students:(p,n)=>ports.api.students(p,n),student:id=>ports.api.student!(id)})
-      return Date.now()-start<=60000&&current.profileFingerprint===proof.profileFingerprint?'READY':'REVIEW'
+      return Date.now()-start<=60000&&Date.now()-Date.parse(proof.checkedAt)<=15*60000&&current.profileFingerprint===proof.profileFingerprint?'READY':'REVIEW'
     }
     const key=subjectKey(context.contact,ports.tenantId,ports.subjectSecret)
     const ownership=await lookupOwnership(ports.api,ports.tenantId,cart,context.contact,key)

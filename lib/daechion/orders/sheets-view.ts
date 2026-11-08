@@ -36,9 +36,11 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const reviewed=await latestReview(c,id)
   const bound=reviewed?reviewContext({orderId:id,version:String(o.version),tenantId:String(o.tenant_id),totalWon:Number(o.total_won),contact,items:items.map(i=>i.snapshot)}):null
   const reviewAge=reviewed?Date.now()-Date.parse(reviewed.checkedAt):NaN
-  const reviewedFresh=reviewed&&reviewed.binding===bound?.binding&&reviewAge>=0&&reviewAge<=15*60000
+  // Once an invoice attempt exists, keep the checked identity pinned while
+  // awaiting payment. Expiry only requests reapproval before billing starts.
+  const reviewedFresh=reviewed&&reviewed.binding===bound?.binding&&reviewAge>=0&&(reviewAge<=15*60000||bills.length>0)
   const identityConcern=o.identity_state==='REVIEW'||typeof o.review_code==='string'&&(/^identity_/.test(o.review_code)||o.review_code==='billing_preflight_review')
-  const duplicateReason=identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — 청구 전 재검사 대기`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
+  const duplicateReason=identityConcern?orderReason(o.review_code):o.identity_state==='PASSED'?'학생 정보·전화번호 대조 완료':reviewedFresh?`관리자 확인: 학생 ID ${reviewed.studentId} · 전체 강의 미보유 — ${bills.length?'청구 시 확인한 학생으로 결제 후 재검사':'청구 전 재검사 대기'}`:reviewed?'관리자 확인 유효기간 경과 또는 신청 정보 불일치 — 재확인 필요':quoteReasons.map(r=>`${itemTitle(r.productId)}: ${r.code==='BUNDLE_ALREADY_OWNED'?'묶음에 기보유 강의 포함':'기존 수강 여부·전화번호·보유 권한 확인 필요'}`).join('\n')
   const duplicate=identityConcern?'확인 필요':o.identity_state==='PASSED'||reviewedFresh?'통과':reviewed||quoteReasons.length?'확인 필요':'조회 대기'
   const errors=[orderReason(o.review_code),...grants.filter(g=>g.state==='REVIEW').map(g=>`강의 ID ${g.lecture_id}: ${orderReason(g.review_code)}`),
     ...jobs.map(j=>`${j.kind==='SHEETS'?'시트':'안내 문자'}: ${orderReason(j.last_error)||state(j.state)}`),

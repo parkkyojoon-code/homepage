@@ -573,6 +573,8 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal(await orderPreflight.preflightOrder(context,{...preflight,api:{...api,student:async()=>({...profile,parentPhoneNumber2:'01000009998'})}}),'REVIEW')
       const payment=providerFor(25000),billing={withClient:db.withClient,provider:payment,preflight:ctx=>orderPreflight.preflightOrder(ctx,preflight)}
       assert.equal(await orderBilling.sendOrderBill(orderId,true,billing),'SENT');assert.equal(payment.sends,1)
+      const awaiting=await db.withClient(c=>orderView.orderSheetView(c,orderId))
+      assert.match(awaiting.values[orderView.ORDER_HEADERS.indexOf('중복 확인 사유')],/청구 시 확인한 학생으로 결제 후 재검사/)
       payment.paid();assert.equal(await orderBilling.checkOrderPayment(orderId,true,billing),'PAID')
       const enrollment={withClient:db.withClient,tenantId:'fixture',daechion:api}
       assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED')
