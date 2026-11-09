@@ -52,6 +52,7 @@ const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border
 export default function AdminClassesPage() {
   const [classes, setClasses] = useState<ClassData[]>([])
   const [loading, setLoading] = useState(true)
+  const [bundlePublishingReady,setBundlePublishingReady]=useState(false)
   const [editTarget, setEditTarget] = useState<ClassData | null>(null)
   const [isNew, setIsNew] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -70,8 +71,9 @@ export default function AdminClassesPage() {
       if (res.status === 401) { router.push('/admin'); return }
       const data=await res.json()
       if(!res.ok||!Array.isArray(data))throw Error('catalog')
+      setBundlePublishingReady(res.headers.get('X-Bundle-Publishing-Ready')==='true')
       setClasses(data)
-    }catch{setMsg({type:'error',text:'상품 목록을 불러오지 못했습니다. 다시 불러와주세요.'})}
+    }catch{setBundlePublishingReady(false);setMsg({type:'error',text:'상품 목록을 불러오지 못했습니다. 다시 불러와주세요.'})}
     finally{setLoading(false)}
   }
 
@@ -360,7 +362,7 @@ export default function AdminClassesPage() {
                 </div>
 
                 {/* 공개 토글 */}
-                <button onClick={() => toggleVisible(cls)} disabled={cls.saleKind==='BUNDLE'&&!cls.visible} title={cls.saleKind==='BUNDLE'?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
+                <button onClick={() => toggleVisible(cls)} disabled={cls.saleKind==='BUNDLE'&&!cls.visible&&!bundlePublishingReady} title={cls.saleKind==='BUNDLE'&&!bundlePublishingReady?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
                   padding: '5px 12px', fontSize: 11, fontWeight: 700, borderRadius: 20, cursor: 'pointer',
                   background: cls.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
                   color: cls.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
@@ -391,7 +393,7 @@ export default function AdminClassesPage() {
             <h1 style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginTop: 6 }}>{e.saleKind==='BUNDLE'?(isNew?'묶음상품 추가':'묶음상품 수정'):(isNew ? '수업 추가' : '수업 수정')}</h1>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={() => upd(['visible'], !e.visible)} disabled={e.saleKind==='BUNDLE'&&!e.visible} title={e.saleKind==='BUNDLE'?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
+            <button onClick={() => upd(['visible'], !e.visible)} disabled={e.saleKind==='BUNDLE'&&!e.visible&&!bundlePublishingReady} title={e.saleKind==='BUNDLE'&&!bundlePublishingReady?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
               padding: '8px 14px', fontSize: 12, fontWeight: 700, borderRadius: 20, cursor: 'pointer',
               background: e.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
               color: e.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
@@ -405,7 +407,7 @@ export default function AdminClassesPage() {
         </div>
 
         {msg && <div role="alert" style={{ borderRadius: 10, padding: '11px 16px', marginBottom: 16, fontSize: 13, background: msg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)', border: `1px solid ${msg.type === 'success' ? 'rgba(52,209,126,0.2)' : 'rgba(239,84,84,0.2)'}`, color: msg.type === 'success' ? '#6ef5b0' : '#f08888' }}>{msg.text}</div>}
-        {e.saleKind==='BUNDLE'&&<p style={{color:'#b8c6df',fontSize:13,marginBottom:16}}>판매 준비 중에는 비공개로 저장됩니다.</p>}
+        {e.saleKind==='BUNDLE'&&!bundlePublishingReady&&<p style={{color:'#b8c6df',fontSize:13,marginBottom:16}}>판매 준비 중에는 비공개로 저장됩니다.</p>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 

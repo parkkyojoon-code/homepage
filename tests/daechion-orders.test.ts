@@ -1,13 +1,21 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {resolveCart,reviewOwnership,type CheckoutProduct,type ResolvedCart} from '../lib/daechion/orders/cart'
-import {saleKindForWrite,validateBundle} from '../lib/daechion/orders/sale-policy'
+import {saleKindForWrite,validateBundle,bundlePublishingReady} from '../lib/daechion/orders/sale-policy'
 import {prepareApplication} from '../lib/daechion/intake'
 import {preflightOrder} from '../lib/daechion/orders/preflight'
 import type {BillingContext} from '../lib/daechion/orders/billing'
 import {bundleSource,resolveBundleComponents,bundleCompositionIssue,type BundleProduct} from '../lib/daechion/orders/bundle-components'
 import {checkoutCatalog} from '../lib/daechion/orders/catalog'
 import {firstLessonTarget} from '../lib/daechion/first-lesson'
+
+test('bundle publishing requires explicit environment opt-in and the order service',()=>{
+  assert.equal(bundlePublishingReady({}),false)
+  assert.equal(bundlePublishingReady({DAECHION_BUNDLE_PUBLISH_ENABLED:'true'}),false)
+  assert.equal(bundlePublishingReady({DAECHION_ORDERS_ENABLED:'true'}),false)
+  assert.equal(bundlePublishingReady({DAECHION_BUNDLE_PUBLISH_ENABLED:'TRUE',DAECHION_ORDERS_ENABLED:'true'}),false)
+  assert.equal(bundlePublishingReady({DAECHION_BUNDLE_PUBLISH_ENABLED:'true',DAECHION_ORDERS_ENABLED:'true'}),true)
+})
 
 test('first-lesson policy pins LMS sequence rather than numeric IDs and refuses changing targets',()=>{
   const course={id:10,opened:true,weeklyLectures:[{id:900},{id:100},{id:200}]}

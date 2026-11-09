@@ -4,6 +4,11 @@ import type { StoredLectureBinding } from '../product-policy'
 
 export type SaleKind='SINGLE'|'BUNDLE'
 export class SalePolicyError extends Error {}
+// An environment opts in explicitly; deploying the branch alone never permits
+// administrators to publish a bundle on an existing site.
+export function bundlePublishingReady(env:Readonly<Record<string,string|undefined>>):boolean{
+  return env.DAECHION_BUNDLE_PUBLISH_ENABLED==='true'&&env.DAECHION_ORDERS_ENABLED==='true'
+}
 interface SaleRecord {
   saleKind?:SaleKind; name:string;visible:boolean;purchaseProcess?:PurchaseProcess
   modes:{online:{enabled:boolean;price:number};offline:{enabled:boolean;price:number}}

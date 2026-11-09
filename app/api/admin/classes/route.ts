@@ -3,14 +3,14 @@ import { isAdminAuthed } from '@/lib/admin-auth'
 import { loadClasses, saveClasses, generateId, ClassData } from '@/lib/classes'
 import { isOriginalProduct, parsePurchaseProcess } from '@/lib/purchase-process'
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
-import { saleKindForWrite, validateBundle, SalePolicyError } from '@/lib/daechion/orders/sale-policy'
+import { saleKindForWrite, validateBundle, SalePolicyError, bundlePublishingReady } from '@/lib/daechion/orders/sale-policy'
 import {resolveBundleComponents,bundleCompositionIssue,BundleComponentError,type BundleComponent} from '@/lib/daechion/orders/bundle-components'
 
 // GET: 전체 수업 목록 (visible 무관)
 export async function GET() {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const classes=loadClasses()
-  return NextResponse.json(classes.map(item=>({...item,bundleCompositionIssue:bundleCompositionIssue(item,classes)})),{headers:{'Cache-Control':'no-store'}})
+  return NextResponse.json(classes.map(item=>({...item,bundleCompositionIssue:bundleCompositionIssue(item,classes)})),{headers:{'Cache-Control':'no-store','X-Bundle-Publishing-Ready':String(bundlePublishingReady(process.env))}})
 }
 
 // POST: 새 수업 추가
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
       bundleComponents=resolveBundleComponents(body.bundleProductIds,body.expectedBundleComponents,loadClasses(),process.env.DAECHION_TENANT_ID??'')
       bindingBody={...body,daechionLectureIds:bundleComponents.map(item=>item.lectureId)}
     }
-    validateBundle({...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds,false)
+    validateBundle({...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds,bundlePublishingReady(process.env))
   }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
 
   let daechionBinding

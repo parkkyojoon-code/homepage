@@ -3,7 +3,7 @@ import { isAdminAuthed } from '@/lib/admin-auth'
 import { loadClasses, saveClasses, deleteImage } from '@/lib/classes'
 import { isOriginalProduct, parsePurchaseProcess, purchaseProcessOf } from '@/lib/purchase-process'
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
-import { saleKindForWrite, validateBundle, SalePolicyError } from '@/lib/daechion/orders/sale-policy'
+import { saleKindForWrite, validateBundle, SalePolicyError, bundlePublishingReady } from '@/lib/daechion/orders/sale-policy'
 import {resolveBundleComponents,BundleComponentError} from '@/lib/daechion/orders/bundle-components'
 
 // PUT: 수업 수정
@@ -38,7 +38,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         return NextResponse.json({error:'묶음상품은 홈페이지 개별상품을 선택해 구성해주세요.'},{status:400})
       }
     }
-    validateBundle({...classes[idx],...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds??classes[idx].daechionBinding?.lectures.map(l=>l.id),false)
+    validateBundle({...classes[idx],...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds??classes[idx].daechionBinding?.lectures.map(l=>l.id),bundlePublishingReady(process.env))
   }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
 
   const before=JSON.stringify(classes[idx])
