@@ -4,6 +4,7 @@ import type { SubjectSelection } from './subjectPricing'
 import type { PurchaseProcess } from './purchase-process'
 import type { StoredLectureBinding } from './daechion/product-policy'
 import type { BundleComponent } from './daechion/orders/bundle-components'
+import type { DiscountRule } from './daechion/orders/discounts'
 
 const DATA_DIR   = process.env.DATA_DIR || '/app/data'
 const CLASSES_FILE = path.join(DATA_DIR, 'classes.json')
@@ -23,6 +24,7 @@ export interface ClassData {
   purchaseProcess?: PurchaseProcess
   saleKind?: 'SINGLE' | 'BUNDLE'
   bundleComponents?: BundleComponent[]
+  discountPrices?: DiscountRule[]
   daechionBinding?: StoredLectureBinding|null
   visible: boolean
   name: string

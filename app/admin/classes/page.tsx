@@ -19,6 +19,7 @@ interface ClassData {
   bundleComponents?:BundleComponent[]
   bundleProductIds?:string[]
   bundleCompositionIssue?:string|null
+  discountPrices?:{code:string;priceWon:number}[]
   daechionBinding?:StoredLectureBinding|null
   daechionLectureIds?:number[]
   image: string | null
@@ -37,6 +38,7 @@ const EMPTY_CLASS = {
   customId: '', visible: false, name: '', category: '수리논술', badge: '',
   purchaseProcess: 'PROCESS_1' as PurchaseProcess,
   daechionLectureIds:[] as number[],
+  discountPrices:[] as {code:string;priceWon:number}[],
   image: null,
   duration: '',
   modes: { online: { enabled: true, price: 0 }, offline: { enabled: false, price: 0, campuses: [] as string[] } },
@@ -724,6 +726,17 @@ export default function AdminClassesPage() {
 
           </>}
         </div>
+
+        {e.purchaseProcess==='PROCESS_2'&&<section style={{...card,padding:20,marginTop:20}} aria-label="상품 할인코드">
+          <h2 style={{fontSize:16,fontWeight:700,color:'#fff',marginBottom:12}}>할인코드</h2>
+          <p style={{color:'#b8c6df',fontSize:12,marginBottom:14}}>할인 후 금액은 교재비를 포함한 최종 결제액입니다. 같은 코드를 여러 상품에 등록할 수 있습니다.</p>
+          {(e.discountPrices??[]).map((rule,index)=><div key={index} style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'end',marginBottom:12}}>
+            <label style={{...lbl,flex:'1 1 180px'}}>할인코드 {index+1}<input aria-label={`할인코드 ${index+1}`} maxLength={64} style={inp} value={rule.code} onChange={ev=>upd(['discountPrices'],(e.discountPrices??[]).map((r,i)=>i===index?{...r,code:ev.target.value}:r))}/></label>
+            <label style={{...lbl,flex:'1 1 180px'}}>할인 후 금액 (원)<input aria-label={`할인 후 금액 ${index+1}`} type="number" min={1} max={2147483647} step={1} style={inp} value={rule.priceWon||''} onChange={ev=>upd(['discountPrices'],(e.discountPrices??[]).map((r,i)=>i===index?{...r,priceWon:Number(ev.target.value)}:r))}/></label>
+            <button type="button" aria-label={`할인코드 ${index+1} 삭제`} onClick={()=>upd(['discountPrices'],(e.discountPrices??[]).filter((_,i)=>i!==index))} style={{...inp,width:'auto',cursor:'pointer'}}>삭제</button>
+          </div>)}
+          <button type="button" disabled={(e.discountPrices?.length??0)>=50} onClick={()=>upd(['discountPrices'],[...(e.discountPrices??[]),{code:'',priceWon:0}])} style={{...inp,width:'auto',cursor:'pointer'}}>+ 할인코드 추가하기</button>
+        </section>}
 
         <div style={{ marginTop: 20, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <button onClick={closeEdit} style={{ padding: '11px 20px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'rgba(255,255,255,0.5)', fontSize: 13, cursor: 'pointer' }}>취소</button>

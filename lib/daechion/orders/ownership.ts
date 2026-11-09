@@ -13,6 +13,7 @@ const matches=(student:DaechionStudent,p:string)=>[student.studentPhoneNumber,st
 // are therefore held instead of interpreting absence of an API as NOT_OWNED.
 export async function lookupOwnership(port:ReadOnlyStudentPort,tenantId:string,cart:ResolvedCart,contact:OrderContact,subjectKey:string):Promise<OwnershipReport>{
   let identity:'PASSED'|'REVIEW'='REVIEW',state:'NOT_OWNED'|'UNKNOWN'='UNKNOWN'
+  let existingStudent:'EXISTING'|'NEW'|'UNKNOWN'='UNKNOWN'
   try{
     if(String((await port.me()).tenantId)!==tenantId)throw Error('TENANT_MISMATCH')
     const students=new Map<number,DaechionStudent>()
@@ -24,10 +25,11 @@ export async function lookupOwnership(port:ReadOnlyStudentPort,tenantId:string,c
         students.set(student.id,student)
       }
     }
+    existingStudent=students.size>0?'EXISTING':'NEW'
     if(students.size===0&&contact.studentHistory==='NEW'){identity='PASSED';state='NOT_OWNED'}
     // Inactive profiles are still existing profiles. Neither payer number nor
     // matching names alone decide identity or create login access.
   }catch{/* Unknown lookup or identity is held without leaking provider data. */}
-  return {cartFingerprint:cart.fingerprint,subjectKey,checkedAt:new Date().toISOString(),identity,
+  return {cartFingerprint:cart.fingerprint,subjectKey,checkedAt:new Date().toISOString(),identity,existingStudent,
     lectures:cart.items.flatMap(i=>i.lectures.map(l=>({id:l.id,state})))}
 }

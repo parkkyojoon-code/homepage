@@ -1,6 +1,6 @@
 import type {SheetsApi} from '../sheets-publisher'
 import {sheetsDestination} from '../sheets-view'
-import {ORDER_HEADERS,orderFormatting,type OrderSheetView} from './sheets-view'
+import {ORDER_HEADERS,LEGACY_ORDER_HEADERS,orderFormatting,type OrderSheetView} from './sheets-view'
 
 export interface OrderSheetTarget {spreadsheetId:string;legacySpreadsheetId:string;sheetId:number;singleIntake:{spreadsheetId:string;sheetId:number}}
 const marker='pkjmath_order_sheet_v1',rowKey='pkjmath_order_id'
@@ -33,6 +33,18 @@ export async function setupOrderSheet(api:SheetsApi,target:OrderSheetTarget){
   const header=await api.call('GET',root+'/values/'+a1(sheet.title)+'!1:1')
   const existing=(header.values as unknown[][]|undefined)?.[0]??[],tagged=await find(api,target,marker,'1')
   if(tagged.length===1&&JSON.stringify(existing.slice(0,ORDER_HEADERS.length))===JSON.stringify(ORDER_HEADERS))return
+  // Insert before the existing notes column. Never overwrite notes or move rows;
+  // row developer metadata and all historical financial columns stay intact.
+  if(tagged.length===1&&JSON.stringify(existing)===JSON.stringify([...LEGACY_ORDER_HEADERS,'직원 메모'])){
+    const requests=[
+      {insertDimension:{range:{sheetId:target.sheetId,dimension:'COLUMNS',startIndex:LEGACY_ORDER_HEADERS.length,endIndex:ORDER_HEADERS.length},inheritFromBefore:true}},
+      {updateCells:{start:{sheetId:target.sheetId,rowIndex:0,columnIndex:0},rows:[{values:cells([...ORDER_HEADERS,'직원 메모'])}],fields:'userEnteredValue'}},
+      ...orderFormatting(target.sheetId).slice(3),
+    ]
+    const result=await api.call('POST',root+':batchUpdate',{requests})
+    if(result.spreadsheetId!==target.spreadsheetId||!Array.isArray(result.replies)||result.replies.length!==requests.length)throw Error('ORDER_SHEET_SETUP_UNKNOWN')
+    return
+  }
   if(tagged.length||existing.length)throw Error('ORDER_SHEET_TAB_NOT_EMPTY')
   if(!Number.isSafeInteger(sheet.gridProperties?.columnCount)||sheet.gridProperties.columnCount<1)throw Error('ORDER_SHEET_TAB_INVALID')
   const all=await api.call('GET',root+'/values/'+a1(sheet.title))

@@ -15,6 +15,7 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
   const [selected,setSelected]=useState<string[]>(initialProductId?[initialProductId]:[]),[checked,setChecked]=useState<Checked|null>(null),[checking,setChecking]=useState(false)
   const [form,setForm]=useState({studentName:'',studentPhone:'',guardianName:'',guardianPhone:'',payerPhone:'',applicantType:'',confirmPayment:false,agreePrivacy:false})
   const [history,setHistory]=useState<StudentHistory>(),[quote,setQuote]=useState<CartQuote|null>(null),[finalConfirmed,setFinalConfirmed]=useState(false),[now,setNow]=useState(Date.now())
+  const [codeDraft,setCodeDraft]=useState(''),[appliedCode,setAppliedCode]=useState('')
   const [pending,setPending]=useState<Pending|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[none,setNone]=useState(false)
   const [receipt,setReceipt]=useState<ReturnType<typeof receiptResponse.parse>|null>(null)
   const operation=useRef(false)
@@ -39,17 +40,23 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
     const controller=new AbortController();setChecked(null)
     if(!selected.length||!available||pending){setChecking(false);return()=>controller.abort()}
     setChecking(true)
-    fetch('/api/daechion/orders/cart',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId}))})})
-      .then(async r=>{const data=await r.json();if(r.status!==200&&r.status!==409)throw Error();return cartResponse.parse(data)})
+    fetch('/api/daechion/orders/cart',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId})),discountCode:appliedCode})})
+      .then(async r=>{const data=await r.json();if(data.code==='DISCOUNT_NOT_APPLICABLE')throw new VisibleError(data.error);if(r.status!==200&&r.status!==409)throw Error();return cartResponse.parse(data)})
       .then(data=>{if(!controller.signal.aborted)setChecked(data)})
-      .catch(()=>{if(!controller.signal.aborted)setError('선택한 상품을 확인하지 못했습니다. 선택 내용을 다시 확인해주세요.')})
+      .catch(e=>{if(!controller.signal.aborted)setError(e instanceof VisibleError?e.message:'선택한 상품을 확인하지 못했습니다. 선택 내용을 다시 확인해주세요.')})
       .finally(()=>{if(!controller.signal.aborted)setChecking(false)})
     return()=>controller.abort()
-  },[selected,available,products,pending])
+  },[selected,available,products,pending,appliedCode])
   useEffect(()=>{if(!quote)return;setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer)},[quote])
   function invalidate(){setQuote(null);setFinalConfirmed(false);setNone(false);setError('')}
   function changeSelection(id:string){invalidate();setChecked(null);setForm(old=>({...old,confirmPayment:false}));setSelected(old=>old.includes(id)?old.filter(v=>v!==id):[...old,id])}
   function update(key:keyof typeof form,value:string|boolean){invalidate();setForm(old=>({...old,[key]:value}))}
+  function applyCode(code:string){
+    const normalized=code.trim().toUpperCase()
+    if(!/^[A-Z0-9_-]{0,64}$/.test(normalized)){setError('할인코드는 영문·숫자·밑줄·하이픈으로 입력해주세요.');return}
+    if(normalized===appliedCode)return
+    invalidate();setChecked(null);setForm(old=>({...old,confirmPayment:false}));setAppliedCode(normalized);setCodeDraft(normalized)
+  }
   async function createQuote(event:FormEvent){
     event.preventDefault()
     if(operation.current||!checked||checked.conflicts.length||checking||pending)return
@@ -57,7 +64,7 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
     if(!history||!form.applicantType||!form.studentName.trim()||!form.studentPhone.trim()||!form.payerPhone.trim()||!form.confirmPayment||!form.agreePrivacy){setError('필수 정보와 동의 항목을 확인해주세요.');return}
     operation.current=true;setBusy(true)
     try{
-      const r=await fetch('/api/daechion/orders/quotes',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId})),contact:{...form,studentHistory:history},expectedTotalWon:checked.totalWon})})
+      const r=await fetch('/api/daechion/orders/quotes',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId})),discountCode:appliedCode,contact:{...form,studentHistory:history},expectedTotalWon:checked.totalWon})})
       const data=await r.json()
       if(!r.ok){if(data.code==='PRICE_CHANGED'||data.status==='CART_CONFLICT')setRefresh(v=>v+1);throw new VisibleError(typeof data.error==='string'?data.error:'선택한 상품을 다시 확인해주세요.')}
       if(noPurchaseResponse.safeParse(data).success){setNone(true);return}
@@ -84,7 +91,7 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
     }catch(e){setError(e instanceof VisibleError?e.message:'접수 결과를 확인하지 못했습니다. 아래 버튼으로 같은 접수를 다시 확인해주세요.')}
     finally{operation.current=false;setBusy(false)}
   }
-  const locked=busy||Boolean(pending),total=selected.reduce((sum,id)=>sum+(products.find(p=>p.productId===id)?.priceWon??0),0)
+  const locked=busy||Boolean(pending),total=checked?.totalWon??selected.reduce((sum,id)=>sum+(products.find(p=>p.productId===id)?.priceWon??0),0)
   const expired=quote&&Date.parse(quote.expiresAt)<=now
   const field=(key:'studentName'|'studentPhone'|'guardianName'|'guardianPhone'|'payerPhone',label:string,required=false)=><label className={base.field}>{label}{required?' *':' (선택)'}<input name={key} type={key.endsWith('Phone')?'tel':'text'} value={form[key]} maxLength={key.endsWith('Phone')?40:80} autoComplete="off" required={required} onChange={e=>update(key,e.target.value)}/></label>
   if(receipt)return <main className={base.page}><section className={base.card} aria-live="polite"><h1>{receipt.reviewRequired?'담당자 확인 요청을 접수했습니다.':'신청이 접수되었습니다.'}</h1>
@@ -99,7 +106,16 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
         <span className={styles.productTitle}><input type="checkbox" checked={selected.includes(p.productId)} disabled={!selected.includes(p.productId)&&selected.length>=30} onChange={()=>changeSelection(p.productId)}/>{p.title}</span>
         <span className={base.sub}>{p.saleKind==='BUNDLE'?`묶음상품 · ${p.lectureCount}개 강의`:'개별 강의'}</span><strong>{p.priceWon.toLocaleString('ko-KR')}원</strong></label>)}</div></fieldset>
       <section className={styles.panel} aria-label="선택한 상품"><h2>선택한 상품 {selected.length}개</h2>
-        {!selected.length?<p className={base.sub}>구매할 강의를 선택해주세요.</p>:<ul className={styles.items}>{selected.map(id=><li key={id}><span>{products.find(p=>p.productId===id)?.title??'판매 확인이 필요한 상품'}</span><button type="button" className={styles.secondary} disabled={locked} onClick={()=>changeSelection(id)} aria-label={`${products.find(p=>p.productId===id)?.title??id} 제외`}>제외</button></li>)}</ul>}
+        {!selected.length?<p className={base.sub}>구매할 강의를 선택해주세요.</p>:<ul className={styles.items}>{selected.map(id=>{
+          const item=checked?.items.find(i=>i.productId===id),regular=item?.regularPriceWon??products.find(p=>p.productId===id)?.priceWon??0
+          return <li key={id}><span>{products.find(p=>p.productId===id)?.title??'판매 확인이 필요한 상품'}<br/>{item&&regular>item.priceWon?<><del>{regular.toLocaleString('ko-KR')}원</del> → <strong>{item.priceWon.toLocaleString('ko-KR')}원</strong></>:`${regular.toLocaleString('ko-KR')}원`}</span><button type="button" className={styles.secondary} disabled={locked} onClick={()=>changeSelection(id)} aria-label={`${products.find(p=>p.productId===id)?.title??id} 제외`}>제외</button></li>})}</ul>}
+        <form className={styles.discount} onSubmit={e=>{e.preventDefault();applyCode(codeDraft)}}>
+          <label className={base.field}>할인코드<input aria-label="할인코드" maxLength={64} value={codeDraft} disabled={locked} autoComplete="off" onChange={e=>setCodeDraft(e.target.value)}/></label>
+          <button type="submit" className={styles.secondary} disabled={locked||!selected.length}>적용</button>
+          {appliedCode&&<button type="button" className={styles.secondary} disabled={locked} onClick={()=>applyCode('')}>할인코드 해제</button>}
+        </form>
+        {checked?.discountCode&&<p role="status">적용 코드: {checked.discountCode} · 적용 가능한 상품에만 할인됩니다.</p>}
+        {Boolean(checked?.discountWon)&&<><p className={styles.total}>정상가 합계 <span>{checked!.regularTotalWon!.toLocaleString('ko-KR')}원</span></p><p className={styles.total}>총 할인액 <span>−{checked!.discountWon!.toLocaleString('ko-KR')}원</span></p></>}
         <p className={styles.total}>선택 금액 <strong>{total.toLocaleString('ko-KR')}원</strong></p>
         {checking&&<p role="status">가격과 강의 구성을 확인하고 있습니다.</p>}
         {checked&&checked.conflicts.length>0&&<div className={styles.conflict} role="alert"><h3>중복된 강의가 포함되어 있습니다.</h3><p>아래 상품 중 하나를 제외한 뒤 신청해주세요. 중복 상품을 자동으로 삭제하거나 가격을 차감하지 않습니다.</p><ul>{checked.conflicts.map(c=><li key={c.lectureId}>{c.lectureName}: {c.productTitles.join(' / ')}</li>)}</ul></div>}
@@ -118,7 +134,8 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
       {none&&<section className={styles.panel} role="status"><h2>추가 결제가 필요하지 않습니다.</h2><p>선택한 강의가 모두 이미 수강 가능한 상태입니다.</p></section>}
       {quote&&!pending&&<section className={styles.panel} aria-label="최종 신청 확인" aria-live="polite"><h2>최종 신청 확인</h2>
         {quote.excluded.length>0&&<p className={styles.notice}>이미 수강 가능한 개별 강의는 제외했습니다: {quote.excluded.map(i=>i.title).join(', ')}. 변경된 상품과 금액을 다시 확인해주세요.</p>}
-        <ul>{quote.items.map(i=><li key={i.productId}>{i.title} · {i.priceWon.toLocaleString('ko-KR')}원</li>)}</ul>
+        <ul>{quote.items.map(i=><li key={i.productId}>{i.title} · {i.regularPriceWon&&i.regularPriceWon>i.priceWon&&<><del>{i.regularPriceWon.toLocaleString('ko-KR')}원</del> → </>}{i.priceWon.toLocaleString('ko-KR')}원</li>)}</ul>
+        {quote.discountCode&&<p>할인코드 {quote.discountCode} · 총 할인액 {quote.discountWon?.toLocaleString('ko-KR')}원</p>}
         {quote.status==='REVIEW'&&<p className={styles.notice}>기존 수강 정보 또는 묶음상품에 포함된 강의의 보유 여부를 담당자가 확인해야 합니다. 일부 강의를 임의로 빼거나 차감하지 않으며, 확인 전에는 청구하지 않습니다.</p>}
         <p className={styles.total}>{quote.status==='REVIEW'?'확인 요청 금액':'최종 신청 금액'} <strong>{quote.totalWon.toLocaleString('ko-KR')}원</strong></p>
         {expired?<p role="status">확인 시간이 지났습니다. 위의 ‘신청 내용 확인’을 다시 눌러주세요.</p>:<label className={base.consent}><input type="checkbox" checked={finalConfirmed} disabled={busy} onChange={e=>setFinalConfirmed(e.target.checked)}/>위 상품과 최종 금액을 확인했습니다.</label>}

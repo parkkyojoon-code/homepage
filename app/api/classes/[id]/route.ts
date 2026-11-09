@@ -8,5 +8,6 @@ export async function GET(_: NextRequest, { params }: { params: Promise<{ id: st
   if (!cls || !cls.visible) {
     return NextResponse.json({ error: 'not_found' }, { status: 404 })
   }
-  return NextResponse.json({ ...cls, purchaseProcess: purchaseProcessOf(cls),orderCheckout:usesOrderCheckout(cls,process.env.DAECHION_ORDERS_ENABLED==='true') },{headers:{'Cache-Control':'no-store'}})
+  const {discountPrices: _privateDiscounts,...product}=cls
+  return NextResponse.json({ ...product, purchaseProcess: purchaseProcessOf(cls),orderCheckout:usesOrderCheckout(cls,process.env.DAECHION_ORDERS_ENABLED==='true') },{headers:{'Cache-Control':'no-store'}})
 }

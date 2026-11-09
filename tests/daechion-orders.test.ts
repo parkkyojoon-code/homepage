@@ -9,6 +9,34 @@ import {bundleSource,resolveBundleComponents,bundleCompositionIssue,type BundleP
 import {checkoutCatalog} from '../lib/daechion/orders/catalog'
 import {firstLessonTarget} from '../lib/daechion/first-lesson'
 import {usesOrderCheckout,purchaseEntryHref} from '../lib/purchase-process'
+import {validateDiscounts,discountSummary} from '../lib/daechion/orders/discounts'
+
+test('one promotion code discounts only eligible products, preserves overlap guards and immutable snapshot totals',()=>{
+  const product=(productId:string,priceWon:number,ids:number[],discountPrices?:{code:string;priceWon:number}[])=>({productId,title:productId,saleKind:ids.length>1?'BUNDLE':'SINGLE',priceWon,tenantId:'fixture',revision:'r1',purchaseProcess:'PROCESS_2',visible:true,lectures:ids.map(id=>({id,name:`강의 ${id}`})),...(discountPrices?{discountPrices}:{})})
+  const catalog=[product('a',100000,[10],[{code:'LIVE2026',priceWon:80000},{code:'OTHER',priceWon:90000}]),product('b',70000,[11],[{code:'LIVE2026',priceWon:60000}]),product('c',50000,[12]),product('pack',150000,[10,11],[{code:'LIVE2026',priceWon:120000}])]
+  const cart=resolveCart({items:[{productId:'a'},{productId:'b'},{productId:'c'}],discountCode:' live2026 '},catalog,'fixture')
+  assert.equal(cart.totalWon,190000);assert.deepEqual(cart.items.map(i=>i.priceWon),[80000,60000,50000])
+  assert.deepEqual(discountSummary(cart.items),{regularTotalWon:220000,discountWon:30000,discountCode:'LIVE2026'})
+  assert.equal(resolveCart({items:cart.items.map(i=>({productId:i.productId}))},cart.items,'fixture').fingerprint,cart.fingerprint)
+  assert.equal(resolveCart({items:[{productId:'a'}],discountCode:'OTHER'},catalog,'fixture').totalWon,90000)
+  assert.equal(resolveCart({items:[{productId:'pack'},{productId:'a'}],discountCode:'LIVE2026'},catalog,'fixture').conflicts.length,1)
+  assert.equal(resolveCart({items:[{productId:'pack'}],discountCode:'LIVE2026'},catalog,'fixture').totalWon,120000)
+  assert.throws(()=>resolveCart({items:[{productId:'c'}],discountCode:'LIVE2026'},catalog,'fixture'),/DISCOUNT_NOT_APPLICABLE/)
+  assert.throws(()=>resolveCart({items:[{productId:'a'}],discountCode:'NOPE'},catalog,'fixture'),/DISCOUNT_NOT_APPLICABLE/)
+  assert.throws(()=>resolveCart({items:[{productId:'a'}],discountCode:'LIVE2026',priceWon:1},catalog,'fixture'),/INVALID_CART/)
+  assert.throws(()=>resolveCart({items:[{productId:'a'}],discountCode:['LIVE2026','OTHER']},catalog,'fixture'),/INVALID_CART/)
+  assert.equal(resolveCart({items:[{productId:'a'}]},catalog,'fixture').totalWon,100000)
+  assert.ok(!JSON.stringify(cart.items).includes('OTHER'))
+})
+
+test('product promotion validation rejects duplicate codes, free/increased prices and legacy/variable products',()=>{
+  const product={purchaseProcess:'PROCESS_2',modes:{online:{enabled:true,price:10000}},textbook:{included:true,price:1000}}
+  assert.deepEqual(validateDiscounts([{code:' live_2026 ',priceWon:9000}],product),[{code:'LIVE_2026',priceWon:9000}])
+  for(const rules of [[{code:'',priceWon:9000}],[{code:'A A',priceWon:9000}],[{code:'A',priceWon:0}],[{code:'A',priceWon:11000}],[{code:'A',priceWon:1.5}],[{code:'a',priceWon:9000},{code:'A',priceWon:8000}]])assert.throws(()=>validateDiscounts(rules,product))
+  assert.throws(()=>validateDiscounts([{code:'A',priceWon:9000}],{...product,purchaseProcess:'PROCESS_1'}))
+  assert.throws(()=>validateDiscounts([{code:'A',priceWon:9000}],{...product,subjectSelection:{}}))
+  assert.deepEqual(validateDiscounts(undefined,{purchaseProcess:'PROCESS_1'}),[])
+})
 
 test('purchase entry routes bundles and enabled process2 singles to selected cart while preserving legacy and offline flows',()=>{
   const single={id:'new-course',purchaseProcess:'PROCESS_2'}

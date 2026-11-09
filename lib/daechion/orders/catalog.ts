@@ -1,10 +1,12 @@
 import type { IntakeProduct } from '../intake'
 import {bundleCompositionIssue,type BundleComponent} from './bundle-components'
+import type {DiscountRule} from './discounts'
 
 export interface OrderCatalogClass extends IntakeProduct {
   saleKind?:'SINGLE'|'BUNDLE'
   updatedAt:string
   bundleComponents?:BundleComponent[]
+  discountPrices?:DiscountRule[]
 }
 // Existing multi-target products are not silently converted into bundles.
 // The admin editor will explicitly persist saleKind in the next UI stage.
@@ -16,5 +18,5 @@ export function checkoutCatalog(classes:readonly OrderCatalogClass[],tenantId:st
     .filter(p=>bundleCompositionIssue(p,classes)===null)
     .map(p=>({productId:p.id,title:p.name,saleKind:p.saleKind??'SINGLE',purchaseProcess:'PROCESS_2',visible:true,
       priceWon:p.modes.online.price+(p.saleKind!=='BUNDLE'&&p.textbook.included?p.textbook.price:0),
-      tenantId,revision:p.updatedAt,lectures:p.daechionBinding!.lectures}))
+      tenantId,revision:p.updatedAt,lectures:p.daechionBinding!.lectures,...(p.discountPrices?.length?{discountPrices:p.discountPrices}:{})}))
 }

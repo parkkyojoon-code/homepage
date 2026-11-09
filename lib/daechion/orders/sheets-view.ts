@@ -4,11 +4,14 @@ import {orderReason} from './reasons'
 export {orderReason} from './reasons'
 import {contactSchema} from './checkout'
 import {latestReview,reviewContext} from './manual-review'
+import {discountSummary,pricingSnapshot} from './discounts'
 
 export const ORDER_HEADERS=Object.freeze(['주문번호','신청시각','프로세스','신청자 유형','학생 이름','학부모 이름','학생 전화번호','보호자 로그인 전화번호','결제 전화번호',
   '기존·신규 선택','상품명','상품 ID','상품 종류','상품별 판매가','총 청구 금액','원비 확인','개인정보 동의','안내문 버전','견적번호',
   '접수 상태','청구 상태','현재 청구서 번호','전체 청구서 번호','청구 발송시각','자동 등록 대기 종료시각','결제 상태','결제 완료시각',
-  '대치온 학생 ID','강의별 등록·권한 상태','안내 발송 상태','수신 번호별 안내 상태','중복 수강생 확인','중복 확인 사유','처리 확인','확인 필요 사유','동기화 기준 버전','마지막 반영 시도시각'])
+  '대치온 학생 ID','강의별 등록·권한 상태','안내 발송 상태','수신 번호별 안내 상태','중복 수강생 확인','중복 확인 사유','처리 확인','확인 필요 사유','동기화 기준 버전','마지막 반영 시도시각',
+  '할인코드 적용 여부','사용한 할인코드','정상가 합계','총 할인액','상품별 정상가','기존 수강생 조회 결과','할인 사용 확인','기존 수강생 조회시각'])
+export const LEGACY_ORDER_HEADERS=Object.freeze(ORDER_HEADERS.slice(0,-8))
 const labels:Record<string,string>={DRAFT:'접수 준비',READY:'자동 처리 대기',REVIEW:'확인 필요',CLOSED:'대기 종료',
   NOT_CREATED:'미발송',RESERVED:'청구 준비',SEND_UNKNOWN:'발송 결과 확인 필요',SENT:'발송 접수 완료',CANCELLED:'취소',DESTROYED:'파기',
   PENDING:'대기',PAID:'결제 완료',UNKNOWN:'결과 확인 필요',RUNNING:'처리 중',VERIFIED:'권한 검증 완료',MANUAL:'수동 권한 확인',
@@ -32,6 +35,10 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const jobs=(await c.query("SELECT kind,state,last_error FROM daechion_orders.jobs WHERE order_id=$1 AND (state IN ('UNKNOWN','FAILED') OR last_error IS NOT NULL)",[id])).rows
   const recovery=(await c.query('SELECT state,result_code FROM daechion_orders.sheet_recoveries WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 1',[id])).rows[0]
   const quote=(await c.query('SELECT snapshot FROM daechion_orders.quotes WHERE id=$1',[o.quote_id])).rows[0]
+  const pricing=discountSummary(items.map(i=>({priceWon:Number(i.price_won),pricing:pricingSnapshot.optional().parse((i.snapshot as {pricing?:unknown})?.pricing)})))
+  const history=(quote?.snapshot as {existingStudent?:unknown})?.existingStudent
+  const existing=history==='EXISTING'?'기존':history==='NEW'?'신규':'확인 불가'
+  const discountCheck=!pricing.discountCode?'미적용':history==='EXISTING'?'기존 수강생 할인 사용':history==='NEW'?'신규 수강생 할인 사용':'할인 사용 · 기존 여부 확인 불가'
   const quoteReasons=z.array(z.object({productId:z.string(),code:z.enum(['BUNDLE_ALREADY_OWNED','OWNERSHIP_UNKNOWN'])})).parse((quote?.snapshot as {reviewReasons?:unknown})?.reviewReasons??[])
   const itemTitle=(productId:string)=>String(items.find(i=>i.product_id===productId)?.title??productId)
   const reviewed=await latestReview(c,id)
@@ -74,13 +81,17 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
     items.map(i=>`${i.title}: ${Number(i.price_won).toLocaleString('ko-KR')}원`).join('\n'),Number(o.total_won),'확인','동의',String(noticeVersion??''),String(o.quote_id),state(o.checkout_state),state(current?.state??'NOT_CREATED'),
     current?String(current.bill_id):'',bills.map(b=>String(b.bill_id)).join('\n'),koreanTime(current?.sent_at),koreanTime(current?.due_at),o.payment_state==='PENDING'?'미납':state(o.payment_state),koreanTime(o.paid_at),o.student_id?String(o.student_id):'',
     grants.map(grantLine).join('\n'),state(o.notification_state),receipts.map(r=>`${r.phone}: ${state(r.state)}`).join('\n'),
-    duplicate,duplicateReason,attention?'확인 필요':intakeClosed?'접수 종료':expectedExpiry?'대기 종료':'정상',[...new Set(errors)].join('\n'),String(o.version),koreanTime(new Date())]
+    duplicate,duplicateReason,attention?'확인 필요':intakeClosed?'접수 종료':expectedExpiry?'대기 종료':'정상',[...new Set(errors)].join('\n'),String(o.version),koreanTime(new Date()),
+    pricing.discountCode?'적용':'미적용',pricing.discountCode,pricing.regularTotalWon,pricing.discountWon,
+    items.map(i=>`${i.title}: ${Number((i.snapshot as {pricing?:{regularPriceWon:number}})?.pricing?.regularPriceWon??i.price_won).toLocaleString('ko-KR')}원`).join('\n'),
+    existing,discountCheck,koreanTime((quote?.snapshot as {existingStudentCheckedAt?:unknown})?.existingStudentCheckedAt)]
   if(values.length!==ORDER_HEADERS.length)throw Error('ORDER_SHEET_COLUMNS_MISMATCH')
   return {id,version:String(o.version),values}
 }
 export function orderFormatting(sheetId:number){
   if(!Number.isSafeInteger(sheetId)||sheetId<0)throw Error('INVALID_ORDER_SHEET_TARGET')
-  const rules=[{column:'중복 수강생 확인',text:'통과',red:false},{column:'중복 수강생 확인',text:'확인 필요',red:true},{column:'처리 확인',text:'확인 필요',red:true}]
+  const rules=[{column:'중복 수강생 확인',text:'통과',red:false},{column:'중복 수강생 확인',text:'확인 필요',red:true},{column:'처리 확인',text:'확인 필요',red:true},
+    {column:'할인 사용 확인',text:'신규 수강생 할인 사용',red:true},{column:'할인 사용 확인',text:'할인 사용 · 기존 여부 확인 불가',red:true}]
   return rules.map((r,index)=>({addConditionalFormatRule:{index,rule:{
     ranges:[{sheetId,startRowIndex:0,startColumnIndex:ORDER_HEADERS.indexOf(r.column),endColumnIndex:ORDER_HEADERS.indexOf(r.column)+1}],
     booleanRule:{condition:{type:'TEXT_EQ',values:[{userEnteredValue:r.text}]},format:{

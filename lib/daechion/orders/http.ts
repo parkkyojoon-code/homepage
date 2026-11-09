@@ -1,5 +1,6 @@
 import { CartError, resolveCart } from './cart'
 import { CheckoutError, quoteCheckout, receiveOrder, type CheckoutPorts } from './checkout'
+import {discountSummary} from './discounts'
 
 export function orderSettings(env:Record<string,string|undefined>){
   if(env.DAECHION_ORDERS_ENABLED!=='true'||env.DAECHION_INTAKE_ENABLED==='true'||!env.DAECHION_DATABASE_URL||!env.DAECHION_API_KEY||
@@ -42,8 +43,8 @@ export async function orderPost(kind:'cart'|'quotes'|'orders',request:Request,po
     await ports.ready()
     if(kind==='cart'){
       const cart=resolveCart(raw,await ports.catalog(),ports.tenantId)
-      return json({status:cart.conflicts.length?'CART_CONFLICT':'READY',totalWon:cart.totalWon,
-        items:cart.items.map(i=>({productId:i.productId,title:i.title,priceWon:i.priceWon})),conflicts:cart.conflicts},cart.conflicts.length?409:200)
+      return json({status:cart.conflicts.length?'CART_CONFLICT':'READY',totalWon:cart.totalWon,...discountSummary(cart.items),
+        items:cart.items.map(i=>({productId:i.productId,title:i.title,priceWon:i.priceWon,regularPriceWon:i.pricing?.regularPriceWon??i.priceWon})),conflicts:cart.conflicts},cart.conflicts.length?409:200)
     }
     if(kind==='quotes'){
       const result=await quoteCheckout(raw,ports)
@@ -57,7 +58,7 @@ export async function orderPost(kind:'cart'|'quotes'|'orders',request:Request,po
       const messages={INVALID_REQUEST:'필수 정보와 동의 항목을 확인해주세요.',PRICE_CHANGED:'선택한 상품이 변경되었습니다. 다시 확인해주세요.',QUOTE_UNAVAILABLE:'견적을 확인할 수 없습니다. 신청 내용을 다시 확인해주세요.',REQUEST_CONFLICT:'이미 접수된 요청과 다릅니다. 접수 내용을 확인해주세요.',ORDER_PENDING:'같은 수강 대상의 접수 내역이 있습니다. 담당자에게 확인해주세요.',THROTTLED:'잠시 후 다시 시도해주세요.',CONFIGURATION_REQUIRED:'현재 신청을 준비 중입니다.'}
       return json({code:error.code,error:messages[error.code]},statuses[error.code])
     }
-    if(error instanceof CartError)return json({code:error.code,error:'선택한 상품 구성을 다시 확인해주세요.'},error.code==='INVALID_CART'?400:error.code==='INVALID_OWNERSHIP_REPORT'?503:409)
+    if(error instanceof CartError)return json({code:error.code,error:error.code==='DISCOUNT_NOT_APPLICABLE'?'선택한 상품에 적용 가능한 할인코드가 아닙니다. 코드를 확인하거나 해제해주세요.':'선택한 상품 구성을 다시 확인해주세요.'},error.code==='INVALID_CART'?400:error.code==='INVALID_OWNERSHIP_REPORT'?503:409)
     // Never return raw SQL, submitted contacts, tokens or provider errors.
     return json({error:'접수를 확인하지 못했습니다. 같은 내용으로 다시 시도해주세요.'},503)
   }
