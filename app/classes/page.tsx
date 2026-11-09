@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import ClassCard from "@/components/classes/ClassCard"
+import CartEntry from '@/components/daechion/CartEntry'
 import {
   Grid3X3, Grid2X2, Search, ChevronDown,
   X, Sparkles, BookOpen,
@@ -946,6 +947,7 @@ export default function ClassesPage() {
       </section>
 
       {/* Minimal Filter & Search Section */}
+      <CartEntry/>
       <section style={{
         position: 'sticky',
         top: '56px',

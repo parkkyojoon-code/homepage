@@ -160,10 +160,31 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   onStage('PICKER_PAGE')
   await page.goto(participants)
   // A login redirect or a page for another lecture is not successful auth.
-  await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
+  const bulk=page.getByRole('button',{name:'일괄 학생 추가',exact:true})
+  const empty=page.getByText('차시에서 수강생 추가가 가능해요.',{exact:true})
+  await bulk.or(empty).waitFor({state:'visible'})
   if(new URL(page.url()).origin!==ORIGIN||new URL(page.url()).pathname!==new URL(participants).pathname)fail()
   await authenticated()
-  await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).click()
+  if(input.firstOnly&&await empty.isVisible()){
+    // A brand-new course has no bulk action. Add its first student directly to
+    // the pinned lesson; never seed another lesson merely to reveal that action.
+    const target=`${ORIGIN}/crm/lectures/${input.lectureId}/${input.weeklyLectureIds[0]}/attendance`
+    onStage('FIRST_LESSON_PICKER')
+    await page.goto(target)
+    await page.getByRole('button',{name:lecture.weeklyLectures[0].name,exact:true}).waitFor({state:'visible'})
+    if(page.url()!==target)fail()
+    await page.getByRole('button',{name:'학생 추가하기',exact:true}).click()
+    const picker=page.getByRole('dialog').filter({has:page.getByRole('tab',{name:'기존 학생 추가',exact:true})})
+    const search=picker.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true})
+    await search.fill(input.studentPhone)
+    await search.press('Enter')
+    const row=await exactStudentRow(picker,input)
+    await row.getByRole('checkbox').setChecked(true)
+    onStage('WEEK_SELECTED')
+    await input.beforeWrite()
+    await picker.getByRole('button',{name:/^1명 추가(?:\s|$)/}).click()
+  }else{
+  await bulk.click()
   const picker=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'일괄 학생 추가',exact:true})})
   await picker.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true}).fill(input.studentPhone)
   const row=await exactStudentRow(picker,input)
@@ -175,7 +196,19 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   const count=await weeks.getByRole('checkbox').count()
   if(count!==lecture.weeklyLectures.length&&count!==lecture.weeklyLectures.length+1)fail()
   if(count===lecture.weeklyLectures.length+1&&await weeks.getByRole('checkbox',{name:'전체 선택',exact:true}).count()!==1)fail()
-  for(const week of lecture.weeklyLectures){
+  if(input.firstOnly){
+    const boxes=weeks.getByRole('checkbox')
+    const labels=await boxes.evaluateAll(nodes=>nodes.map(node=>(node.getAttribute('aria-label')||
+      (node.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>node.ownerDocument.getElementById(id)?.textContent||'').join(' ')||
+      [...(node.labels||[])].map(label=>label.textContent).join(' ')).replace(/\s+/g,' ').trim()))
+    const actual=labels.map((name,index)=>({name,index})).filter(item=>item.name!=='전체 선택')
+    if(actual.length!==lecture.weeklyLectures.length||actual[0]?.name!==lecture.weeklyLectures[0].name.replace(/\s+/g,' ').trim()||
+      actual.filter(item=>item.name===actual[0].name).length!==1)fail()
+    // Clear default/preselected lessons explicitly. Never use "select all".
+    for(const item of actual)await boxes.nth(item.index).setChecked(false)
+    await boxes.nth(actual[0].index).setChecked(true)
+    for(const item of actual)if(await boxes.nth(item.index).isChecked()!==(item.index===actual[0].index))fail()
+  }else for(const week of lecture.weeklyLectures){
     const checkbox=weeks.getByRole('checkbox',{name:week.name,exact:true})
     if(await checkbox.count()!==1)fail()
     await checkbox.setChecked(true)
@@ -184,6 +217,7 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   onStage('WEEK_SELECTED')
   await input.beforeWrite()
   await weeks.getByRole('button',{name:'일괄 추가',exact:true}).click()
+  }
   const access=page.getByRole('dialog',{name:'권한 부여',exact:true})
   await access.waitFor({state:'visible'})
   for(const name of ACCESS_LABELS)await access.getByRole('checkbox',{name,exact:true}).setChecked(true)
@@ -195,6 +229,7 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   onStage('ACCESS_SUBMIT')
   await access.getByRole('button',{name:/^확인(?:\s|$)/}).click()
   await access.waitFor({state:'hidden'})
+  if(input.firstOnly&&!input.enrollmentRecorded)await input.recordEnrollment()
 
   let contentCount=0
   for(const id of input.weeklyLectureIds){
@@ -233,9 +268,14 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
       }
       const matches=(await api.lectures()).filter(item=>item.id===input.lectureId)
       if(matches.length!==1)fail()
-      const lecture=matches[0],names=lecture.weeklyLectures.map(week=>week.name)
-      if(!refreshOnly&&(!lecture.opened||!sameIds(lecture.weeklyLectures.map(week=>week.id),input.weeklyLectureIds)||
-        new Set(names).size!==names.length||names.some(name=>!name.trim()||name==='전체 선택')))fail()
+      const lecture=matches[0],names=lecture.weeklyLectures.map(week=>week.name.replace(/\s+/g,' ').trim())
+      if(!refreshOnly){
+        if(!lecture.opened||!names.length||names.some(name=>!name.trim()||name==='전체 선택'))fail()
+        if(input.firstOnly){
+          if(input.weeklyLectureIds.length!==1||lecture.weeklyLectures[0].id!==input.weeklyLectureIds[0]||
+            names.filter(name=>name===names[0]).length!==1||typeof input.enrollmentRecorded!=='boolean'||typeof input.recordEnrollment!=='function')fail()
+        }else if(!sameIds(lecture.weeklyLectures.map(week=>week.id),input.weeklyLectureIds)||new Set(names).size!==names.length)fail()
+      }
       report('BROWSER_LAUNCH')
       browser=await launchBrowser({headless:true})
       report('BROWSER_CONTEXT')
@@ -298,6 +338,8 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
     try{return await execute(input,{state:JSON.stringify(state),signal:new AbortController().signal,assert:async()=>{},save:async value=>{state=storageState(value)}},refreshOnly)}
     finally{memoryBusy=false}
   }
-  return {ensureContentAccess:input=>run(input),refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
+  return {ensureContentAccess:input=>run(input),
+    ensureFirstLessonAccess:input=>run({...input,firstOnly:true,weeklyLectureIds:[input.weeklyLectureId]}),
+    refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }
 module.exports={browserAccessProvider,applyAndVerify,verifyFile,verifyCollection,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}

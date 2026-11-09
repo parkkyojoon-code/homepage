@@ -26,6 +26,7 @@ export const intakeRequestSchema = z.object({
 }).strict()
 
 export interface IntakeProduct {
+  saleKind?:'SINGLE'|'BUNDLE'
   id: string; name: string; visible: boolean; purchaseProcess?: PurchaseProcess
   daechionBinding?:StoredLectureBinding|null
   modes: { online: { enabled: boolean; price: number }; offline: { enabled: boolean; price: number; campuses?: string[] } }
@@ -43,7 +44,7 @@ export function prepareApplication(raw: unknown, product: IntakeProduct | null, 
   const parsed = intakeRequestSchema.safeParse(raw)
   if (!parsed.success) throw new IntakeError('INVALID_APPLICATION')
   const input = parsed.data
-  if (!product || product.id !== input.productId || !product.visible || purchaseProcessOf(product) !== 'PROCESS_2') {
+  if (!product || product.saleKind==='BUNDLE' || product.id !== input.productId || !product.visible || purchaseProcessOf(product) !== 'PROCESS_2') {
     throw new IntakeError('PRODUCT_UNAVAILABLE')
   }
   let binding: ProductBinding | null

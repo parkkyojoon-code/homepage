@@ -17,7 +17,10 @@ COPY --from=build /app/.daechion-worker-build ./.daechion-worker-build
 COPY scripts/daechion-db.cjs scripts/daechion-migrations.cjs scripts/daechion-api-check.cjs ./scripts/
 COPY scripts/daechion-sheets-verify.cjs ./scripts/
 COPY db/daechion ./db/daechion
+COPY scripts/daechion-order-db.cjs scripts/daechion-order-migrations.cjs ./scripts/
+COPY db/daechion-orders ./db/daechion-orders
 COPY workers/daechion/billing.cjs ./workers/daechion/billing.cjs
+COPY workers/daechion/orders.cjs ./workers/daechion/orders.cjs
 COPY workers/daechion/browser/provider.cjs ./workers/daechion/browser/provider.cjs
 COPY workers/daechion/browser/session-store.cjs ./workers/daechion/browser/session-store.cjs
 COPY workers/daechion/browser/token-state.cjs ./workers/daechion/browser/token-state.cjs

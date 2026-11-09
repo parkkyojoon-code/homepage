@@ -57,6 +57,7 @@ export default function ReviewPage(){
   }
   return <main className={styles.page}>
     <Link href="/admin/dashboard">← 관리자 홈</Link><h1>신규 강의 신청 관리</h1>
+    <p><Link href="/admin/daechion/orders">일괄 주문 관리 →</Link></p>
     <form className={styles.search} onSubmit={event=>{event.preventDefault();search(0)}}><input aria-label="이름 또는 전화번호 검색" placeholder="이름 또는 전화번호" value={q} maxLength={80} onChange={event=>setQ(event.target.value)}/><label><input type="checkbox" checked={reviewOnly} onChange={event=>setReviewOnly(event.target.checked)}/>확인 필요 건만</label><button disabled={busy}>검색</button></form>
     {error&&<p className={styles.error} role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
     <div className={styles.table}><table><thead><tr><th>학생</th><th>강의</th><th>결제</th><th>중복 수강생 확인</th><th>자동 처리</th><th>안내</th></tr></thead><tbody>

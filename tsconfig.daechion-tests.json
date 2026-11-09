@@ -4,5 +4,5 @@
     "strict": true, "esModuleInterop": true, "skipLibCheck": true,
     "outDir": ".daechion-test-build", "rootDir": "."
   },
-  "include": ["lib/daechion/**/*.ts", "tests/daechion.test.ts"]
+  "include": ["lib/daechion/**/*.ts", "tests/daechion.test.ts", "tests/daechion-orders.test.ts"]
 }

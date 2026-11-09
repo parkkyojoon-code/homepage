@@ -3,6 +3,7 @@ import path from 'path'
 import type { SubjectSelection } from './subjectPricing'
 import type { PurchaseProcess } from './purchase-process'
 import type { StoredLectureBinding } from './daechion/product-policy'
+import type { BundleComponent } from './daechion/orders/bundle-components'
 
 const DATA_DIR   = process.env.DATA_DIR || '/app/data'
 const CLASSES_FILE = path.join(DATA_DIR, 'classes.json')
@@ -20,6 +21,8 @@ export interface ClassMode {
 export interface ClassData {
   id: string
   purchaseProcess?: PurchaseProcess
+  saleKind?: 'SINGLE' | 'BUNDLE'
+  bundleComponents?: BundleComponent[]
   daechionBinding?: StoredLectureBinding|null
   visible: boolean
   name: string
@@ -63,7 +66,7 @@ const DEFAULT_CLASSES: ClassData[] = [
     image: null,
     duration: '1개월 주1회 3시간',
     modes: {
-      online:  { enabled: true, price: 400000 },
+      online:  { enabled: true, price: 400000, campuses: [] },
       offline: { enabled: true, price: 840000, campuses: ['인천 송도'] },
     },
     textbook: { included: true, price: 38000 },
@@ -81,7 +84,7 @@ const DEFAULT_CLASSES: ClassData[] = [
     image: null,
     duration: '1개월 주1회 3시간',
     modes: {
-      online:  { enabled: true, price: 280000 },
+      online:  { enabled: true, price: 280000, campuses: [] },
       offline: { enabled: false, price: 0, campuses: [] },
     },
     textbook: { included: false, price: 0 },
