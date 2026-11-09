@@ -160,10 +160,31 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   onStage('PICKER_PAGE')
   await page.goto(participants)
   // A login redirect or a page for another lecture is not successful auth.
-  await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
+  const bulk=page.getByRole('button',{name:'일괄 학생 추가',exact:true})
+  const empty=page.getByText('차시에서 수강생 추가가 가능해요.',{exact:true})
+  await bulk.or(empty).waitFor({state:'visible'})
   if(new URL(page.url()).origin!==ORIGIN||new URL(page.url()).pathname!==new URL(participants).pathname)fail()
   await authenticated()
-  await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).click()
+  if(input.firstOnly&&await empty.isVisible()){
+    // A brand-new course has no bulk action. Add its first student directly to
+    // the pinned lesson; never seed another lesson merely to reveal that action.
+    const target=`${ORIGIN}/crm/lectures/${input.lectureId}/${input.weeklyLectureIds[0]}/attendance`
+    onStage('FIRST_LESSON_PICKER')
+    await page.goto(target)
+    await page.getByRole('button',{name:lecture.weeklyLectures[0].name,exact:true}).waitFor({state:'visible'})
+    if(page.url()!==target)fail()
+    await page.getByRole('button',{name:'학생 추가하기',exact:true}).click()
+    const picker=page.getByRole('dialog').filter({has:page.getByRole('tab',{name:'기존 학생 추가',exact:true})})
+    const search=picker.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true})
+    await search.fill(input.studentPhone)
+    await search.press('Enter')
+    const row=await exactStudentRow(picker,input)
+    await row.getByRole('checkbox').setChecked(true)
+    onStage('WEEK_SELECTED')
+    await input.beforeWrite()
+    await picker.getByRole('button',{name:/^1명 추가(?:\s|$)/}).click()
+  }else{
+  await bulk.click()
   const picker=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'일괄 학생 추가',exact:true})})
   await picker.getByRole('textbox',{name:'검색어 입력 (초성 검색 가능)',exact:true}).fill(input.studentPhone)
   const row=await exactStudentRow(picker,input)
@@ -196,6 +217,7 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   onStage('WEEK_SELECTED')
   await input.beforeWrite()
   await weeks.getByRole('button',{name:'일괄 추가',exact:true}).click()
+  }
   const access=page.getByRole('dialog',{name:'권한 부여',exact:true})
   await access.waitFor({state:'visible'})
   for(const name of ACCESS_LABELS)await access.getByRole('checkbox',{name,exact:true}).setChecked(true)

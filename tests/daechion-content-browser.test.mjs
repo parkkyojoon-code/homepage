@@ -125,9 +125,10 @@ const modal=(heading,body)=>{const d=document.createElement('div');d.setAttribut
 function grant(){const d=modal('권한 부여',${JSON.stringify(provider.ACCESS_LABELS)}.map(n=>'<label><input type="checkbox">'+n+'</label>').join('')+'<label><input type="checkbox" checked>직전 차시 출결 메모 불러오기</label>');const b=document.createElement('button');b.textContent='확인 Enter';b.onclick=()=>{if([...d.querySelectorAll('input')].slice(0,3).some(x=>!x.checked)||d.querySelectorAll('input')[3].checked)throw Error('Incorrect settings');localStorage.setItem('granted','yes');localStorage.setItem('writes',String(Number(localStorage.getItem('writes')||0)+1));d.remove()};d.append(b)}
 function weeks(){const list=JSON.parse(localStorage.getItem('weeks')||'[{"id":100,"name":"차시 A"}]');const d=modal('차시 선택',list.map(w=>'<label><input type="checkbox" checked data-week="'+w.id+'">'+w.name+'</label>').join(''));const b=document.createElement('button');b.textContent='일괄 추가';b.onclick=()=>{localStorage.setItem('selectedWeeks',JSON.stringify([...d.querySelectorAll('input:checked')].map(x=>Number(x.dataset.week))));d.remove();grant()};d.append(b)}
 function picker(){const d=modal('일괄 학생 추가','<input aria-label="검색어 입력 (초성 검색 가능)">'+row(false,localStorage.getItem('wrong')==='yes'));const b=document.createElement('button');b.textContent='1명 추가 Ctrl+Enter';b.onclick=()=>{if(!d.querySelector('input[type=checkbox]').checked)throw Error('No student selected');d.remove();weeks()};d.append(b)}
+function singlePicker(){const d=modal('학생 추가','<button role="tab">기존 학생 추가</button><input aria-label="검색어 입력 (초성 검색 가능)">'+row(false));const b=document.createElement('button');b.textContent='1명 추가 Ctrl+Enter';b.onclick=()=>{if(!d.querySelector('input[type=checkbox]').checked)throw Error('No student selected');localStorage.setItem('selectedWeeks',JSON.stringify([Number(path.split('/').at(-2))]));d.remove();grant()};d.append(b)}
 function file(title){const d=modal('상세 정보','<h3>'+title+'</h3>');const b=document.createElement('button');b.textContent='권한 관리';b.onclick=()=>{d.remove();const p=modal('파일 권한 부여','<input aria-label="검색어 입력 (초성 검색 가능)">'+row(localStorage.getItem('granted')==='yes'&&localStorage.getItem('missing')!=='yes'));const c=document.createElement('button');c.textContent='취소';c.onclick=()=>p.remove();p.append(c)};d.append(b)}
 function collection(kind,library=false){app.querySelectorAll('[data-collection]').forEach(x=>x.remove());const d=document.createElement('div');d.setAttribute('data-collection','yes');if(library){d.innerHTML='<button>파일 추가하기</button><p>등록된 자료가 없어요.</p>'}else if(kind==='video'){d.innerHTML='<button>영상 추가</button><div data-row-index="0"><p>검수영상</p></div>';d.querySelector('p').onclick=()=>file('검수영상')}else{d.innerHTML='<button>파일 추가</button><table><tbody><tr>'+Array.from({length:9},(_,i)=>'<td>'+(i===2?'검수자료.pdf':'')+'</td>').join('')+'</tr></tbody></table>';d.querySelectorAll('td')[2].onclick=()=>file('검수자료.pdf')};app.append(d)}
-if(path.endsWith('/participants')){button('일괄 학생 추가',picker);const b=button(localStorage.getItem('library')==='yes'?'강의 자료실 1개':'강의 자료실 0개',()=>collection('material',true));b.setAttribute('role','tab')}else{for(const [name,kind] of [['영상','video'],['자료','material']]){const b=button(name,()=>collection(kind));b.setAttribute('role','tab')}}
+if(path.endsWith('/participants')){if(localStorage.getItem('emptyCourse')==='yes'){const p=document.createElement('p');p.textContent='차시에서 수강생 추가가 가능해요.';app.append(p)}else button('일괄 학생 추가',picker);const b=button(localStorage.getItem('library')==='yes'?'강의 자료실 1개':'강의 자료실 0개',()=>collection('material',true));b.setAttribute('role','tab')}else if(path.endsWith('/attendance')){button(localStorage.getItem('wrongLesson')==='yes'?'다른 차시':'차시 A',()=>{});button('학생 추가하기',singlePicker)}else{for(const [name,kind] of [['영상','video'],['자료','material']]){const b=button(name,()=>collection(kind));b.setAttribute('role','tab')}}
 </script>`
 
 test('real browser grants only the selected student, clears attendance copying and verifies persisted video/material rights',
@@ -209,6 +210,44 @@ test('first-lesson browser clears all later selections, keeps shared-library rig
       await assert.rejects(promise,/CONTENT_ACCESS_UNCONFIRMED/)
       assert.equal(writes,mode==='record-unknown'?1:0);assert.equal(recorded,mode==='record-unknown'?1:0);assert.deepEqual(visited,[])
     }
+  }
+})
+
+test('first student of an empty course is added only to the pinned lesson with payment and acknowledgement fences',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:90000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  for(const mode of ['success','hold','wrong-lesson','record-unknown']){
+    let writes=0,recorded=0,selected=[],visited=[]
+    const launch=async options=>{
+      const browser=await chromium.launch(options);let page
+      return {newContext:async options=>{
+        const context=await browser.newContext(options),original=context.newPage.bind(context)
+        context.newPage=async()=>{
+          page=await original()
+          await page.addInitScript(mode=>{localStorage.setItem('emptyCourse','yes');if(mode==='wrong-lesson')localStorage.setItem('wrongLesson','yes')},mode)
+          await page.route('**/*',route=>{
+            visited.push(new URL(route.request().url()).pathname)
+            return route.fulfill({contentType:'text/html',body:fixture})
+          })
+          return page
+        };return context
+      },close:async()=>{
+        if(page&&!page.isClosed()){
+          writes=await page.evaluate(()=>Number(localStorage.getItem('writes')||0))
+          selected=await page.evaluate(()=>JSON.parse(localStorage.getItem('selectedWeeks')||'[]'))
+        };await browser.close()
+      }}
+    }
+    const service=provider.browserAccessProvider(env,{...api,lectures:async()=>[{id:10,opened:true,weeklyLectures:[{id:100,name:'차시 A'},{id:200,name:'후속 차시'}]}]},{launch})
+    const result=service.ensureFirstLessonAccess({studentId:77,lectureId:10,weeklyLectureId:100,studentName:input.studentName,studentPhone:input.studentPhone,
+      enrollmentRecorded:false,beforeWrite:async()=>{if(mode==='hold')throw Error('Hold')},recordEnrollment:async()=>{recorded++;if(mode==='record-unknown')throw Error('Unknown acknowledgement')}})
+    if(mode==='success')assert.deepEqual(await result,{verified:true,lectureId:10,studentId:77,weeklyLectureIds:[100]})
+    else await assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
+    assert.equal(writes,['success','record-unknown'].includes(mode)?1:0)
+    assert.equal(recorded,['success','record-unknown'].includes(mode)?1:0)
+    assert.deepEqual(selected,['success','record-unknown'].includes(mode)?[100]:[])
+    assert.ok(visited.includes('/crm/lectures/10/100/attendance'))
+    assert.ok(visited.every(path=>!path.includes('/200')))
   }
 })
 
