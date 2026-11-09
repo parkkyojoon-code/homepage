@@ -258,7 +258,13 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       return {me:async()=>({tenantId:'fixture'}),lectures:async()=>[10,11,20,21].map(id=>({id,opened:true,weeklyLectures:[{id:id*100}]})),
         students:async phone=>students.filter(s=>[s.studentPhoneNumber,s.parentPhoneNumber].includes(phone)),student:async id=>students.find(s=>s.id===id),
         createStudent:async input=>{studentCalls.push(input);const student={id:1000+students.length,name:input.name,studentPhoneNumber:input.studentPhone,parentPhoneNumber:input.guardianPhone,active:false};students.push(student);if(failCreate)throw Error('UNKNOWN_CREATE');return student},
-        enroll:async(lectureId,studentId)=>{enrolled.push(lectureId);if(lectureId===failEnroll)throw Error('UNKNOWN_ENROLL');return {lectureId,studentId,enrolledWeeklyLectureIds:[lectureId*100],alreadyEnrolledWeeklyLectureIds:[]}},
+        enroll:async()=>{throw Error('FULL_COURSE_ENROLLMENT_FORBIDDEN')},
+        ensureFirstLessonAccess:async input=>{
+          await input.beforeWrite()
+          if(!input.enrollmentRecorded){enrolled.push(input.lectureId);if(input.lectureId===failEnroll)throw Error('UNKNOWN_ENROLL');await input.recordEnrollment()}
+          access.push(input.lectureId);if(failAccess===input.lectureId){failAccess=0;throw Error('UNKNOWN_ACCESS')}
+          return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+        },
         ensureContentAccess:async input=>{await input.beforeWrite();access.push(input.lectureId);if(failAccess===input.lectureId){failAccess=0;throw Error('UNKNOWN_ACCESS')}return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}},
         get enrolled(){return enrolled},get access(){return access},get creates(){return studentCalls.length},set failCreate(v){failCreate=v},set failEnroll(v){failEnroll=v}}
     }
@@ -283,6 +289,48 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.grants WHERE order_id=$1 AND state='VERIFIED'",[order.orderId])).rows[0].n,3)
       assert.equal((await db.query("SELECT state FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[order.orderId])).rows[0].state,'UNKNOWN')
       assert.equal((await db.query('SELECT notification_state FROM daechion_orders.orders WHERE id=$1',[order.orderId])).rows[0].notification_state,'UNKNOWN')
+    })
+    await t.test('multi-lesson courses grant only the pinned first lesson and complete without enrolling or waiting for later lessons',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),calls=[]
+      const billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      api.lectures=async()=>[{id:10,opened:true,weeklyLectures:[{id:900},{id:100},{id:200}]}]
+      api.ensureFirstLessonAccess=async input=>{
+        const pinned=(await db.query('SELECT weekly_ids,enrollment_recorded FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+        assert.deepEqual(pinned.weekly_ids,[900]);assert.equal(pinned.enrollment_recorded,false)
+        calls.push(input.weeklyLectureId);await input.beforeWrite();await input.recordEnrollment()
+        return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+      }
+      const ports={withClient:db.withClient,tenantId:'fixture',daechion:api}
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,ports),'VERIFIED')
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,ports),'SKIPPED')
+      assert.deepEqual(calls,[900]);assert.deepEqual(api.enrolled,[])
+      assert.deepEqual((await db.query('SELECT weekly_ids FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0].weekly_ids,[900])
+      assert.equal((await db.query('SELECT notification_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].notification_state,'PENDING')
+    })
+    await t.test('changed first lesson and unrecorded registration never grant another lesson or announce completion',async()=>{
+      for(const mode of ['changed','unrecorded','missing-selective-provider']){
+        const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor();let calls=0,first=900
+        const billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+        await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+        api.lectures=async()=>[{id:10,opened:true,weeklyLectures:[{id:first},{id:first===900?100:900}]}]
+        api.ensureFirstLessonAccess=mode==='missing-selective-provider'?undefined:async input=>{
+          calls++;await input.beforeWrite()
+          if(mode==='changed'){await input.recordEnrollment();throw Error('Permission response lost')}
+          return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+        }
+        const ports={withClient:db.withClient,tenantId:'fixture',daechion:api}
+        assert.equal(await orderEnrollment.runOrderGrant(orderId,true,ports),'REVIEW')
+        if(mode==='changed'){
+          first=100
+          const version=String((await db.query('SELECT version FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].version)
+          assert.equal(await orderEnrollment.retryRecordedAccess({orderId,lectureId:10,expectedVersion:version},{withClient:db.withClient,authorise:async()=>true}),true)
+          assert.equal(await orderEnrollment.runOrderGrant(orderId,true,ports),'REVIEW');assert.equal(calls,1)
+          assert.deepEqual((await db.query('SELECT weekly_ids FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0].weekly_ids,[900])
+        }
+        assert.deepEqual(api.enrolled,[])
+        assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[orderId])).rows[0].n,0)
+      }
     })
     await t.test('unknown student creation or enrollment is held without automatic duplicate writes',async()=>{
       for(const stage of ['create','enroll']){
@@ -573,7 +621,9 @@ test('checkout service persists token-bound quotes and atomic orders without ext
         students:async phone=>[profile].filter(s=>[s.studentPhoneNumber,s.parentPhoneNumber,s.parentPhoneNumber2].includes(phone)),
         lectures:async()=>[20,21].map(id=>({id,opened:true,weeklyLectures:[{id:id*100}]})),
         createStudent:async()=>{creates++;throw Error('Must not create another account')},
-        enroll:async(lectureId,studentId)=>{enrolments.push({lectureId,studentId});return {lectureId,studentId,enrolledWeeklyLectureIds:[lectureId*100],alreadyEnrolledWeeklyLectureIds:[]}},
+        enroll:async()=>{throw Error('FULL_COURSE_ENROLLMENT_FORBIDDEN')},
+        ensureFirstLessonAccess:async input=>{await input.beforeWrite();if(!input.enrollmentRecorded){enrolments.push({lectureId:input.lectureId,studentId:input.studentId});await input.recordEnrollment()}
+          return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}},
         ensureContentAccess:async input=>{await input.beforeWrite();return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}}}
       const admin={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient:db.withClient,
         inspectExisting:async(ctx,id)=>{inspections++;return manualReview.inspectExisting(ctx,id,api)}}
@@ -747,7 +797,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       payment.send=async job=>{const result=await original(job);payment.observation={state:'W',billId:job.billId,amountWon:null,paidAt:null};return result}
       const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment,daechion:{...api,
         refreshSession:async id=>{assert.equal(id,10);refreshes++;return {refreshed:true}},
-        ensureContentAccess:async input=>{await input.beforeWrite();granted.push(input.lectureId);return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}}},
+        ensureFirstLessonAccess:async input=>{await input.beforeWrite();if(!input.enrollmentRecorded)await input.recordEnrollment();granted.push(input.lectureId);return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}}},
         message:{send:async job=>{messages.push(job);return {accepted:true,messageId:'scheduler-fixture'}}}}}
       const first=await orderExecutable.runtime(schedulerEnv,options).cycle()
       assert.equal(first.processed,1);assert.equal(first.failed,0);assert.equal(payment.sends,1);assert.equal(api.creates,0)

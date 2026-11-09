@@ -64,8 +64,8 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   if(!order)return null
   const items=(await c.query('SELECT product_id,title,sale_kind,price_won FROM daechion_orders.items WHERE order_id=$1 ORDER BY product_id',[id])).rows
   const bills=(await c.query('SELECT bill_id,amount_won,state,is_current,sent_at,due_at,checked_at,last_payment_state FROM daechion_orders.bills WHERE order_id=$1 ORDER BY revision DESC',[id])).rows
-  const grants=(await c.query(`SELECT g.lecture_id::text,g.state,g.review_code,g.enrollment_recorded,g.verified_at,g.revoked_at,
-    (g.state='REVIEW' AND g.enrollment_recorded AND jsonb_array_length(g.weekly_ids)>0
+  const grants=(await c.query(`SELECT g.lecture_id::text,g.state,g.review_code,g.enrollment_recorded,g.verified_at,g.revoked_at,g.weekly_ids,
+    (g.state='REVIEW' AND g.enrollment_recorded AND jsonb_array_length(g.weekly_ids)=1
       AND o.identity_state='PASSED' AND daechion_orders.paid_eligible(o.id)) AS can_retry
     FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id WHERE g.order_id=$1 ORDER BY g.lecture_id`,[id])).rows
   const messages=(await c.query('SELECT phone,state,accepted_at FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows

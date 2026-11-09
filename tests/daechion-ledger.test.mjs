@@ -222,10 +222,20 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
     }
     const appRow = async id => (await db.query('SELECT * FROM daechion_automation.applications WHERE id=$1',[id])).rows[0]
     const student = {id:77,name:input.studentName,studentPhoneNumber:'01000000001',parentPhoneNumber:'01000000002',active:false}
-    const fakeDaechion = (overrides={}) => ({students:async()=>[student],student:async()=>student,
+    const fakeDaechion = (overrides={}) => {const service={students:async()=>[student],student:async()=>student,
       createStudent:async()=>{throw Error('unexpected create')},
+      lectures:async()=>[10,11].map(id=>({id,opened:true,weeklyLectures:[{id:100}]})),
       ensureContentAccess:async({beforeWrite,...target})=>{await beforeWrite();return {verified:true,...target}},
-      enroll:async(lectureId,studentId)=>({lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}),...overrides})
+      enroll:async(lectureId,studentId)=>({lectureId,studentId,enrolledWeeklyLectureIds:[100],alreadyEnrolledWeeklyLectureIds:[]}),...overrides}
+      // The fixture's old hooks now emulate stages of a selective browser write.
+      service.ensureFirstLessonAccess=overrides.ensureFirstLessonAccess??(async target=>{
+        await target.beforeWrite();const result=await service.enroll(target.lectureId,target.studentId)
+        if(result.lectureId!==target.lectureId||result.studentId!==target.studentId)throw Error('WRONG_TARGET')
+        await target.recordEnrollment()
+        return service.ensureContentAccess({...target,weeklyLectureIds:[target.weeklyLectureId]})
+      })
+      return service
+    }
 
     const sessionSeed=value=>JSON.stringify({cookies:[],origins:[{origin:'https://parkkyojoon.daechion.com',localStorage:[{name:'auth-fixture',value}]}]})
     const sessionEnv={DAECHION_TENANT_ID:'session-test',DAECHION_API_KEY:'k'.repeat(48),DAECHION_BROWSER_STORAGE_STATE:sessionSeed('state-v1-secret')}
@@ -367,6 +377,25 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.equal((await appRow(id)).automation_state,'HOLD')
       assert.ok((await db.query('SELECT state FROM daechion_automation.registrations WHERE application_id=$1',[id])).rows.every(row=>row.state==='DONE'))
       assert.equal((await db.query("SELECT state FROM daechion_automation.outbox WHERE application_id=$1 AND kind='READY_MESSAGE'",[id])).rows[0].state,'FAILED')
+    })
+    await t.test('single-product process2 also pins only the first lesson and never calls full-course enrollment',async()=>{
+      const id=await paymentFixture();await observe(id);const opened=[]
+      const daechion=fakeDaechion({
+        lectures:async()=>[10,11].map(id=>({id,opened:true,weeklyLectures:[{id:900},{id:100},{id:200}]})),
+        enroll:async()=>{throw Error('FULL_COURSE_API_MUST_NOT_RUN')},
+        ensureFirstLessonAccess:async target=>{
+          const row=(await db.query('SELECT access_targets FROM daechion_automation.registrations WHERE application_id=$1 AND lecture_id=$2',[id,target.lectureId])).rows[0]
+          assert.deepEqual(row.access_targets,[900]);assert.equal(target.weeklyLectureId,900)
+          await target.beforeWrite();await target.recordEnrollment();opened.push(target.lectureId)
+          return {verified:true,lectureId:target.lectureId,studentId:target.studentId,weeklyLectureIds:[900]}
+        },
+      })
+      const ports={daechion,withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.deepEqual(opened,[10,11]);assert.equal((await appRow(id)).notification_state,'PENDING')
+      assert.ok((await db.query('SELECT access_targets FROM daechion_automation.registrations WHERE application_id=$1',[id])).rows.every(row=>JSON.stringify(row.access_targets)==='[900]'))
+      await observe(id,{state:'C',paidAt:null}) // Keep this fixture's queued notice out of later global-claim tests.
     })
     await t.test('unknown enrollment writes and expired claims require review rather than replay',async()=>{
       const id = await paymentFixture();await observe(id);let calls = 0

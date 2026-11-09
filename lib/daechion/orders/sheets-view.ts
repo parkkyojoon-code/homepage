@@ -66,7 +66,8 @@ export async function orderSheetView(c:LedgerClient,id:string):Promise<OrderShee
   const grantLine=(g:Record<string,unknown>)=>{
     const item=grantLabels.get(String(g.item_id)),lecture=item?.lectures.find(l=>l.id===Number(g.lecture_id))
     if(!item||!lecture)throw Error('ORDER_SHEET_GRANT_ITEM_MISMATCH')
-    return `${item.title} / ${lecture.name} · ID ${g.lecture_id}: ${state(g.state)}${g.review_code?' — '+orderReason(g.review_code):''}`
+    const weekly=z.array(z.number().int().positive().safe()).parse(g.weekly_ids??[])
+    return `${item.title} / ${lecture.name} · ID ${g.lecture_id}: ${state(g.state)}${weekly.length?' · 차시 ID '+weekly.join(', '):''}${g.review_code?' — '+orderReason(g.review_code):''}`
   }
   const values:(string|number)[]=[id,koreanTime(o.created_at),'프로세스2',contact.applicantType==='STUDENT'?'학생 본인':'학부모',contact.studentName,contact.guardianName,contact.studentPhone,contact.guardianPhone,contact.payerPhone,
     contact.studentHistory==='NEW'?'신규 수강생':'기존 수강생',items.map(i=>String(i.title)).join('\n'),items.map(i=>String(i.product_id)).join('\n'),items.map(i=>i.sale_kind==='BUNDLE'?'묶음상품':'개별 강의').join('\n'),

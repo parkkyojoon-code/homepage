@@ -1,6 +1,7 @@
 import {reviewReasonLabel} from '../review-reasons'
 
 const reasons:Record<string,string>={billing_preflight_review:'청구 전 학생·상품 확인 필요',bill_collision:'청구 번호 중복 확인 필요',billing_account_mismatch:'결제선생 계정 연결 불일치',
+  first_lesson_changed:'첫 차시의 순서·구성 또는 기존 등록 범위 확인 필요 — 다른 차시 자동 개방 중단',
   intake_closed:'관리자가 청구 전 신청을 종료함',
   admin_hold:'관리자가 자동 처리를 보류함',
   manual_access_revoked:'대치온 수동 권한 회수 기록 — 자동 처리 보류',

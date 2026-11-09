@@ -21,6 +21,7 @@ const reasons:Readonly<Record<string,string>>=Object.freeze({
   payment_evidence_changed:'기존 결제 승인 기록과 조회 결과가 다름',
   late_payment:'자동 등록 대기 기한 이후 결제',
   enrollment_unknown:'대치온 등록 결과 확인 필요',
+  first_lesson_changed:'첫 차시의 순서·구성 또는 기존 등록 범위 확인 필요 — 다른 차시 자동 개방 중단',
   content_access_unverified:'수강 등록 후 영상·자료 권한 확인 필요',
   enrollment_fence_changed:'등록 도중 결제·보류 상태가 변경됨',
   enrollment_tenant_mismatch:'대치온 학원 연결 정보 불일치',

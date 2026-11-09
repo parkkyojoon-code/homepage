@@ -5,9 +5,12 @@ import { DaechionError, type StudentPort, type DaechionEnrollment } from './clie
 import { resolveStudent, IdentityReview } from './identity'
 import { claimIdentityPhones, releaseIdentityPhones, identityBinding, saveIdentity } from './identity-store'
 import { automationChanged, automationTransaction } from './automation-store'
+import {firstLessonTarget,type FirstLessonAccessInput,type FirstLessonAccessResult,type LessonCourse} from './first-lesson'
 
 export interface EnrollmentPort extends StudentPort {
   enroll(lectureId: number, studentId: number): Promise<DaechionEnrollment>
+  lectures():Promise<LessonCourse[]>
+  ensureFirstLessonAccess?(input:FirstLessonAccessInput):Promise<FirstLessonAccessResult>
   ensureContentAccess?(input: {lectureId:number;studentId:number;weeklyLectureIds:number[];studentName:string;studentPhone:string;
     beforeWrite():Promise<void>}): Promise<{verified:true;lectureId:number;studentId:number;weeklyLectureIds:number[]}>
 }
@@ -69,7 +72,7 @@ export async function enrollmentFence(client: LedgerClient, job: EnrollmentJob, 
 }
 
 export async function reviewEnrollment(client: LedgerClient, job: EnrollmentJob, reason: string) {
-  const allowed = ['student_identity_review', 'guardian_identity_review', 'enrollment_unknown', 'enrollment_fence_changed','enrollment_tenant_mismatch','content_access_unverified']
+  const allowed = ['student_identity_review', 'guardian_identity_review', 'enrollment_unknown', 'enrollment_fence_changed','enrollment_tenant_mismatch','content_access_unverified','first_lesson_changed']
   const code = allowed.includes(reason) || /^identity_[a-z_]{1,48}$/.test(reason) ? reason : 'enrollment_unknown'
   return automationTransaction(client, async () => {
     const app = await lockApplication(client, job.applicationId)
@@ -131,14 +134,14 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
     identitySaved = true
     await ports.withClient(client => releaseIdentityPhones(client, applicationId))
     await fence(true)
-    const result = await ports.daechion.enroll(job.lectureId, resolved.student.id)
-    if (result.lectureId !== job.lectureId || result.studentId !== resolved.student.id ||
-      (!result.enrolledWeeklyLectureIds.length && !result.alreadyEnrolledWeeklyLectureIds.length)) throw new DaechionError('enrollment_result_mismatch')
-    const weeklyLectureIds=[...result.enrolledWeeklyLectureIds,...result.alreadyEnrolledWeeklyLectureIds].map(safeId).sort((a,b)=>a-b)
-    if(new Set(weeklyLectureIds).size!==weeklyLectureIds.length)throw new DaechionError('enrollment_result_mismatch')
+    if(!ports.daechion.ensureFirstLessonAccess)throw new DaechionError('content_access_unverified')
+    const previous=(await ports.withClient(c=>c.query('SELECT access_targets FROM daechion_automation.registrations WHERE application_id=$1 AND lecture_id=$2',[applicationId,job.lectureId]))).rows[0]
+    const pinned=previous?.access_targets==null?[]:z.array(z.number().int().positive().safe()).parse(previous.access_targets)
+    const weeklyLectureId=firstLessonTarget(await ports.daechion.lectures(),job.lectureId,pinned)
+    const weeklyLectureIds=[weeklyLectureId]
     accessStarted=true
-    // Persist API success separately. A browser timeout must never look like a
-    // completed registration or cause a ready message / blind enrollment retry.
+    // Pin the single target before the first browser registration write. The
+    // official course enrollment endpoint is deliberately never called here.
     await ports.withClient(client=>automationTransaction(client,async()=>{
       await lockApplication(client,applicationId)
       if(!await enrollmentFence(client,job,true))throw new DaechionError('enrollment_fence_changed')
@@ -147,11 +150,12 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
       [applicationId,job.lectureId,job.token,resolved.student.id,JSON.stringify(weeklyLectureIds)])
       await automationChanged(client,applicationId,'content_access_pending','ENROLLMENT_WORKER')
     }))
-    if(!ports.daechion.ensureContentAccess)throw new DaechionError('content_access_unverified')
     await fence(true)
-    const access=await ports.daechion.ensureContentAccess({lectureId:job.lectureId,studentId:resolved.student.id,weeklyLectureIds,
+    let enrollmentConfirmed=false
+    const access=await ports.daechion.ensureFirstLessonAccess({lectureId:job.lectureId,studentId:resolved.student.id,weeklyLectureId,
+      enrollmentRecorded:false,recordEnrollment:async()=>{await fence(true);enrollmentConfirmed=true},
       studentName:job.snapshot.studentName,studentPhone:job.snapshot.studentPhone,beforeWrite:()=>fence(true)})
-    if(access?.verified!==true||access.lectureId!==job.lectureId||access.studentId!==resolved.student.id||
+    if(!enrollmentConfirmed||access?.verified!==true||access.lectureId!==job.lectureId||access.studentId!==resolved.student.id||
       JSON.stringify([...access.weeklyLectureIds].sort((a,b)=>a-b))!==JSON.stringify(weeklyLectureIds))throw new DaechionError('content_access_unverified')
     await ports.withClient(client=>automationTransaction(client,async()=>{
       await lockApplication(client,applicationId)
@@ -172,7 +176,8 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
     if (!createStarted || identitySaved) await ports.withClient(client => releaseIdentityPhones(client, applicationId))
     // No blind retry after an unknown create/enroll. Claim expiry is also review,
     // so a lost DB acknowledgement cannot replay an external write.
-    await ports.withClient(client => reviewEnrollment(client, job, error instanceof DaechionError ? error.code : accessStarted?'content_access_unverified':'enrollment_unknown'))
+    const firstChanged=error instanceof Error&&['FIRST_LESSON_UNAVAILABLE','FIRST_LESSON_CHANGED'].includes(error.message)
+    await ports.withClient(client => reviewEnrollment(client, job, firstChanged?'first_lesson_changed':error instanceof DaechionError ? error.code : accessStarted?'content_access_unverified':'enrollment_unknown'))
     return 'REVIEW'
   }
 }

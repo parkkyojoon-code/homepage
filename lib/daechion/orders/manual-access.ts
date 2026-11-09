@@ -6,6 +6,7 @@ import type {OrderPreflightPort} from './preflight'
 import {inspectExisting,reviewContext,reviewEvidenceSchema,contextFromOrder,latestReview} from './manual-review'
 import {eligible} from './worker-store'
 import {queueUnattemptedNotice} from './paid-recovery'
+import {firstLessonTarget} from '../first-lesson'
 
 const weekly=z.array(z.number().int().positive().safe()).max(1000).refine(ids=>new Set(ids).size===ids.length)
 export const accessEvidenceSchema=reviewEvidenceSchema.extend({lectureId:z.number().int().positive().safe(),weeklyLectureIds:weekly}).strict()
@@ -19,7 +20,7 @@ export async function inspectManualAccess(context:BillingContext,studentId:numbe
   if(!revoke){
     const lectures=(await api.lectures()).filter(item=>item.id===lectureId)
     if(lectures.length!==1||lectures[0].opened!==true)throw Error('MANUAL_ACCESS_COURSE_UNAVAILABLE')
-    weeklyLectureIds=weekly.min(1).parse(lectures[0].weeklyLectures.map(item=>item.id))
+    weeklyLectureIds=[firstLessonTarget(lectures,lectureId)]
   }
   if(Date.now()-started>60000)throw Error('MANUAL_ACCESS_LOOKUP_EXPIRED')
   return {...identity,lectureId,weeklyLectureIds,checkedAt:new Date().toISOString()}

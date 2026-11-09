@@ -6,6 +6,7 @@ import type {EnrollmentPort} from '../enrollment'
 import {contactSchema,type OrderContact} from './checkout'
 import {orderTransaction,lockOrder,orderChanged,holdOrder,eligible,type OrderConnection} from './worker-store'
 import {latestReview,contextFromOrder,reviewContext,studentProfileFingerprint} from './manual-review'
+import {firstLessonTarget} from '../first-lesson'
 
 const ids=z.array(z.number().int().positive().safe()).min(1).max(1000).refine(v=>new Set(v).size===v.length)
 const sorted=(v:number[])=>[...v].sort((a,b)=>a-b)
@@ -120,26 +121,31 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
   if(!job)return 'SKIPPED'
   const fence=async()=>{if(!await ports.withClient(c=>grantFence(c,job)))throw new DaechionError('grant_fence_changed')}
   try{
-    const matches=(await ports.daechion.lectures()).filter(l=>l.id===job.lectureId)
-    if(matches.length!==1||!matches[0].opened)throw new DaechionError('course_changed')
-    const expected=ids.parse(matches[0].weeklyLectures.map(l=>l.id))
+    if(!ports.daechion.ensureFirstLessonAccess)throw new DaechionError('content_unverified')
+    if(job.enrollmentRecorded&&job.weeklyIds.length!==1)throw Error('FIRST_LESSON_CHANGED')
+    const target=firstLessonTarget(await ports.daechion.lectures(),job.lectureId,job.weeklyIds)
     await fence()
-    if(!job.enrollmentRecorded){
-      const result=await ports.daechion.enroll(job.lectureId,job.studentId)
-      const actual=ids.parse([...result.enrolledWeeklyLectureIds,...result.alreadyEnrolledWeeklyLectureIds])
-      if(result.lectureId!==job.lectureId||result.studentId!==job.studentId||!same(expected,actual))throw new DaechionError('enrollment_unknown')
+    if(!job.weeklyIds.length){
       await ports.withClient(c=>orderTransaction(c,async()=>{
         await lockOrder(c,id);if(!await grantFence(c,job))throw new DaechionError('grant_fence_changed')
-        await c.query('UPDATE daechion_orders.grants SET enrollment_recorded=true,weekly_ids=$4::jsonb WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3',[id,job.lectureId,job.token,JSON.stringify(sorted(actual))])
+        await c.query('UPDATE daechion_orders.grants SET weekly_ids=$4::jsonb WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3',[id,job.lectureId,job.token,JSON.stringify([target])])
+        await orderChanged(c,id,'first_lesson_pinned')
+      }))
+      job.weeklyIds=[target]
+    }
+    const recordEnrollment=async()=>{
+      if(job.enrollmentRecorded)return
+      await ports.withClient(c=>orderTransaction(c,async()=>{
+        await lockOrder(c,id);if(!await grantFence(c,job))throw new DaechionError('grant_fence_changed')
+        await c.query('UPDATE daechion_orders.grants SET enrollment_recorded=true WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3',[id,job.lectureId,job.token])
         await orderChanged(c,id,'grant_enrolled')
       }))
-      job.weeklyIds=actual
-    }else if(!same(expected,ids.parse(job.weeklyIds)))throw new DaechionError('course_changed')
-    if(!ports.daechion.ensureContentAccess)throw new DaechionError('content_unverified')
+      job.enrollmentRecorded=true
+    }
     await fence()
-    const result=await ports.daechion.ensureContentAccess({lectureId:job.lectureId,studentId:job.studentId,weeklyLectureIds:[...job.weeklyIds],
-      studentName:job.contact.studentName,studentPhone:job.contact.studentPhone,beforeWrite:fence})
-    if(result?.verified!==true||result.lectureId!==job.lectureId||result.studentId!==job.studentId||!same(ids.parse(result.weeklyLectureIds),job.weeklyIds))throw new DaechionError('content_unverified')
+    const result=await ports.daechion.ensureFirstLessonAccess({lectureId:job.lectureId,studentId:job.studentId,weeklyLectureId:target,
+      enrollmentRecorded:job.enrollmentRecorded,recordEnrollment,studentName:job.contact.studentName,studentPhone:job.contact.studentPhone,beforeWrite:fence})
+    if(!job.enrollmentRecorded||result?.verified!==true||result.lectureId!==job.lectureId||result.studentId!==job.studentId||!same(ids.parse(result.weeklyLectureIds),job.weeklyIds))throw new DaechionError('content_unverified')
     return ports.withClient(c=>orderTransaction(c,async()=>{
       await lockOrder(c,id);if(!await grantFence(c,job))throw new DaechionError('grant_fence_changed')
       await c.query("UPDATE daechion_orders.grants SET state='VERIFIED',verified_at=now(),review_code=NULL,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3",[id,job.lectureId,job.token])
@@ -150,10 +156,11 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
       }
       return 'VERIFIED'
     }))
-  }catch{
+  }catch(error){
+    const code=error instanceof Error&&['FIRST_LESSON_UNAVAILABLE','FIRST_LESSON_CHANGED'].includes(error.message)?'first_lesson_changed':'grant_unknown'
     await ports.withClient(c=>orderTransaction(c,async()=>{
       await lockOrder(c,id)
-      const changed=await c.query("UPDATE daechion_orders.grants SET state='REVIEW',review_code='grant_unknown',lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3 AND state='RUNNING' RETURNING lecture_id",[id,job.lectureId,job.token])
+      const changed=await c.query("UPDATE daechion_orders.grants SET state='REVIEW',review_code=$4,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3 AND state='RUNNING' RETURNING lecture_id",[id,job.lectureId,job.token,code])
       if(changed.rows.length)await orderChanged(c,id,'grant_review')
     }))
     return 'REVIEW'
@@ -173,7 +180,7 @@ export async function retryRecordedAccessInTransaction(c:Parameters<typeof lockO
     const o=await lockOrder(c,input.orderId)
     if(!o||String(o.version)!==input.expectedVersion||o.identity_state!=='PASSED'||!await eligible(c,input.orderId))return false
     const row=(await c.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2 FOR UPDATE',[input.orderId,input.lectureId])).rows[0]
-    if(!row||row.state!=='REVIEW'||row.enrollment_recorded!==true||!ids.safeParse(row.weekly_ids).success)return false
+    if(!row||row.state!=='REVIEW'||row.enrollment_recorded!==true||!ids.length(1).safeParse(row.weekly_ids).success)return false
     await c.query("UPDATE daechion_orders.grants SET state='PENDING',review_code=NULL,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2",[input.orderId,input.lectureId])
     await orderChanged(c,input.orderId,'grant_access_retry');return true
 }

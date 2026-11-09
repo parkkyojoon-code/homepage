@@ -26,11 +26,14 @@ async function verifyContent(argv,env,{api,accessFactory,onStage=()=>{}}={}){
   // Only this explicitly allowlisted test call bypasses the not-yet-verified
   // runtime flags. Never change the environment or start automatic processing.
   const service=(accessFactory??browserAccessProvider)({...env,DAECHION_CONTENT_BROWSER_ENABLED:'true',DAECHION_CONTENT_BROWSER_VERIFIED:'true'},api,{onStage,sessions})
-  const result=await service.ensureContentAccess({studentId,lectureId,weeklyLectureIds:matches[0].weeklyLectures.map(week=>week.id),
-    studentName:student.name,studentPhone,beforeWrite:async()=>{
+  const weeklyLectureId=matches[0].weeklyLectures[0].id
+  const fence=async()=>{
       if(env.DAECHION_CONTENT_TEST_ONLY!=='true'||env.DAECHION_CONTENT_TEST_STUDENT_ID!==String(studentId)||env.DAECHION_CONTENT_TEST_LECTURE_ID!==String(lectureId))throw Error('CONTENT_TEST_TARGET_UNCONFIRMED')
-    }})
-  if(result?.verified!==true||result.studentId!==studentId||result.lectureId!==lectureId)throw Error('CONTENT_TEST_TARGET_UNCONFIRMED')
+  }
+  const result=await service.ensureFirstLessonAccess({studentId,lectureId,weeklyLectureId,enrollmentRecorded:false,
+    recordEnrollment:fence,studentName:student.name,studentPhone,beforeWrite:fence})
+  if(result?.verified!==true||result.studentId!==studentId||result.lectureId!==lectureId||
+    JSON.stringify(result.weeklyLectureIds)!==JSON.stringify([weeklyLectureId]))throw Error('CONTENT_TEST_TARGET_UNCONFIRMED')
   onStage('COMPLETE')
   return {testOnly:true,verified:true,studentId,lectureId,weeklyLectureCount:result.weeklyLectureIds.length}
 }

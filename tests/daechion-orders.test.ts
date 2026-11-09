@@ -7,6 +7,18 @@ import {preflightOrder} from '../lib/daechion/orders/preflight'
 import type {BillingContext} from '../lib/daechion/orders/billing'
 import {bundleSource,resolveBundleComponents,bundleCompositionIssue,type BundleProduct} from '../lib/daechion/orders/bundle-components'
 import {checkoutCatalog} from '../lib/daechion/orders/catalog'
+import {firstLessonTarget} from '../lib/daechion/first-lesson'
+
+test('first-lesson policy pins LMS sequence rather than numeric IDs and refuses changing targets',()=>{
+  const course={id:10,opened:true,weeklyLectures:[{id:900},{id:100},{id:200}]}
+  assert.equal(firstLessonTarget([course],10),900)
+  assert.equal(firstLessonTarget([course],10,[900]),900)
+  assert.throws(()=>firstLessonTarget([course],10,[100]))
+  assert.throws(()=>firstLessonTarget([course],10,[900,100]))
+  assert.throws(()=>firstLessonTarget([{...course,weeklyLectures:[{id:100},{id:900}]}],10,[900]))
+  for(const courses of [[],[course,course],[{...course,opened:false}],[{...course,weeklyLectures:[]}],[{...course,weeklyLectures:[{id:900},{id:900}]}]])assert.throws(()=>firstLessonTarget(courses,10))
+  assert.equal(firstLessonTarget([{...course,weeklyLectures:Array.from({length:50},(_,i)=>({id:900+i}))}],10),900)
+})
 
 test('website bundle components bind exact product and lecture IDs, permit hidden singles, and reject stale or invalid sources',()=>{
   const source=(id:string,lectureId:number):BundleProduct&{updatedAt:string}=>({id,name:'같은 상품명',visible:false,purchaseProcess:'PROCESS_2',saleKind:'SINGLE',
