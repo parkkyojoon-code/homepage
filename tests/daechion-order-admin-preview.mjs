@@ -32,7 +32,7 @@ try{
     workerStatus:{session_issue:true,started_at:new Date().toISOString(),finished_at:new Date().toISOString(),result:'OK',next_run_at:new Date(Date.now()+30000).toISOString()},
     canHold:true,canApproveExisting:false,canResumeUnbilled:false,canResumePaid:false,canReconcileSheets:false,sheetRecoveryJobId:null,recoveries:[],items:[{product_id:'bundle',title:'가상 파이널 묶음',sale_kind:'BUNDLE',price_won:25000},{product_id:'single',title:'가상 개별 강의',sale_kind:'SINGLE',price_won:18500}],
     bills:[{bill_id:'90000000000000000001',amount_won:43500,state:'SENT',is_current:true,checked_at:new Date().toISOString()}],
-    grants:[{lecture_id:'20',state:'REVIEW',review_code:'grant_unknown',enrollment_recorded:true,can_retry:true},{lecture_id:'21',state:'VERIFIED',review_code:null,enrollment_recorded:true,can_retry:false}],messages:[],
+    grants:[{lecture_id:'20',state:'REVIEW',review_code:'grant_unknown',enrollment_recorded:true,can_retry:true,weekly_ids:[2000]},{lecture_id:'21',state:'VERIFIED',review_code:null,enrollment_recorded:true,can_retry:false,weekly_ids:[2100]}],messages:[],
     jobs:[{kind:'SHEETS',state:'DONE',attempts:1,last_error:null,event_version:'10'}],actions:[]}
   const rows=()=>({rows:[{...detail.order,student_name:contact.studentName,student_phone:contact.studentPhone,titles:'가상 파이널 묶음 · 가상 개별 강의',created_at:new Date().toISOString()}],page:0,hasMore:false})
   const saved=new Map(),attempts=[],errors=[];let loseReply=true
@@ -124,7 +124,7 @@ try{
   await page.getByLabel('수동 처리한 강의').selectOption('20')
   await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
   await page.getByLabel('확인 근거·사유').fill('대치온에서 학생 ID 1001의 영상·자료 권한 직접 확인')
-  for(const name of [/위 학생의 차시 영상/,/위 학생의 차시 자료/,/위 학생의 강의 자료/])await page.getByRole('checkbox',{name}).check()
+  for(const name of [/위 학생의 첫 차시 영상/,/위 학생의 첫 차시 자료/,/위 학생의 공통 강의 자료실/])await page.getByRole('checkbox',{name}).check()
   await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
   await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
   await page.screenshot({path:path.join(output,'manual-access-record-20261109.png'),fullPage:true})
