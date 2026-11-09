@@ -73,18 +73,19 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
       const hide=await request('/api/admin/classes/website-bundle',{visible:false,expectedUpdatedAt:published.updatedAt},'PUT')
       assert.equal(hide.status,200);Object.assign(bundle,await hide.json())
     }
-    const publicCreate=await request('/api/admin/classes',{...body,id:'public-bundle',visible:true,publishingReady:true})
+    const publicId='묶음상품1-fixture',publicPath=encodeURIComponent(publicId)
+    const publicCreate=await request('/api/admin/classes',{...body,id:publicId,visible:true,publishingReady:true})
     assert.equal(publicCreate.status,publishingReady?201:400)
     if(publishingReady){
-      const info=await request('/api/classes/public-bundle');assert.equal(info.headers.get('Cache-Control'),'no-store');assert.equal((await info.json()).orderCheckout,true)
+      const info=await request('/api/classes/'+publicPath);assert.equal(info.headers.get('Cache-Control'),'no-store');assert.equal((await info.json()).orderCheckout,true)
       if(process.env.DAECHION_BROWSER_FIXTURE_TEST==='true'){
         const {createRequire}=await import('node:module'),require=createRequire(import.meta.url)
         const browser=await require('../workers/daechion/browser/node_modules/playwright').chromium.launch({headless:true})
         try{
-          const page=await browser.newPage(),cart={productId:'public-bundle',title:body.name,saleKind:'BUNDLE',priceWon:1200,lectureCount:2}
+          const page=await browser.newPage(),cart={productId:publicId,title:body.name,saleKind:'BUNDLE',priceWon:1200,lectureCount:2}
           await page.route('**/api/daechion/orders/catalog',route=>route.fulfill({json:{available:true,products:[cart]}}))
           await page.route('**/api/daechion/orders/cart',route=>{
-            assert.deepEqual(route.request().postDataJSON(),{items:[{productId:'public-bundle'}]})
+            assert.deepEqual(route.request().postDataJSON(),{items:[{productId:publicId}]})
             return route.fulfill({json:{status:'READY',totalWon:1200,items:[{productId:cart.productId,title:cart.title,priceWon:1200}],conflicts:[]}})
           })
           const assertSelected=async()=>{
@@ -95,13 +96,13 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
             await page.waitForFunction(()=>!document.querySelector('button[type="submit"]').disabled)
             assert.match(await page.getByRole('region',{name:'선택한 상품',exact:true}).innerText(),/1,200원/)
           }
-          await page.goto(origin+'/classes/public-bundle')
+          await page.goto(origin+'/classes/'+publicPath)
           await page.getByRole('button',{name:'지금 수강 신청하기',exact:true}).click()
-          await page.waitForURL(origin+'/classes/cart?productId=public-bundle');await assertSelected()
+          await page.waitForURL(origin+'/classes/cart?productId='+publicPath);await assertSelected()
           // Existing bookmarks must also use the order API, never the disabled
           // legacy applications endpoint. No personal data or quote is sent.
           await page.route('**/api/daechion/applications**',()=>{throw Error('LEGACY_INTAKE_MUST_NOT_BE_USED')})
-          await page.goto(origin+'/apply/public-bundle?option=online');await assertSelected()
+          await page.goto(origin+'/apply/'+publicPath+'?option=online');await assertSelected()
           await page.goto(origin+'/classes/cart?productId=private-or-missing')
           await page.getByRole('alert').filter({hasText:'선택한 상품은 현재 구매할 수 없습니다.'}).waitFor()
           assert.equal(await page.getByRole('checkbox',{name:/홈페이지 상품 묶음/}).isChecked(),false)

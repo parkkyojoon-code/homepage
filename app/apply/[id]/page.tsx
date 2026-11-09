@@ -31,7 +31,7 @@ export default function ApplyPage() {
   const campus = searchParams.get('campus') || '인천 송도'
 
   const [classData, setClassData] = useState<{
-    name: string; category: string
+    id:string; name: string; category: string
     purchaseProcess?: PurchaseProcess
     orderCheckout?:boolean
     onlinePrice: number; offlinePrice: number
@@ -43,10 +43,11 @@ export default function ApplyPage() {
   const [selectedSubjects, setSelectedSubjects] = useState<string[]>([])
 
   useEffect(() => {
-    fetch(`/api/classes/${encodeURIComponent(courseId)}`,{cache:'no-store'})
+    fetch(`/api/classes/${courseId}`,{cache:'no-store'})
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data) setClassData({
+          id:data.id,
           name: data.name,
           purchaseProcess: data.purchaseProcess,
           orderCheckout:data.orderCheckout===true,
@@ -131,8 +132,8 @@ export default function ApplyPage() {
   }
 
   if (classData.purchaseProcess === 'PROCESS_2') {
-    if(classData.orderCheckout&&option!=='offline')return <CartCheckout key={courseId} initialProductId={courseId}/>
-    return <ProcessTwoApplicationForm key={`${courseId}:${option}:${campus}`} productId={courseId} name={classData.name}
+    if(classData.orderCheckout&&option!=='offline')return <CartCheckout key={classData.id} initialProductId={classData.id}/>
+    return <ProcessTwoApplicationForm key={`${classData.id}:${option}:${campus}`} productId={classData.id} name={classData.name}
       mode={option==='offline'?'OFFLINE':'ONLINE'} campus={option==='offline'?campus:''}
       tuition={option==='offline'?classData.offlinePrice:classData.onlinePrice} textbook={classData.textbookIncluded?classData.textbookPrice:0}/>
   }
