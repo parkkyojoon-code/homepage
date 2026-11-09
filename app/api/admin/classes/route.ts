@@ -5,6 +5,7 @@ import { isOriginalProduct, parsePurchaseProcess } from '@/lib/purchase-process'
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
 import { saleKindForWrite, validateBundle, SalePolicyError, bundlePublishingReady } from '@/lib/daechion/orders/sale-policy'
 import {resolveBundleComponents,bundleCompositionIssue,BundleComponentError,type BundleComponent} from '@/lib/daechion/orders/bundle-components'
+import {validateDiscounts,DiscountPolicyError} from '@/lib/daechion/orders/discounts'
 
 // GET: 전체 수업 목록 (visible 무관)
 export async function GET() {
@@ -30,16 +31,19 @@ export async function POST(req: NextRequest) {
   }
 
   let saleKind
+  let discountPrices
   let bundleComponents:BundleComponent[]|undefined
   let bindingBody=body
   try{
+    discountPrices=validateDiscounts(body.discountPrices,{...body,purchaseProcess})
+    if(purchaseProcess==='PROCESS_2'&&(typeof body.name!=='string'||!body.name.trim()||body.name.trim().length>200||/[\u0000-\u001f\u007f]/.test(body.name)))return NextResponse.json({error:'수업명을 1~200자로 입력해주세요.'},{status:400})
     saleKind=saleKindForWrite(body.saleKind)
     if(saleKind==='BUNDLE'){
       bundleComponents=resolveBundleComponents(body.bundleProductIds,body.expectedBundleComponents,loadClasses(),process.env.DAECHION_TENANT_ID??'')
       bindingBody={...body,daechionLectureIds:bundleComponents.map(item=>item.lectureId)}
     }
     validateBundle({...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds,bundlePublishingReady(process.env))
-  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
+  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError||error instanceof DiscountPolicyError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
 
   let daechionBinding
   try{daechionBinding=await resolveClassBinding(bindingBody,purchaseProcess,undefined,process.env)}catch(error){
@@ -50,6 +54,7 @@ export async function POST(req: NextRequest) {
     purchaseProcess,
     saleKind,
     bundleComponents,
+    discountPrices,
     daechionBinding,
     visible:     body.visible ?? false,
     name:        body.name || '',

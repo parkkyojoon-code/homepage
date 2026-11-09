@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { isOriginalProduct } from '../../purchase-process'
+import {discountCode,discountRuleSchema,pricingSnapshot} from './discounts'
 
 const money = z.number().int().positive().max(2147483647)
 const label = z.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/).transform(value => value.normalize('NFC'))
@@ -13,6 +14,7 @@ const productSchema = z.object({
   purchaseProcess: z.literal('PROCESS_2'), visible: z.literal(true),
   priceWon: money, tenantId: z.string().trim().min(1).max(120),
   revision: z.string().min(1).max(120), lectures: z.array(lecture).min(1).max(30),
+  pricing:pricingSnapshot.optional(),
 }).strict().superRefine((value, ctx) => {
   if (isOriginalProduct(value.productId) ||
     new Set(value.lectures.map(item => item.id)).size !== value.lectures.length ||
@@ -20,13 +22,14 @@ const productSchema = z.object({
     (value.saleKind === 'BUNDLE' && value.lectures.length < 2)) {
     ctx.addIssue({ code: 'custom', message: 'Invalid sale configuration' })
   }
+  if(value.pricing&&(value.pricing.regularPriceWon<=value.priceWon))ctx.addIssue({code:'custom',message:'Invalid discount snapshot'})
 })
 export type CheckoutProduct = z.infer<typeof productSchema>
-export const cartRequestSchema = z.object({items: z.array(z.object({productId}).strict()).min(1).max(30)}).strict()
+export const cartRequestSchema = z.object({items: z.array(z.object({productId}).strict()).min(1).max(30),discountCode:discountCode.optional()}).strict()
 export type CartConflict = { lectureId: number; lectureName: string; productIds: string[]; productTitles: string[] }
 export class CartError extends Error {
   constructor(public readonly code: 'INVALID_CART' | 'DUPLICATE_PRODUCT' | 'PRODUCT_UNAVAILABLE' |
-    'PRODUCT_NOT_CONFIGURED' | 'TENANT_MISMATCH' | 'TOTAL_OUT_OF_RANGE' | 'CART_TOO_LARGE' | 'CART_CONFLICT' | 'INVALID_OWNERSHIP_REPORT') { super(code) }
+    'PRODUCT_NOT_CONFIGURED' | 'TENANT_MISMATCH' | 'TOTAL_OUT_OF_RANGE' | 'CART_TOO_LARGE' | 'CART_CONFLICT' | 'INVALID_OWNERSHIP_REPORT' | 'DISCOUNT_NOT_APPLICABLE') { super(code) }
 }
 export interface ResolvedCart {
   items: CheckoutProduct[]; totalWon: number; fingerprint: string; conflicts: CartConflict[]
@@ -46,11 +49,23 @@ export function resolveCart(raw: unknown, catalog: readonly unknown[], tenantId:
     const candidates = catalog.filter(row => row !== null && typeof row === 'object' && (row as {productId?:unknown}).productId === id)
     if (!candidates.length) throw new CartError('PRODUCT_UNAVAILABLE')
     if (candidates.length !== 1) throw new CartError('PRODUCT_NOT_CONFIGURED')
-    const result = productSchema.safeParse(candidates[0])
+    const {discountPrices,...record}=candidates[0] as Record<string,unknown>
+    const result = productSchema.safeParse(record)
     if (!result.success) throw new CartError('PRODUCT_NOT_CONFIGURED')
     if (result.data.tenantId !== tenantId.trim()) throw new CartError('TENANT_MISMATCH')
-    return result.data
+    const item=result.data,code=parsed.data.discountCode
+    if(code){
+      const rules=z.array(discountRuleSchema).max(50).safeParse(discountPrices??[])
+      if(!rules.success||new Set(rules.data.map(r=>r.code)).size!==rules.data.length)throw new CartError('PRODUCT_NOT_CONFIGURED')
+      const rule=rules.data.find(r=>r.code===code)
+      if(rule){
+        if(item.pricing||rule.priceWon>=item.priceWon)throw new CartError('PRODUCT_NOT_CONFIGURED')
+        return {...item,priceWon:rule.priceWon,pricing:{regularPriceWon:item.priceWon,code}}
+      }
+    }
+    return item
   })
+  if(parsed.data.discountCode&&!items.some(i=>i.pricing?.code===parsed.data.discountCode))throw new CartError('DISCOUNT_NOT_APPLICABLE')
   const totalWon = items.reduce((sum,item) => sum + item.priceWon,0)
   if (!money.safeParse(totalWon).success) throw new CartError('TOTAL_OUT_OF_RANGE')
   const targets = new Map<number,{name:string;items:CheckoutProduct[]}>()
@@ -68,6 +83,7 @@ const reportSchema = z.object({
   cartFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   subjectKey: z.string().regex(/^[a-f0-9]{64}$/),
   checkedAt: z.string().datetime({offset:true}), identity: z.enum(['PASSED','REVIEW']),
+  existingStudent:z.enum(['EXISTING','NEW','UNKNOWN']).optional(),
   lectures: z.array(z.object({id:lecture.shape.id,state:z.enum(['OWNED','NOT_OWNED','UNKNOWN'])}).strict()).max(30),
 }).strict()
 export type OwnershipReport = z.infer<typeof reportSchema>

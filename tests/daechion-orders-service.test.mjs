@@ -87,6 +87,33 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       await assert.rejects(checkout.receiveOrder({...input,expectedTotalWon:1},ports),/REQUEST_CONFLICT/)
       await assert.rejects(checkout.receiveOrder({...input,requestKey:randomUUID()},ports),/REQUEST_CONFLICT/)
     })
+    await t.test('discounted new-student orders are payable, snapshot prices survive code deletion, and Sheets flags rather than blocks',async()=>{
+      let catalog=[{...product('promo-a',[101],10000),discountPrices:[{code:'LIVE2026',priceWon:7000},{code:'OTHER',priceWon:8000}]},product('promo-b',[102],5000)]
+      const scoped={...ports,catalog:async()=>catalog,ownership:async(c,_p,k)=>({...report(c,k),existingStudent:'NEW'})}
+      const input={items:[{productId:'promo-a'},{productId:'promo-b'}],discountCode:' live2026 ',contact:contact(),expectedTotalWon:12000}
+      const publicCatalog=await (await http.orderCatalog({...scoped,settings:{origins:['https://fixture.invalid']},ready:async()=>{}})).json()
+      assert.equal(publicCatalog.products.find(i=>i.productId==='promo-a').priceWon,10000)
+      assert.ok(!JSON.stringify(publicCatalog).includes('LIVE2026'));assert.ok(!JSON.stringify(publicCatalog).includes('OTHER'))
+      const stale=await checkout.quoteCheckout(input,scoped)
+      catalog=catalog.map(({discountPrices,...p})=>p)
+      await assert.rejects(checkout.receiveOrder(orderInput(stale),scoped),/PRICE_CHANGED/)
+      catalog=[{...product('promo-a',[101],10000),discountPrices:[{code:'LIVE2026',priceWon:7000}]},product('promo-b',[102],5000)]
+      const q=await checkout.quoteCheckout({...input,contact:contact()},scoped)
+      assert.equal(q.status,'READY');assert.equal(q.discountWon,3000);assert.equal(q.regularTotalWon,15000)
+      const order=await checkout.receiveOrder(orderInput(q),scoped)
+      assert.equal(order.reviewRequired,false)
+      const rows=(await db.query('SELECT price_won,snapshot FROM daechion_orders.items WHERE order_id=$1 ORDER BY product_id',[order.orderId])).rows
+      assert.deepEqual(rows.map(r=>r.price_won),[7000,5000]);assert.equal(rows[0].snapshot.pricing.code,'LIVE2026')
+      catalog=[] // An accepted order never reads the mutable catalog again.
+      const view=await db.withClient(c=>orderView.orderSheetView(c,order.orderId)),value=h=>view.values[orderView.ORDER_HEADERS.indexOf(h)]
+      assert.equal(value('총 청구 금액'),12000);assert.equal(value('정상가 합계'),15000);assert.equal(value('총 할인액'),3000)
+      assert.equal(value('기존 수강생 조회 결과'),'신규');assert.equal(value('할인 사용 확인'),'신규 수강생 할인 사용')
+      const snapshot=(await db.query('SELECT snapshot FROM daechion_orders.quotes WHERE id=$1',[q.quoteId])).rows[0].snapshot
+      const context={orderId:order.orderId,version:'1',tenantId:'fixture',totalWon:12000,contact:snapshot.contact,items:snapshot.items}
+      assert.equal(await orderPreflight.preflightOrder(context,{tenantId:'fixture',subjectSecret:scoped.subjectSecret,api:{me:async()=>({tenantId:'fixture'}),students:async()=>[],lectures:async()=>[101,102].map(id=>({id,opened:true,weeklyLectures:[{id:id+1000}]}))}}),'READY')
+      const rawRules=orderView.orderFormatting(0)
+      assert.ok(rawRules.some(r=>r.addConditionalFormatRule.rule.booleanRule.condition.values[0].userEnteredValue==='신규 수강생 할인 사용'&&r.addConditionalFormatRule.rule.booleanRule.format.backgroundColor.red>.5))
+    })
     await t.test('targeted executable uses read-only preflight and sends one combined invoice without touching other orders',async()=>{
       const q=await quote(),received=await checkout.receiveOrder(orderInput(q),ports)
       const row=(await db.query('SELECT request_fingerprint FROM daechion_orders.orders WHERE id=$1',[received.orderId])).rows[0]
@@ -432,7 +459,12 @@ test('checkout service persists token-bound quotes and atomic orders without ext
         assert.ok(url.endsWith(':batchUpdate'))
         const values=body.requests.find(r=>r.updateCells).updateCells.rows[0].values.map(c=>c.userEnteredValue.stringValue??c.userEnteredValue.numberValue)
         assert.ok(body.requests.find(r=>r.updateCells).updateCells.rows[0].values.every(c=>!c.userEnteredValue.formulaValue))
-        if(body.requests.some(r=>r.updateSheetProperties)){state.headers=values;state.initialized=true;state.setup++}
+        if(body.requests.some(r=>r.insertDimension?.range.dimension==='COLUMNS')){
+          const range=body.requests.find(r=>r.insertDimension)?.insertDimension.range
+          if(state.row)state.row.splice(range.startIndex,0,...Array(range.endIndex-range.startIndex).fill(''))
+          state.headers=values;state.setup++
+        }
+        else if(body.requests.some(r=>r.updateSheetProperties)){state.headers=values;state.initialized=true;state.setup++}
         else{state.row=values;state.inserts++;if(state.failInsert){state.failInsert=false;throw Error('SHEETS_REQUEST_UNCONFIRMED')}}
         return {spreadsheetId:target.spreadsheetId,replies:body.requests.map(()=>({}))}
       }}
@@ -445,9 +477,20 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       state.headers=['기존 직원 데이터'];await assert.rejects(orderPublisher.setupOrderSheet(api,target),/NOT_EMPTY/)
       state.headers=[];await orderPublisher.setupOrderSheet(api,target);await orderPublisher.setupOrderSheet(api,target);assert.equal(state.setup,1)
       assert.equal(state.headers.at(-1),'직원 메모')
-      const rules=orderView.orderFormatting(0);assert.equal(rules.length,3)
+      const rules=orderView.orderFormatting(0);assert.equal(rules.length,5)
       assert.ok(rules.every(r=>r.addConditionalFormatRule.rule.ranges[0].startRowIndex===0))
       assert.ok(rules.some(r=>r.addConditionalFormatRule.rule.booleanRule.condition.values[0].userEnteredValue==='통과'))
+    })
+    await t.test('discount columns migrate once before staff notes without changing historical order cells',async()=>{
+      const {state,api}=sheetFixture()
+      state.initialized=true;state.headers=[...orderView.LEGACY_ORDER_HEADERS,'직원 메모'];state.row=orderView.LEGACY_ORDER_HEADERS.map((_,i)=>`old-${i}`)
+      const original=[...state.row],memo=state.memo
+      await orderPublisher.setupOrderSheet(api,target)
+      assert.deepEqual(state.headers,[...orderView.ORDER_HEADERS,'직원 메모']);assert.deepEqual(state.row.slice(0,original.length),original)
+      assert.equal(state.memo,memo);assert.equal(state.row.length,orderView.ORDER_HEADERS.length)
+      await orderPublisher.setupOrderSheet(api,target);assert.equal(state.setup,1)
+      const malformed=sheetFixture();malformed.state.initialized=true;malformed.state.headers=[...orderView.LEGACY_ORDER_HEADERS,'다른 메모']
+      await assert.rejects(orderPublisher.setupOrderSheet(malformed.api,target),/NOT_EMPTY/)
     })
     await t.test('one order row includes all contacts and exact bill IDs; metadata updates preserve staff notes and newer work',async()=>{
       const {orderId,person,payment}=await completeReady({guardian:true}),{state,api}=sheetFixture()
@@ -1136,6 +1179,9 @@ test('read-only ownership lookup never creates students, ignores payer identity,
   const student={id:1,name:person.studentName,active:false,studentPhoneNumber:person.studentPhone}
   const found=await ownership.lookupOwnership({...port,students:async()=>[student]},'fixture',cart,person,key)
   assert.equal(found.identity,'REVIEW');assert.equal(found.lectures[0].state,'UNKNOWN')
+  assert.equal(found.existingStudent,'EXISTING')
+  assert.equal((await ownership.lookupOwnership(port,'fixture',cart,person,key)).existingStudent,'NEW')
+  assert.equal((await ownership.lookupOwnership({...port,students:async()=>{throw Error('Lookup unavailable')}},'fixture',cart,person,key)).existingStudent,'UNKNOWN')
   assert.equal((await ownership.lookupOwnership({...port,me:async()=>({tenantId:'wrong'}),students:()=>{throw Error('MUST_NOT_QUERY')}},'fixture',cart,person,key)).identity,'REVIEW')
   const parent=contact();parent.guardianPhone='01000001234'
   const secondParent={id:2,name:'다른 학생',active:true,parentPhoneNumber2:parent.guardianPhone}

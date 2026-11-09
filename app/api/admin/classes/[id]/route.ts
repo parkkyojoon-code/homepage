@@ -5,6 +5,7 @@ import { isOriginalProduct, parsePurchaseProcess, purchaseProcessOf } from '@/li
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
 import { saleKindForWrite, validateBundle, SalePolicyError, bundlePublishingReady } from '@/lib/daechion/orders/sale-policy'
 import {resolveBundleComponents,BundleComponentError} from '@/lib/daechion/orders/bundle-components'
+import {validateDiscounts,DiscountPolicyError} from '@/lib/daechion/orders/discounts'
 
 // PUT: 수업 수정
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -25,9 +26,14 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   }
 
   let saleKind
+  let discountPrices
   let bundleComponents=classes[idx].bundleComponents
   let bindingBody=body
   try{
+    const proposed={...classes[idx],...body,purchaseProcess}
+    discountPrices=validateDiscounts(proposed.discountPrices,proposed)
+    const hidingOnly=body.visible===false&&Object.keys(body).every(key=>['visible','expectedUpdatedAt'].includes(key))
+    if(purchaseProcess==='PROCESS_2'&&!hidingOnly&&(typeof proposed.name!=='string'||!proposed.name.trim()||proposed.name.trim().length>200||/[\u0000-\u001f\u007f]/.test(proposed.name)))return NextResponse.json({error:'수업명을 1~200자로 입력해주세요.'},{status:400})
     saleKind=saleKindForWrite(body.saleKind,classes[idx])
     if(saleKind==='BUNDLE'&&body.expectedUpdatedAt!==classes[idx].updatedAt)return NextResponse.json({error:'상품 정보가 변경되었습니다. 다시 불러와주세요.'},{status:409})
     if(saleKind==='BUNDLE'){
@@ -39,7 +45,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       }
     }
     validateBundle({...classes[idx],...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds??classes[idx].daechionBinding?.lectures.map(l=>l.id),bundlePublishingReady(process.env))
-  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
+  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError||error instanceof DiscountPolicyError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
 
   const before=JSON.stringify(classes[idx])
   if(purchaseProcess==='PROCESS_2'&&body.expectedDaechionBindingAt!==undefined&&body.expectedDaechionBindingAt!==(classes[idx].daechionBinding?.verifiedAt??null))return NextResponse.json({error:'강의 연결이 변경되었습니다. 다시 불러와주세요.'},{status:409})
@@ -62,6 +68,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     id,                             // id 변경 불가
     purchaseProcess,
     saleKind,
+    discountPrices,
     bundleComponents:saleKind==='BUNDLE'?bundleComponents:undefined,
     daechionBinding,
     image: body.image ?? classes[idx].image,  // 이미지는 별도 엔드포인트로

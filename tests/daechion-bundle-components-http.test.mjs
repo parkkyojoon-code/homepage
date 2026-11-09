@@ -51,6 +51,16 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
     assert.equal((await request('/api/classes/source-a')).status,404)
     const login=await request('/api/admin/login',{password});cookie=login.headers.get('set-cookie')?.split(';')[0];assert.ok(cookie)
     assert.equal((await request('/api/admin/classes')).headers.get('X-Bundle-Publishing-Ready'),String(publishingReady))
+    const promo=[{code:' live2026 ',priceWon:500},{code:'WELCOME2026',priceWon:600}]
+    const discounted=await request('/api/admin/classes/purchase-entry-single',{discountPrices:promo},'PUT')
+    assert.equal(discounted.status,200);assert.equal((await discounted.json()).discountPrices[0].code,'LIVE2026')
+    for(const route of ['/api/classes','/api/classes/purchase-entry-single']){
+      const publicData=await (await request(route)).json()
+      assert.ok(!JSON.stringify(publicData).includes('LIVE2026'));assert.ok(!JSON.stringify(publicData).includes('discountPrices'))
+    }
+    for(const discountPrices of [[{code:'LIVE2026',priceWon:0}],[{code:'LIVE2026',priceWon:900}],[{code:'a',priceWon:500},{code:'A',priceWon:600}]])assert.equal((await request('/api/admin/classes/purchase-entry-single',{discountPrices},'PUT')).status,400)
+    assert.equal((await request('/api/admin/classes/12course',{discountPrices:promo},'PUT')).status,400)
+    assert.equal((await request('/api/admin/classes/purchase-entry-single',{name:'  ',visible:true},'PUT')).status,400)
     const components=[{productId:'source-a',lectureId:101,tenantId:'test-only'},{productId:'source-b',lectureId:102,tenantId:'test-only'}]
     const body={...base,id:'website-bundle',name:'홈페이지 상품 묶음',saleKind:'BUNDLE',bundleProductIds:['source-b','source-a'],
       expectedBundleComponents:components,modes:{...base.modes,online:{enabled:true,price:1200}}}

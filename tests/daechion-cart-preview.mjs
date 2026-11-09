@@ -12,6 +12,8 @@ if(process.argv.slice(2).join(' ')!=='--local-only')throw Error('Explicit --loca
 const root=fileURLToPath(new URL('../',import.meta.url)),dir=await mkdtemp(path.join(tmpdir(),'pkjmath-cart-ui-'))
 const make=(productId,title,ids,priceWon)=>({productId,title,saleKind:ids.length>1?'BUNDLE':'SINGLE',priceWon,tenantId:'local-fixture',revision:'r1',purchaseProcess:'PROCESS_2',visible:true,lectures:ids.map(id=>({id,name:`가상 강의 ${id}`}))})
 const products=[make('single-a','가상 개별 강의 A',[101],12901),make('single-b','가상 개별 강의 B',[102],18500),make('bundle','가상 파이널 묶음',[101,103],25000)]
+products[0].discountPrices=[{code:'LIVE2026',priceWon:10000},{code:'WELCOME2026',priceWon:11000}]
+products[2].discountPrices=[{code:'LIVE2026',priceWon:20000}]
 await writeFile(path.join(dir,'classes.json'),'[]')
 const db=new PGlite()
 await db.exec(await readFile(path.join(root,'db/daechion/001_initial.sql'),'utf8'))
@@ -19,7 +21,7 @@ await db.exec(await readFile(path.join(root,'db/daechion-orders/001_initial.sql'
 let tail=Promise.resolve()
 const withClient=run=>{const next=tail.then(()=>run(db));tail=next.catch(()=>{});return next}
 const ports={settings:{origins:['http://127.0.0.1:3107']},tenantId:'local-fixture',subjectSecret:'local-synthetic-cart-secret-only-123456',catalog:async()=>products,ready:async()=>{},withClient,
-  ownership:async(cart,contact,subjectKey)=>({cartFingerprint:cart.fingerprint,subjectKey,checkedAt:new Date().toISOString(),identity:contact.studentHistory==='EXISTING'?'REVIEW':'PASSED',
+  ownership:async(cart,contact,subjectKey)=>({cartFingerprint:cart.fingerprint,subjectKey,checkedAt:new Date().toISOString(),existingStudent:contact.studentHistory==='EXISTING'?'EXISTING':'NEW',identity:contact.studentHistory==='EXISTING'?'REVIEW':'PASSED',
     lectures:cart.items.flatMap(i=>i.lectures.map(l=>({id:l.id,state:contact.studentPhone.endsWith('6666')&&l.id===101?'OWNED':contact.studentHistory==='EXISTING'?'UNKNOWN':'NOT_OWNED'})))})}
 const child=spawn(process.execPath,[path.join(root,'node_modules/next/dist/bin/next'),'start','--hostname','127.0.0.1','--port','3108'],{
   cwd:root,windowsHide:true,stdio:'ignore',env:{...process.env,NODE_ENV:'production',DATA_DIR:dir,NODE_OPTIONS:'',
