@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
+import {purchaseEntryHref} from '@/lib/purchase-process'
 import {
   Clock, Users, Star, CheckCircle, PlayCircle, BookOpen,
   MessageSquare, Calendar, User, Shield, ChevronDown, ChevronUp,
@@ -13,6 +14,7 @@ import {
 // Class data interface
 interface ClassDetail {
   id: string
+  orderCheckout?:boolean
   category: string
   title: string
   instructor: string
@@ -886,7 +888,7 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
           <motion.button
             whileHover={{ scale: 1.02, y: -1 }}
             whileTap={{ scale: 0.98 }}
-            onClick={() => router.push(`/apply/${classDetail.id}?option=${selectedOption}&campus=${encodeURIComponent(selectedCampus)}`)}
+            onClick={() => router.push(purchaseEntryHref(classDetail.id,selectedOption,selectedCampus,classDetail.orderCheckout===true))}
             style={{
               width: '100%',
               padding: '18px',
@@ -994,6 +996,7 @@ function apiToClassDetail(cls: any): ClassDetail {
 
   return {
     id:            cls.id,
+    orderCheckout:cls.orderCheckout===true,
     category:      cls.category,
     title:         cls.name,
     instructor:    "박교준",

@@ -8,6 +8,19 @@ import type {BillingContext} from '../lib/daechion/orders/billing'
 import {bundleSource,resolveBundleComponents,bundleCompositionIssue,type BundleProduct} from '../lib/daechion/orders/bundle-components'
 import {checkoutCatalog} from '../lib/daechion/orders/catalog'
 import {firstLessonTarget} from '../lib/daechion/first-lesson'
+import {usesOrderCheckout,purchaseEntryHref} from '../lib/purchase-process'
+
+test('purchase entry routes bundles and enabled process2 singles to selected cart while preserving legacy and offline flows',()=>{
+  const single={id:'new-course',purchaseProcess:'PROCESS_2'}
+  assert.equal(usesOrderCheckout(single,false),false)
+  assert.equal(usesOrderCheckout(single,true),true)
+  assert.equal(usesOrderCheckout({...single,saleKind:'BUNDLE'},false),true)
+  assert.equal(usesOrderCheckout({id:'legacy'},true),false)
+  assert.equal(usesOrderCheckout({...single,id:'12course',saleKind:'BUNDLE'},true),false)
+  assert.equal(purchaseEntryHref('묶음상품1','online','서울 대치',true),'/classes/cart?productId=%EB%AC%B6%EC%9D%8C%EC%83%81%ED%92%881')
+  assert.equal(purchaseEntryHref('legacy','online','서울 대치',false),'/apply/legacy?option=online&campus=%EC%84%9C%EC%9A%B8%20%EB%8C%80%EC%B9%98')
+  assert.equal(purchaseEntryHref('new-course','offline','서울 대치',true),'/apply/new-course?option=offline&campus=%EC%84%9C%EC%9A%B8%20%EB%8C%80%EC%B9%98')
+})
 
 test('bundle publishing requires explicit environment opt-in and the order service',()=>{
   assert.equal(bundlePublishingReady({}),false)

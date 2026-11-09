@@ -13,3 +13,13 @@ export function purchaseProcessOf(product: { id: string; purchaseProcess?: unkno
   if (isOriginalProduct(product.id)) return 'PROCESS_1'
   return parsePurchaseProcess(product.purchaseProcess)
 }
+
+export function usesOrderCheckout(product:{id:string;purchaseProcess?:unknown;saleKind?:unknown},ordersEnabled:boolean):boolean{
+  return purchaseProcessOf(product)==='PROCESS_2'&&(ordersEnabled||product.saleKind==='BUNDLE')
+}
+
+export function purchaseEntryHref(id:string,option:string,campus:string,orderCheckout:boolean):string{
+  return orderCheckout&&option==='online'
+    ?`/classes/cart?productId=${encodeURIComponent(id)}`
+    :`/apply/${encodeURIComponent(id)}?option=${encodeURIComponent(option)}&campus=${encodeURIComponent(campus)}`
+}

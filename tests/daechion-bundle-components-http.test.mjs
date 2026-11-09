@@ -18,7 +18,8 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
   const binding=id=>({tenantId:'test-only',lectures:[{id,name:'동일 강의명'}],verifiedAt:base.createdAt})
   await writeFile(path.join(dir,'classes.json'),JSON.stringify([
     {...base,id:'source-a',daechionBinding:binding(101)},{...base,id:'source-b',daechionBinding:binding(102)},
-    {...base,id:'12course',purchaseProcess:'PROCESS_1'},
+    {...base,id:'12course',visible:true,purchaseProcess:'PROCESS_1'},
+    {...base,id:'purchase-entry-single',visible:true,daechionBinding:binding(101)},
   ]))
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening')
   const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve))
@@ -45,6 +46,9 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
     }
     assert.ok(ready)
     assert.equal((await request('/api/admin/classes')).status,401)
+    const legacy=await (await request('/api/classes/12course')).json();assert.equal(legacy.orderCheckout,false)
+    const single=await (await request('/api/classes/purchase-entry-single')).json();assert.equal(single.orderCheckout,publishingReady)
+    assert.equal((await request('/api/classes/source-a')).status,404)
     const login=await request('/api/admin/login',{password});cookie=login.headers.get('set-cookie')?.split(';')[0];assert.ok(cookie)
     assert.equal((await request('/api/admin/classes')).headers.get('X-Bundle-Publishing-Ready'),String(publishingReady))
     const components=[{productId:'source-a',lectureId:101,tenantId:'test-only'},{productId:'source-b',lectureId:102,tenantId:'test-only'}]
@@ -71,6 +75,39 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
     }
     const publicCreate=await request('/api/admin/classes',{...body,id:'public-bundle',visible:true,publishingReady:true})
     assert.equal(publicCreate.status,publishingReady?201:400)
+    if(publishingReady){
+      const info=await request('/api/classes/public-bundle');assert.equal(info.headers.get('Cache-Control'),'no-store');assert.equal((await info.json()).orderCheckout,true)
+      if(process.env.DAECHION_BROWSER_FIXTURE_TEST==='true'){
+        const {createRequire}=await import('node:module'),require=createRequire(import.meta.url)
+        const browser=await require('../workers/daechion/browser/node_modules/playwright').chromium.launch({headless:true})
+        try{
+          const page=await browser.newPage(),cart={productId:'public-bundle',title:body.name,saleKind:'BUNDLE',priceWon:1200,lectureCount:2}
+          await page.route('**/api/daechion/orders/catalog',route=>route.fulfill({json:{available:true,products:[cart]}}))
+          await page.route('**/api/daechion/orders/cart',route=>{
+            assert.deepEqual(route.request().postDataJSON(),{items:[{productId:'public-bundle'}]})
+            return route.fulfill({json:{status:'READY',totalWon:1200,items:[{productId:cart.productId,title:cart.title,priceWon:1200}],conflicts:[]}})
+          })
+          const assertSelected=async()=>{
+            await page.getByRole('heading',{name:'강의 장바구니',exact:true}).waitFor()
+            await page.getByRole('checkbox',{name:/홈페이지 상품 묶음/}).waitFor()
+            assert.equal(await page.getByRole('checkbox',{name:/홈페이지 상품 묶음/}).isChecked(),true)
+            await page.getByRole('button',{name:'신청 내용 확인',exact:true}).waitFor({state:'visible'})
+            await page.waitForFunction(()=>!document.querySelector('button[type="submit"]').disabled)
+            assert.match(await page.getByRole('region',{name:'선택한 상품',exact:true}).innerText(),/1,200원/)
+          }
+          await page.goto(origin+'/classes/public-bundle')
+          await page.getByRole('button',{name:'지금 수강 신청하기',exact:true}).click()
+          await page.waitForURL(origin+'/classes/cart?productId=public-bundle');await assertSelected()
+          // Existing bookmarks must also use the order API, never the disabled
+          // legacy applications endpoint. No personal data or quote is sent.
+          await page.route('**/api/daechion/applications**',()=>{throw Error('LEGACY_INTAKE_MUST_NOT_BE_USED')})
+          await page.goto(origin+'/apply/public-bundle?option=online');await assertSelected()
+          await page.goto(origin+'/classes/cart?productId=private-or-missing')
+          await page.getByRole('alert').filter({hasText:'선택한 상품은 현재 구매할 수 없습니다.'}).waitFor()
+          assert.equal(await page.getByRole('checkbox',{name:/홈페이지 상품 묶음/}).isChecked(),false)
+        }finally{await browser.close()}
+      }
+    }
     const bundleFromList=async()=>{const response=await request('/api/admin/classes');assert.equal(response.status,200);return (await response.json()).find(item=>item.id===body.id)}
     assert.equal((await bundleFromList()).bundleCompositionIssue,null)
     assert.equal((await request('/api/admin/classes/source-a',{name:'변경된 개별상품명',modes:{...base.modes,online:{enabled:true,price:9900}}},'PUT')).status,200)

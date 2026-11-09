@@ -8,6 +8,7 @@ import Link from "next/link"
 import { calcSubjectSelectionPrice, type SubjectSelection } from "@/lib/subjectPricing"
 import type { PurchaseProcess } from '@/lib/purchase-process'
 import ProcessTwoApplicationForm from '@/components/daechion/ApplicationForm'
+import CartCheckout from '@/components/daechion/CartCheckout'
 
 // 수업 정보
 const courseTypeMap = (category: string, option: string, campus: string, hasSubjectSelection: boolean): string => {
@@ -32,6 +33,7 @@ export default function ApplyPage() {
   const [classData, setClassData] = useState<{
     name: string; category: string
     purchaseProcess?: PurchaseProcess
+    orderCheckout?:boolean
     onlinePrice: number; offlinePrice: number
     textbookIncluded: boolean; textbookPrice: number
     subjectSelection: SubjectSelection | null
@@ -41,12 +43,13 @@ export default function ApplyPage() {
   const [selectedSubjects, setSelectedSubjects] = useState<string[]>([])
 
   useEffect(() => {
-    fetch(`/api/classes/${courseId}`)
+    fetch(`/api/classes/${encodeURIComponent(courseId)}`,{cache:'no-store'})
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data) setClassData({
           name: data.name,
           purchaseProcess: data.purchaseProcess,
+          orderCheckout:data.orderCheckout===true,
           category: data.category,
           onlinePrice: data.modes?.online?.price ?? 0,
           offlinePrice: data.modes?.offline?.price ?? 0,
@@ -128,6 +131,7 @@ export default function ApplyPage() {
   }
 
   if (classData.purchaseProcess === 'PROCESS_2') {
+    if(classData.orderCheckout&&option!=='offline')return <CartCheckout key={courseId} initialProductId={courseId}/>
     return <ProcessTwoApplicationForm key={`${courseId}:${option}:${campus}`} productId={courseId} name={classData.name}
       mode={option==='offline'?'OFFLINE':'ONLINE'} campus={option==='offline'?campus:''}
       tuition={option==='offline'?classData.offlinePrice:classData.onlinePrice} textbook={classData.textbookIncluded?classData.textbookPrice:0}/>

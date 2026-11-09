@@ -10,9 +10,9 @@ const storageKey='pkjmath-cart-pending-v1'
 type Pending=ReturnType<typeof pendingOrder.parse>
 type Checked=ReturnType<typeof cartResponse.parse>
 class VisibleError extends Error{}
-export default function CartCheckout(){
+export default function CartCheckout({initialProductId}:{initialProductId?:string}={}){
   const [products,setProducts]=useState<CartProduct[]>([]),[available,setAvailable]=useState(false),[loading,setLoading]=useState(true),[refresh,setRefresh]=useState(0)
-  const [selected,setSelected]=useState<string[]>([]),[checked,setChecked]=useState<Checked|null>(null),[checking,setChecking]=useState(false)
+  const [selected,setSelected]=useState<string[]>(initialProductId?[initialProductId]:[]),[checked,setChecked]=useState<Checked|null>(null),[checking,setChecking]=useState(false)
   const [form,setForm]=useState({studentName:'',studentPhone:'',guardianName:'',guardianPhone:'',payerPhone:'',applicantType:'',confirmPayment:false,agreePrivacy:false})
   const [history,setHistory]=useState<StudentHistory>(),[quote,setQuote]=useState<CartQuote|null>(null),[finalConfirmed,setFinalConfirmed]=useState(false),[now,setNow]=useState(Date.now())
   const [pending,setPending]=useState<Pending|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[none,setNone]=useState(false)
@@ -24,11 +24,17 @@ export default function CartCheckout(){
   useEffect(()=>{
     const controller=new AbortController();setLoading(true);setAvailable(false);setChecked(null);setForm(old=>({...old,confirmPayment:false}))
     fetch('/api/daechion/orders/catalog',{cache:'no-store',signal:controller.signal}).then(async r=>{if(!r.ok)throw Error();return catalogResponse.parse(await r.json())})
-      .then(data=>{if(!controller.signal.aborted){setProducts(data.products);setAvailable(data.available)}})
+      .then(data=>{if(!controller.signal.aborted){
+        setProducts(data.products);setAvailable(data.available)
+        if(initialProductId&&!data.products.some(p=>p.productId===initialProductId)){
+          setSelected(old=>old.filter(id=>id!==initialProductId))
+          setError('선택한 상품은 현재 구매할 수 없습니다. 수업 목록에서 다시 확인해주세요.')
+        }
+      }})
       .catch(()=>{if(!controller.signal.aborted)setError('상품을 불러오지 못했습니다. 잠시 후 다시 확인해주세요.')})
       .finally(()=>{if(!controller.signal.aborted)setLoading(false)})
     return()=>controller.abort()
-  },[refresh])
+  },[refresh,initialProductId])
   useEffect(()=>{
     const controller=new AbortController();setChecked(null)
     if(!selected.length||!available||pending){setChecking(false);return()=>controller.abort()}
