@@ -60,6 +60,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
     await db.exec(readFileSync(new URL('../db/daechion/001_initial.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/001_initial.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion/002_identity.sql',import.meta.url),'utf8'))
+    await db.exec(readFileSync(new URL('../db/daechion/006_operations.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/002_workers.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/003_delivery.sql',import.meta.url),'utf8'))
     await db.exec(readFileSync(new URL('../db/daechion-orders/004_admin.sql',import.meta.url),'utf8'))
@@ -839,7 +840,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const original=payment.send
       payment.send=async job=>{const result=await original(job);payment.observation={state:'W',billId:job.billId,amountWon:null,paidAt:null};return result}
       const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment,daechion:{...api,
-        refreshSession:async id=>{assert.equal(id,10);refreshes++;return {refreshed:true}},
+        refreshSession:async id=>{assert.equal(id,undefined);refreshes++;return {refreshed:true}},
         ensureFirstLessonAccess:async input=>{await input.beforeWrite();if(!input.enrollmentRecorded)await input.recordEnrollment();granted.push(input.lectureId);return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}}},
         message:{send:async job=>{messages.push(job);return {accepted:true,messageId:'scheduler-fixture'}}}}}
       const first=await orderExecutable.runtime(schedulerEnv,options).cycle()
@@ -862,7 +863,7 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal((await orderExecutable.runtime(env,options).cycle()).sessionReady,false)
       assert.equal(api.creates,0);assert.deepEqual(api.enrolled,[])
       let view=await db.withClient(c=>orderView.orderSheetView(c,orderId))
-      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/로그인 세션 확인 필요/)
+      assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/API·관리자 연결 점검 실패/)
       assert.equal(view.values[orderView.ORDER_HEADERS.indexOf('처리 확인')],'확인 필요')
       assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).workerStatus.session_issue,true)
       await makeDue(orderId);await orderExecutable.runtime(env,options).cycle();assert.equal(refreshes,1);assert.equal(api.creates,0)
@@ -870,7 +871,62 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal((await orderExecutable.runtime(env,options).cycle()).sessionReady,true)
       assert.equal(refreshes,2);assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[10])
       view=await db.withClient(c=>orderView.orderSheetView(c,orderId));assert.ok(!JSON.stringify(view).includes('private session credential'))
-      assert.ok(!view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')].includes('로그인 세션'))
+      assert.ok(!view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')].includes('연결 점검 실패'))
+    })
+    await t.test('an academy outage pauses new bills but keeps paid observations and safely resumes without rebilling or repeated grants',async()=>{
+      await quietScheduler();await db.query('DELETE FROM daechion_orders.scheduler_sessions')
+      const paid=await workerOrder(['a']),pending=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor()
+      await orderBilling.sendOrderBill(paid.orderId,true,{withClient:db.withClient,provider:payment,preflight:async()=> 'READY'});payment.paid()
+      let healthy=false
+      const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment,daechion:{...api,refreshSession:async()=>{
+        if(!healthy)throw Object.assign(Error('private token must never be recorded'),{stage:'API_PREFLIGHT'})
+        return {refreshed:true}
+      }}}}
+      const env={...schedulerEnv,DAECHION_ORDER_READY_MESSAGE_ENABLED:'false',DAECHION_BROWSER_CHECK_LECTURE_ID:undefined}
+      assert.equal((await orderExecutable.runtime(env,options).cycle()).sessionReady,false)
+      assert.equal(payment.sends,1);assert.equal(api.creates,0)
+      assert.equal((await db.query('SELECT payment_state FROM daechion_orders.orders WHERE id=$1',[paid.orderId])).rows[0].payment_state,'PAID')
+      for(const order of [paid,pending]){
+        const view=await db.withClient(c=>orderView.orderSheetView(c,order.orderId))
+        assert.match(view.values[orderView.ORDER_HEADERS.indexOf('확인 필요 사유')],/API·관리자 연결 점검 실패/)
+      }
+      const diagnostics=(await db.query("SELECT state,code FROM daechion_automation.operation_issues WHERE scope='WORKER' AND phase='sessionRefresh'")).rows[0]
+      assert.deepEqual(diagnostics,{state:'OPEN',code:'API_PREFLIGHT'})
+      healthy=true;await db.query("UPDATE daechion_orders.scheduler_sessions SET next_check_at=now()-interval '1 second'")
+      for(const order of [paid,pending])await makeDue(order.orderId)
+      await orderExecutable.runtime(env,options).cycle()
+      assert.equal(payment.sends,2);assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[10])
+      assert.equal((await db.query("SELECT state FROM daechion_automation.operation_issues WHERE scope='WORKER' AND phase='sessionRefresh'")).rows[0].state,'RESOLVED')
+      await makeDue(paid.orderId);await makeDue(pending.orderId);await orderExecutable.runtime(env,options).cycle()
+      assert.equal(payment.sends,2);assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[10])
+    })
+    await t.test('unavailable stored browser credentials do not abort existing payment reads',async()=>{
+      await quietScheduler();await db.query('DELETE FROM daechion_orders.scheduler_sessions')
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor()
+      await orderBilling.sendOrderBill(orderId,true,{withClient:db.withClient,provider:payment,preflight:async()=> 'READY'});payment.paid()
+      const env={...schedulerEnv,DAECHION_ORDER_READY_MESSAGE_ENABLED:'false',DAECHION_CONTENT_BROWSER_ENABLED:'false'}
+      const result=await orderExecutable.runtime(env,{withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,payment}}).cycle()
+      assert.equal(result.sessionReady,false);assert.equal(result.failed,0)
+      assert.equal((await db.query('SELECT payment_state FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].payment_state,'PAID')
+      assert.equal(api.creates,0);assert.equal(payment.sends,1)
+    })
+    await t.test('a deleted purchased course blocks only its grant while another paid order completes normally',async()=>{
+      await quietScheduler();await db.query('DELETE FROM daechion_orders.scheduler_sessions')
+      const missing=await workerOrder(['a']),valid=await workerOrder(['b']),payments=new Map(),api=enrollmentFor()
+      for(const [order,amount] of [[missing,12900],[valid,18500]]){
+        const p=providerFor(amount)
+        await orderBilling.sendOrderBill(order.orderId,true,{withClient:db.withClient,provider:p,preflight:async()=> 'READY'});p.paid();payments.set(p.bill.billId,p)
+      }
+      const daechion={...api,lectures:async()=> (await api.lectures()).filter(course=>course.id!==10),refreshSession:async()=>({refreshed:true})}
+      const options={withClient:db.withClient,withSchedulerClient:schedulerClient,providers:{api,daechion,payment:{accountId:'fixture-account',read:async id=>payments.get(id).read()}}}
+      const env={...schedulerEnv,DAECHION_ORDER_SEND_ENABLED:'false',DAECHION_ORDER_READY_MESSAGE_ENABLED:'false'}
+      assert.equal((await orderExecutable.runtime(env,options).cycle()).sessionReady,true)
+      assert.deepEqual((await db.query('SELECT state,review_code FROM daechion_orders.grants WHERE order_id=$1',[missing.orderId])).rows[0],{state:'REVIEW',review_code:'lecture_unavailable'})
+      assert.equal((await db.query('SELECT state FROM daechion_orders.grants WHERE order_id=$1',[valid.orderId])).rows[0].state,'VERIFIED')
+      assert.deepEqual(api.enrolled,[11]);const creates=api.creates
+      await makeDue(missing.orderId);await makeDue(valid.orderId);await orderExecutable.runtime(env,options).cycle()
+      assert.equal(api.creates,creates);assert.deepEqual(api.enrolled,[11])
+      assert.equal((await db.query('SELECT session_issue FROM daechion_orders.scheduler_orders WHERE order_id=$1',[valid.orderId])).rows[0].session_issue,false)
     })
     await t.test('bounded scheduler batches are fair and an uncertain invoice is never resent by later cycles',async()=>{
       await quietScheduler()

@@ -258,7 +258,7 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
     try {
       await lease.assert()
       report('API_PREFLIGHT')
-      if(!Number.isSafeInteger(input.lectureId)||input.lectureId<=0)fail()
+      if(!refreshOnly&&(!Number.isSafeInteger(input.lectureId)||input.lectureId<=0))fail()
       if(!refreshOnly&&(!uniqueIds(input.weeklyLectureIds)||!Number.isSafeInteger(input.studentId)||input.studentId<=0||
         !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()||typeof input.beforeWrite!=='function'))fail()
       if(String((await api.me()).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
@@ -266,10 +266,12 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
         const student=await api.student(input.studentId)
         if(student.id!==input.studentId||phone(student.studentPhoneNumber)!==input.studentPhone||student.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim())fail()
       }
-      const matches=(await api.lectures()).filter(item=>item.id===input.lectureId)
-      if(matches.length!==1)fail()
-      const lecture=matches[0],names=lecture.weeklyLectures.map(week=>week.name.replace(/\s+/g,' ').trim())
+      let lecture
       if(!refreshOnly){
+        const matches=(await api.lectures()).filter(item=>item.id===input.lectureId)
+        if(matches.length!==1)fail()
+        lecture=matches[0]
+        const names=lecture.weeklyLectures.map(week=>week.name.replace(/\s+/g,' ').trim())
         if(!lecture.opened||!names.length||names.some(name=>!name.trim()||name==='전체 선택'))fail()
         if(input.firstOnly){
           if(input.weeklyLectureIds.length!==1||lecture.weeklyLectures[0].id!==input.weeklyLectureIds[0]||
@@ -298,11 +300,15 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
       const authenticated=async()=>{await lease.assert();await lease.save(JSON.stringify(await context.storageState()))}
       if(refreshOnly){
         report('SESSION_REFRESH')
-        const target=`${ORIGIN}/crm/lectures/${input.lectureId}/participants`
+        // Authentication is academy-wide. Deleted courses, empty catalogs and
+        // roster changes must never make a valid administrator session fail.
+        const target=`${ORIGIN}/crm/lectures`
         await page.goto(target)
-        await page.getByRole('heading',{name:lecture.name,exact:true}).waitFor({state:'visible'})
-        // Authentication must not depend on an add-student action or roster size.
-        await page.getByRole('tab',{name:/^수강생 목록(?:\s+\d+명)?$/}).waitFor({state:'visible'})
+        await page.getByRole('heading',{name:'강의 관리',exact:true}).waitFor({state:'visible'})
+        await page.getByRole('tab',{name:'강의 목록',exact:true}).waitFor({state:'visible'})
+        const admin=page.getByRole('link',{name:'관리자',exact:true})
+        await admin.waitFor({state:'visible'})
+        if(await admin.getAttribute('href')!=='/crm/admin')fail()
         if(page.url()!==target)fail()
         if(input.exerciseExpiredAccess){
           const expiry=require('./token-state.cjs').accessExpiry(JSON.stringify(await context.storageState()))

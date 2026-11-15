@@ -84,10 +84,18 @@ test('identity, tenant, duplicate week labels and changed lecture targets stop b
 
 // A real Chromium executes this synthetic UI contract in CI. Every page request
 // is fulfilled locally; no vendor accounts, student data or network calls exist.
-test('read-only session refresh accepts empty and populated rosters without add controls and rejects unrelated pages',
+test('academy API authentication failure is reported before browser launch and without leaking upstream errors',async()=>{
+  let launched=0
+  for(const me of [async()=>({tenantId:999}),async()=>{throw Error('private upstream credentials')}]){
+    const access=provider.browserAccessProvider(env,{...api,me},{launch:async()=>{launched++;throw Error('must not launch')}})
+    await assert.rejects(access.refreshSession(),error=>error.stage==='API_PREFLIGHT'&&!error.message.includes('private'))
+  }
+  assert.equal(launched,0)
+})
+test('academy health ignores deleted courses and empty catalogs, is read-only and rejects missing admin identity',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:20000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
-  for(const mode of ['empty','populated','login','wrong-lecture','button-only']){
+  for(const mode of ['empty','populated','login','wrong-route','button-only','wrong-admin']){
     let saves=0,clicks=-1
     const launch=async options=>{
       const browser=await chromium.launch(options);let page
@@ -96,22 +104,24 @@ test('read-only session refresh accepts empty and populated rosters without add 
         return {setDefaultTimeout:ms=>context.setDefaultTimeout(ms),route:(...args)=>context.route(...args),storageState:()=>context.storageState(),
           newPage:async()=>{
             page=await context.newPage();page.setDefaultTimeout(300)
-            const name=mode==='login'?'로그인':'같은 이름'
-            const tab=['login','button-only'].includes(mode)?'':`<button role="tab">수강생 목록 ${mode==='empty'?0:1}명</button>`
-            const html=`<!doctype html><meta charset="utf-8"><h3>${name}</h3>${tab}${mode==='button-only'?'<button>일괄 학생 추가</button>':''}<script>window.clicks=0;document.addEventListener('click',()=>window.clicks++)</script>`
+            const name=mode==='login'?'로그인':'강의 관리'
+            const tab=['login','button-only'].includes(mode)?'':'<button role="tab">강의 목록</button>'
+            const admin=mode==='login'?'':`<a href="${mode==='wrong-admin'?'/student':'/crm/admin'}">관리자</a>`
+            const html=`<!doctype html><meta charset="utf-8"><h2>${name}</h2>${tab}${admin}<p>진행 중 ${mode==='empty'?0:11}개</p>${mode==='button-only'?'<button>일괄 학생 추가</button>':''}<script>window.clicks=0;document.addEventListener('click',()=>window.clicks++)</script>`
             await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:html}))
             const goto=page.goto.bind(page)
-            if(mode==='wrong-lecture')page.goto=url=>goto(url.replace('/10/','/11/'))
+            if(mode==='wrong-route')page.goto=()=>goto('https://parkkyojoon.daechion.com/student')
             return page
           }}
       },close:async()=>{if(page)clicks=await page.evaluate(()=>window.clicks);await browser.close()}}
     }
     const sessions={run:async run=>run({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,assert:async()=>{},save:async()=>{saves++}})}
-    const access=provider.browserAccessProvider(env,api,{launch,sessions})
+    const independentApi={...api,lectures:async()=>{throw Error('Deleted QA course must not affect academy health')}}
+    const access=provider.browserAccessProvider(env,independentApi,{launch,sessions})
     if(['empty','populated'].includes(mode)){
-      assert.deepEqual(await access.refreshSession(10),{refreshed:true});assert.equal(saves,1)
+      assert.deepEqual(await access.refreshSession(mode==='empty'?undefined:6008507),{refreshed:true});assert.equal(saves,1)
     }else{
-      await assert.rejects(access.refreshSession(10),/CONTENT_ACCESS_UNCONFIRMED/);assert.equal(saves,0)
+      await assert.rejects(access.refreshSession(),error=>error.stage==='SESSION_REFRESH');assert.equal(saves,0)
     }
     assert.equal(clicks,0)
   }
@@ -333,7 +343,7 @@ test('real browser captures refreshed credentials and a cold provider reloads th
       const context=await browser.newContext(options),newPage=context.newPage.bind(context)
       context.newPage=async()=>{
         const page=await newPage()
-          await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h3>같은 이름</h3><button role="tab">수강생 목록 1명</button><button onclick="window.actions=1">일괄 학생 추가</button><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
+          await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h2>강의 관리</h2><button role="tab">강의 목록</button><a href="/crm/admin">관리자</a><script>localStorage.setItem("auth",'+JSON.stringify(fresh)+');</script>'}))
         browser.fixturePage=page;return page
       }
       return context

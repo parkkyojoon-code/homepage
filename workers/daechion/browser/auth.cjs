@@ -6,14 +6,15 @@ const {createInterface}=require('node:readline/promises')
 let phase='ARGUMENTS'
 async function main(){
   const args=process.argv.slice(2)
-  if(args.length!==2||args[0]!=='--lecture-id'||!/^\d+$/.test(args[1])||!Number.isSafeInteger(Number(args[1]))||Number(args[1])<=0)throw Error('AUTH_LECTURE_ID_REQUIRED')
+  // Accept the legacy argument for existing launchers; no course is required.
+  if(args.length&&(args.length!==2||args[0]!=='--lecture-id'||!/^\d+$/.test(args[1])||!Number.isSafeInteger(Number(args[1]))||Number(args[1])<=0))throw Error('AUTH_ARGUMENTS_REQUIRED')
   const {chromium}=require('playwright')
   phase='BROWSER_START'
   const browser=await chromium.launch({headless:false,channel:'chrome'})
   const terminal=createInterface({input:process.stdin,output:process.stdout})
   try{
     const context=await browser.newContext(),page=await context.newPage()
-    const target=`https://parkkyojoon.daechion.com/crm/lectures/${Number(args[1])}/participants`
+    const target='https://parkkyojoon.daechion.com/crm/lectures'
     phase='INITIAL_PAGE'
     await page.goto(target)
     console.log('열린 대치온 브라우저에서 관리자로 직접 로그인하세요. 비밀번호를 이 창에 입력하지 마세요.')
@@ -22,7 +23,11 @@ async function main(){
     phase='TARGET_PAGE'
     await page.goto(target)
     phase='ADMIN_PAGE_VERIFY'
-    await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible',timeout:15000})
+    await page.getByRole('heading',{name:'강의 관리',exact:true}).waitFor({state:'visible',timeout:15000})
+    await page.getByRole('tab',{name:'강의 목록',exact:true}).waitFor({state:'visible',timeout:15000})
+    const admin=page.getByRole('link',{name:'관리자',exact:true})
+    await admin.waitFor({state:'visible',timeout:15000})
+    if(await admin.getAttribute('href')!=='/crm/admin')throw Error('AUTH_SESSION_UNCONFIRMED')
     if(new URL(page.url()).href!==target)throw Error('AUTH_SESSION_UNCONFIRMED')
     phase='STATE_READ'
     const {storageState}=require('./provider.cjs')

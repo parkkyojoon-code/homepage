@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto'
 import type {LedgerClient} from '../ledger'
 import {orderTransaction,lockOrder,orderChanged,type OrderConnection} from './worker-store'
+import {recordOperation} from '../operations'
 
 export interface SchedulerFlags {send:boolean;read:boolean;enroll:boolean;message:boolean;sheets:boolean}
 type EventClient=LedgerClient&{on?(event:string,listener:()=>void):unknown;removeListener?(event:string,listener:()=>void):unknown}
@@ -59,15 +60,22 @@ export async function sessionReady(ports:OrderConnection,tenantId:string,refresh
   // Record uncertainty before launching the browser; a crash never reports READY.
   await ports.withClient(c=>c.query(`INSERT INTO daechion_orders.scheduler_sessions(tenant_id,state,checked_at,next_check_at) VALUES($1,'UNKNOWN',now(),now()+interval '60 seconds')
     ON CONFLICT(tenant_id) DO UPDATE SET state='UNKNOWN',checked_at=now(),next_check_at=now()+interval '60 seconds'`,[tenantId]))
-  let ready=false;try{ready=(await refresh())?.refreshed===true}catch{/* Do not persist provider errors or credentials. */}
+  let ready=false,code='UNKNOWN'
+  try{ready=(await refresh())?.refreshed===true}catch(error){
+    // Only bounded stage codes; upstream errors may contain credentials.
+    const stage=error&&typeof error==='object'&&'stage' in error?error.stage:undefined
+    if(typeof stage==='string'&&['API_PREFLIGHT','BROWSER_LAUNCH','BROWSER_CONTEXT','SESSION_REFRESH'].includes(stage))code=stage
+  }
   await ports.withClient(c=>c.query(`UPDATE daechion_orders.scheduler_sessions SET state=$2,checked_at=now(),next_check_at=now()+CASE WHEN $3::boolean THEN interval '15 minutes' ELSE interval '60 seconds' END WHERE tenant_id=$1`,[tenantId,ready?'READY':'FAILED',ready]))
+  await ports.withClient(c=>recordOperation(c,{phase:'sessionRefresh',ok:ready,code}))
   return ready
 }
 export async function recordSessionIssue(ports:OrderConnection,id:string,healthy:boolean){
   return ports.withClient(c=>orderTransaction(c,async()=>{
     const o=await lockOrder(c,id);if(!o)return
-    const issue=!healthy&&o.checkout_state==='READY'&&o.payment_state==='PAID'&&
-      (await c.query("SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0
+    const issue=!healthy&&o.checkout_state==='READY'&&(
+      o.payment_state==='PAID'&&(await c.query("SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0||
+      o.payment_state==='PENDING'&&!(await c.query('SELECT 1 FROM daechion_orders.bills WHERE order_id=$1',[id])).rows.length)
     const changed=await c.query('UPDATE daechion_orders.scheduler_orders SET session_issue=$2 WHERE order_id=$1 AND session_issue IS DISTINCT FROM $2 RETURNING order_id',[id,issue])
     if(changed.rows.length)await orderChanged(c,id,issue?'browser_session_unavailable':'browser_session_restored')
   }))
