@@ -12,6 +12,10 @@ on:
       - 'tsconfig.daechion-cart.json'
       - 'lib/purchase-process.ts'
       - 'lib/classes.ts'
+      - 'lib/catalog-*'
+      - 'scripts/classes-store.cjs'
+      - 'tests/classes-store.test.mjs'
+      - 'tests/classes-admin-browser.mjs'
       - 'app/admin/classes/**'
       - 'app/api/admin/classes/**'
       - 'app/api/admin/daechion/**'
@@ -79,6 +83,8 @@ jobs:
       - run: npm ci
       - run: npm run build:daechion-worker
       - run: npx tsc -p tsconfig.daechion-cart.json
+      - run: npm run test:classes-store
+      - run: node --check tests/classes-admin-browser.mjs
       - run: npm run test:daechion
       - run: node --test tests/daechion-sheets-verify.test.mjs
       - run: node --check tests/daechion-browser-preview.mjs

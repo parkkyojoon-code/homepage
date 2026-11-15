@@ -298,6 +298,173 @@ test('checkout service persists token-bound quotes and atomic orders without ext
         ensureContentAccess:async input=>{await input.beforeWrite();access.push(input.lectureId);if(failAccess===input.lectureId){failAccess=0;throw Error('UNKNOWN_ACCESS')}return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}},
         get enrolled(){return enrolled},get access(){return access},get creates(){return studentCalls.length},set failCreate(v){failCreate=v},set failEnroll(v){failEnroll=v}}
     }
+    const agePayment=async orderId=>{
+      await db.query("UPDATE daechion_orders.bills SET checked_at=now()-interval '181 seconds' WHERE order_id=$1",[orderId])
+      assert.equal((await db.query('SELECT daechion_orders.paid_eligible($1) AS ok',[orderId])).rows[0].ok,false)
+    }
+    await t.test('the real runner refreshes 181-second payment snapshots at create, browser write and completion boundaries without widening eligibility',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor()
+      const billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      let reads=0,writes=0;const read=payment.read,students=api.students,create=api.createStudent
+      payment.read=async()=>{reads++;return read()}
+      api.students=async phone=>{const result=await students(phone);await agePayment(orderId);return result}
+      api.createStudent=async input=>{
+        assert.equal((await db.query('SELECT daechion_orders.paid_eligible($1) AS ok',[orderId])).rows[0].ok,true)
+        const result=await create(input);await agePayment(orderId);return result
+      }
+      api.ensureFirstLessonAccess=async input=>{
+        // Exercise aging independently at each boundary without a real sleep;
+        // any one 181-second delay fits the browser's five-minute invocation.
+        await agePayment(orderId);await input.beforeWrite();writes++
+        assert.equal((await db.query('SELECT daechion_orders.paid_eligible($1) AS ok',[orderId])).rows[0].ok,true)
+        await agePayment(orderId);await input.beforeWrite();writes++
+        await agePayment(orderId);await input.recordEnrollment()
+        assert.equal((await db.query('SELECT enrollment_recorded FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0].enrollment_recorded,true)
+        assert.equal((await db.query('SELECT daechion_orders.paid_eligible($1) AS ok',[orderId])).rows[0].ok,false)
+        return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+      }
+      const ports={...billing,tenantId:'fixture',daechion:api}
+      const result=await orderRunner.processOrder(orderId,{send:false,read:true,enroll:true},ports)
+      assert.deepEqual(result.grants,['VERIFIED']);assert.ok(reads>=7);assert.equal(writes,2);assert.equal(api.creates,1)
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(row.identity_state,'PASSED');assert.equal(row.checkout_state,'READY');assert.equal(row.notification_state,'PENDING')
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[orderId])).rows[0].n,1)
+    })
+    await t.test('a transient boundary read retries only never-attempted creation or enrollment and preserves known acknowledgement after writes',async()=>{
+      for(const phase of ['before_create','after_create','first_write','second_write','final']){
+        const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+        await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+        const approved=await payment.read(),students=api.students,create=api.createStudent;let triggered=false,writes=0
+        const interrupt=()=>{if(!triggered){triggered=true;payment.observation={state:'UNKNOWN'}}}
+        if(phase==='before_create')api.students=async phone=>{const result=await students(phone);interrupt();return result}
+        if(phase==='after_create')api.createStudent=async input=>{const result=await create(input);interrupt();return result}
+        api.ensureFirstLessonAccess=async input=>{
+          if(phase==='first_write')interrupt()
+          await input.beforeWrite();writes++
+          if(phase==='second_write')interrupt()
+          await input.beforeWrite();writes++
+          await input.recordEnrollment()
+          if(phase==='final')interrupt()
+          return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+        }
+        const ports={...billing,tenantId:'fixture',daechion:api}
+        await orderEnrollment.runOrderGrant(orderId,true,ports)
+        const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+        const grant=(await db.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+        assert.equal(row.checkout_state,'REVIEW');assert.notEqual(row.review_code,'worker_execution_unknown')
+        assert.notEqual(grant.state,'VERIFIED');assert.equal(grant.enrollment_recorded,phase==='final')
+        assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[orderId])).rows[0].n,0)
+        if(phase==='before_create'){assert.equal(api.creates,0);assert.equal(row.identity_state,'WAITING');assert.equal(row.identity_write_started,false)}
+        else assert.equal(api.creates,1)
+        if(phase==='after_create'){assert.ok(row.student_id);assert.equal(row.identity_state,'REVIEW');assert.equal(row.identity_write_started,true)}
+        if(phase==='first_write'){assert.equal(writes,0);assert.equal(grant.state,'PENDING')}
+        if(phase==='second_write'){assert.equal(writes,1);assert.equal(grant.state,'REVIEW')}
+        if(phase==='final'){assert.equal(writes,2);assert.equal(grant.state,'REVIEW')}
+        payment.observation=approved
+        const before=writes
+        const recovered=await orderEnrollment.runOrderGrant(orderId,true,ports)
+        if(['before_create','first_write'].includes(phase)){assert.equal(recovered,'VERIFIED');assert.equal(api.creates,1)}
+        else{assert.equal(recovered,'SKIPPED');assert.equal(writes,before);assert.equal(api.creates,1)}
+      }
+    })
+    await t.test('cancellation, regressed payment and changed evidence at first-write or final checks never complete or blindly repeat a grant',async()=>{
+      for(const phase of ['first_write','final'])for(const state of ['C','W','amount','approval']){
+        const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+        await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+        const approved=await payment.read();let writes=0
+        const stop=()=>{payment.observation=state==='C'||state==='W'?{state,billId:payment.bill.billId,amountWon:null,paidAt:null}:
+          {...approved,...(state==='amount'?{amountWon:1}:{paidAt:new Date(Date.parse(approved.paidAt)+1000).toISOString()})}}
+        api.ensureFirstLessonAccess=async input=>{
+          await agePayment(orderId)
+          if(phase==='first_write')stop()
+          await input.beforeWrite();writes++
+          await input.recordEnrollment()
+          if(phase==='final')stop()
+          return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+        }
+        const ports={...billing,tenantId:'fixture',daechion:api}
+        assert.equal(await orderEnrollment.runOrderGrant(orderId,true,ports),'REVIEW')
+        const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0],grant=(await db.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+        assert.equal(row.checkout_state,'REVIEW');assert.equal(grant.state,'REVIEW');assert.equal(grant.enrollment_recorded,phase==='final')
+        assert.equal(writes,phase==='final'?1:0);assert.equal(api.creates,1);assert.notEqual(row.review_code,'worker_execution_unknown')
+        assert.notEqual(row.notification_state,'PENDING');assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.jobs WHERE order_id=$1 AND kind='READY_MESSAGE'",[orderId])).rows[0].n,0)
+        payment.observation=approved;await orderEnrollment.runOrderGrant(orderId,true,ports)
+        assert.equal(writes,phase==='final'?1:0);assert.equal(api.creates,1)
+      }
+    })
+    await t.test('a newer cancellation wins over a delayed final payment approval and keeps the acknowledged grant held',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      const approved=await payment.read(),read=payment.read;let pending=false,pause,release,writes=0
+      const paused=new Promise(resolve=>{pause=resolve}),reply=new Promise(resolve=>{release=resolve})
+      payment.read=async()=>{if(pending){pending=false;pause();await reply;return approved}return read()}
+      api.ensureFirstLessonAccess=async input=>{
+        await input.beforeWrite();writes++;await input.recordEnrollment();await agePayment(orderId);pending=true
+        return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+      }
+      const granting=orderEnrollment.runOrderGrant(orderId,true,{...billing,tenantId:'fixture',daechion:api})
+      await paused
+      await orderBilling.checkOrderPayment(orderId,true,{withClient:db.withClient,provider:{accountId:payment.accountId,read:async()=>({state:'C',billId:payment.bill.billId,amountWon:null,paidAt:null})}})
+      release();assert.equal(await granting,'REVIEW')
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0],grant=(await db.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+      assert.equal(row.payment_state,'CANCELLED');assert.equal(row.checkout_state,'REVIEW');assert.equal(grant.state,'REVIEW');assert.equal(grant.enrollment_recorded,true)
+      assert.equal(writes,1);assert.equal(api.creates,1);assert.notEqual(row.notification_state,'PENDING')
+    })
+    await t.test('a concurrent admin hold wins during the first write refresh without returning its untouched grant to pending',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      const approved=await payment.read(),read=payment.read;let pending=false,pause,release,writes=0
+      const paused=new Promise(resolve=>{pause=resolve}),reply=new Promise(resolve=>{release=resolve})
+      payment.read=async()=>{if(pending){pending=false;pause();await reply;return approved}return read()}
+      api.ensureFirstLessonAccess=async input=>{
+        pending=true;await input.beforeWrite();writes++;await input.recordEnrollment()
+        return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+      }
+      const granting=orderEnrollment.runOrderGrant(orderId,true,{...billing,tenantId:'fixture',daechion:api})
+      await paused
+      const version=(await db.query('SELECT version::text FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].version
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',{requestKey:randomUUID(),orderId,expectedVersion:version,action:'HOLD',operatorName:'검수',reason:'등록 직전 보류',confirmed:true}))
+      release();assert.equal(await granting,'REVIEW')
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0],grant=(await db.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+      assert.equal(row.checkout_state,'REVIEW');assert.equal(row.review_code,'admin_hold');assert.equal(grant.state,'REVIEW');assert.equal(grant.enrollment_recorded,false)
+      assert.equal(writes,0);assert.equal(api.creates,1)
+    })
+    await t.test('an acknowledgement cannot outlive a cancellation that removed its grant lease',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      let writes=0
+      api.ensureFirstLessonAccess=async input=>{
+        await input.beforeWrite();writes++
+        payment.observation={state:'C',billId:payment.bill.billId,amountWon:null,paidAt:null}
+        await orderBilling.checkOrderPayment(orderId,true,billing)
+        await input.recordEnrollment()
+        throw Error('Cancelled acknowledgement must be rejected')
+      }
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,{...billing,tenantId:'fixture',daechion:api}),'REVIEW')
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0],grant=(await db.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+      assert.equal(row.payment_state,'CANCELLED');assert.equal(grant.state,'REVIEW');assert.equal(grant.enrollment_recorded,false);assert.equal(grant.lease_token,null)
+      assert.equal(writes,1);assert.equal(api.creates,1)
+    })
+    await t.test('an asynchronous final commit failure is caught by the grant phase without globally holding or replaying the order',async()=>{
+      const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor(),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      let fail=true
+      const isolated=run=>db.withClient(c=>run({query:(sql,values)=>{
+        if(fail&&sql.startsWith("UPDATE daechion_orders.grants SET state='VERIFIED'")){fail=false;return Promise.reject(Error('Synthetic asynchronous completion failure'))}
+        return c.query(sql,values)
+      }}))
+      const fingerprint=(await db.query('SELECT request_fingerprint FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].request_fingerprint
+      const env={DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_ORDER_ENROLLMENT_ENABLED:'true',DAECHION_TENANT_ID:'fixture',DAECHION_API_KEY:'fixture',
+        DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true',DAECHION_ORDER_ACCEPTANCE_ID:orderId,DAECHION_ORDER_ACCEPTANCE_FINGERPRINT:fingerprint}
+      const runtime=orderExecutable.runtime(env,{withClient:isolated,providers:{api,payment,daechion:api}})
+      const result=await runtime.once(orderId)
+      assert.equal(result.processingFailed,false)
+      const row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0],grant=(await db.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1',[orderId])).rows[0]
+      assert.equal(row.checkout_state,'READY');assert.equal(row.review_code,null);assert.equal(grant.state,'REVIEW');assert.equal(grant.enrollment_recorded,true)
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM daechion_orders.events WHERE order_id=$1 AND kind='worker_execution_unknown'",[orderId])).rows[0].n,0)
+      await runtime.once(orderId);assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[10])
+    })
     await t.test('partial permission failure preserves completed grants and retries only recorded content access',async()=>{
       const order=await workerOrder(),provider=providerFor(43500),billing={withClient:db.withClient,provider,preflight:async()=> 'READY'},api=enrollmentFor(),enrollment={withClient:db.withClient,tenantId:'fixture',daechion:api}
       await orderBilling.sendOrderBill(order.orderId,true,billing);provider.paid();await orderBilling.checkOrderPayment(order.orderId,true,billing)

@@ -55,6 +55,11 @@ const card: React.CSSProperties = { background: 'rgba(255,255,255,0.04)', border
 export default function AdminClassesPage() {
   const [classes, setClasses] = useState<ClassData[]>([])
   const [loading, setLoading] = useState(true)
+  const [catalogReady,setCatalogReady]=useState(false)
+  const [catalogError,setCatalogError]=useState<string|null>(null)
+  const [catalogRevision,setCatalogRevision]=useState('')
+  const loadSequence=useRef(0)
+  const newDraftId=useRef('')
   const [bundlePublishingReady,setBundlePublishingReady]=useState(false)
   const [editTarget, setEditTarget] = useState<ClassData | null>(null)
   const [isNew, setIsNew] = useState(false)
@@ -68,64 +73,100 @@ export default function AdminClassesPage() {
   const router = useRouter()
 
   async function load() {
+    const sequence=++loadSequence.current
     setLoading(true)
     try{
       const res = await fetch('/api/admin/classes',{cache:'no-store'})
+      if(sequence!==loadSequence.current)return
       if (res.status === 401) { router.push('/admin'); return }
       const data=await res.json()
-      if(!res.ok||!Array.isArray(data))throw Error('catalog')
+      if(sequence!==loadSequence.current)return
+      if(!res.ok||!Array.isArray(data)){
+        setCatalogReady(false);setBundlePublishingReady(false)
+        setCatalogError(typeof data?.error==='string'?data.error:'상품 목록을 불러오지 못했습니다. 다시 불러와주세요.')
+        return
+      }
       setBundlePublishingReady(res.headers.get('X-Bundle-Publishing-Ready')==='true')
-      setClasses(data)
-    }catch{setBundlePublishingReady(false);setMsg({type:'error',text:'상품 목록을 불러오지 못했습니다. 다시 불러와주세요.'})}
-    finally{setLoading(false)}
+      setClasses(data);setCatalogRevision(res.headers.get('X-Catalog-Revision')??'');setCatalogReady(true);setCatalogError(null)
+    }catch{
+      if(sequence===loadSequence.current){setCatalogReady(false);setBundlePublishingReady(false);setCatalogError('상품 목록을 불러오지 못했습니다. 다시 불러와주세요.')}
+    }
+    finally{if(sequence===loadSequence.current)setLoading(false)}
   }
 
   useEffect(() => { load() }, [])
 
+  const catalogBlocked=loading||!catalogReady
+  function storageFailure(res:Response,data:{error?:string;code?:string}|null,fallback:string){
+    const text=data?.error??fallback
+    setMsg({type:'error',text})
+    if(res.status===503&&data?.code==='CATALOG_UNAVAILABLE'){
+      setCatalogReady(false);setBundlePublishingReady(false);setCatalogError(text)
+    }
+  }
+
   async function toggleVisible(cls: ClassData) {
+    if(catalogBlocked)return
+    try{
     const res=await fetch(`/api/admin/classes/${cls.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ visible: !cls.visible,...(cls.saleKind==='BUNDLE'?{expectedUpdatedAt:cls.updatedAt}:{}) }),
+      body: JSON.stringify({ visible: !cls.visible,expectedUpdatedAt:cls.updatedAt }),
     })
-    if(!res.ok){const data=await res.json();setMsg({type:'error',text:data.error??'공개 설정을 저장하지 못했습니다.'});return}
-    load()
+    if(!res.ok){storageFailure(res,await res.json().catch(()=>null),'공개 설정을 저장하지 못했습니다.');return}
+    await load()
+    }catch{setMsg({type:'error',text:'공개 설정 저장 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
   }
 
   async function deleteClass(cls: ClassData) {
-    if (!confirm(`"${cls.name}" 수업을 삭제하시겠습니까?\n이미지도 함께 삭제됩니다.`)) return
-    await fetch(`/api/admin/classes/${cls.id}`, { method: 'DELETE' })
-    load()
+    if(catalogBlocked)return
+    if (!confirm(`"${cls.name}" 수업을 삭제하시겠습니까?`)) return
+    try{
+      const res=await fetch(`/api/admin/classes/${cls.id}`, { method: 'DELETE',headers:{'X-Class-Updated-At':cls.updatedAt} })
+      if(!res.ok){storageFailure(res,await res.json().catch(()=>null),'수업을 삭제하지 못했습니다.');return}
+      await load()
+    }catch{setMsg({type:'error',text:'삭제 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
   }
 
   async function moveClass(index: number, dir: -1 | 1) {
+    if(catalogBlocked)return
     const target = index + dir
     if (target < 0 || target >= classes.length) return
     const next = [...classes]
     ;[next[index], next[target]] = [next[target], next[index]]
     setClasses(next) // 낙관적 업데이트로 바로 순서 반영
 
+    try{
     const res = await fetch('/api/admin/classes/reorder', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json',...(catalogRevision?{'X-Catalog-Revision':catalogRevision}:{}) },
       body: JSON.stringify({ ids: next.map(c => c.id) }),
     })
-    if (!res.ok) load() // 실패하면 서버 상태로 되돌림
+    if (!res.ok) {
+      setClasses(classes)
+      storageFailure(res,await res.json().catch(()=>null),'수업 순서를 저장하지 못했습니다.')
+    }else await load()
+    }catch{setClasses(classes);setMsg({type:'error',text:'순서 저장 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
   }
 
   function openNew() {
+    if(catalogBlocked)return
+    newDraftId.current=`class-${crypto.randomUUID()}`
     setMsg(null)
     setEditTarget(JSON.parse(JSON.stringify(EMPTY_CLASS)))
     setIsNew(true)
   }
 
   function openBundle(){
+    if(catalogBlocked)return
+    newDraftId.current=`bundle-${crypto.randomUUID()}`
     setMsg(null)
     setEditTarget({...JSON.parse(JSON.stringify(EMPTY_CLASS)),saleKind:'BUNDLE',purchaseProcess:'PROCESS_2',bundleProductIds:[]})
     setIsNew(true)
   }
 
   function openEdit(cls: ClassData) {
+    if(catalogBlocked)return
     setMsg(null)
     setEditTarget({ ...JSON.parse(JSON.stringify(cls)), purchaseProcess: purchaseProcessOf(cls),daechionLectureIds:cls.daechionBinding?.lectures.map(item=>item.id)??[],bundleProductIds:cls.bundleComponents?.map(item=>item.productId)??[] })
     setIsNew(false)
@@ -134,11 +175,11 @@ export default function AdminClassesPage() {
   function closeEdit() { setEditTarget(null); setIsNew(false); setMsg(null) }
 
   async function save() {
-    if (!editTarget) return
+    if (!editTarget||catalogBlocked) return
     setSaving(true); setMsg(null)
     const method = isNew ? 'POST' : 'PUT'
     const url    = isNew ? '/api/admin/classes' : `/api/admin/classes/${editTarget.id}`
-    const body={...editTarget,...(!isNew&&editTarget.saleKind==='BUNDLE'?{expectedUpdatedAt:editTarget.updatedAt}:{}),...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||undefined}:{})}
+    const body={...editTarget,...(!isNew?{expectedUpdatedAt:editTarget.updatedAt}:{}),...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||newDraftId.current}:{})}
     if(editTarget.saleKind==='BUNDLE'){
       Object.assign(body,{bundleProductIds:editTarget.bundleProductIds??[],expectedBundleComponents:(editTarget.bundleProductIds??[]).map(id=>{
         const product=classes.find(item=>item.id===id)
@@ -159,41 +200,47 @@ export default function AdminClassesPage() {
       load()
     } else {
       const d = await res.json()
-      setMsg({ type: 'error', text: d.error || '저장 실패' })
+      storageFailure(res,d,'저장 실패')
     }
     }catch{setMsg({type:'error',text:'저장 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
     finally{setSaving(false)}
   }
 
   async function uploadImage(file: File) {
+    if(catalogBlocked)return
     if (!editTarget || isNew) { setMsg({ type: 'error', text: '먼저 기본 정보를 저장하세요.' }); return }
     setImgUploading(true)
     const fd = new FormData(); fd.append('image', file)
-    if(editTarget.saleKind==='BUNDLE')fd.append('expectedUpdatedAt',editTarget.updatedAt)
+    fd.append('expectedUpdatedAt',editTarget.updatedAt)
+    try{
     const res = await fetch(`/api/admin/classes/${editTarget.id}/image`, { method: 'POST', body: fd })
     const data = await res.json()
     if (res.ok) {
       setEditTarget(p => p ? { ...p, image: data.filename,updatedAt:data.updatedAt??p.updatedAt } : p)
       load()
     } else {
-      setMsg({ type: 'error', text: data.error || '이미지 업로드 실패' })
+      storageFailure(res,data,'이미지 업로드 실패')
     }
-    setImgUploading(false)
+    }catch{setMsg({type:'error',text:'이미지 저장 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
+    finally{setImgUploading(false)}
   }
 
   async function uploadMediaImage(file: File) {
+    if(catalogBlocked)return
     if (!editTarget || isNew) { setMsg({ type: 'error', text: '먼저 기본 정보를 저장하세요.' }); return }
     setGalleryUploading(true)
     const fd = new FormData(); fd.append('image', file)
+    try{
     const res = await fetch(`/api/admin/classes/${editTarget.id}/gallery`, { method: 'POST', body: fd })
     const data = await res.json()
     if (res.ok) {
       // 목록 맨 뒤에 추가 — 순서는 "저장" 눌러야 실제 반영됨
       setEditTarget(p => p ? { ...p, media: [...(p.media ?? []), { type: 'image', value: data.filename }] } : p)
     } else {
-      setMsg({ type: 'error', text: data.error || '사진 업로드 실패' })
+      storageFailure(res,data,'사진 업로드 실패')
     }
-    setGalleryUploading(false)
+    }catch{setMsg({type:'error',text:'사진 저장 결과를 확인하지 못했습니다. 다시 불러와 확인해주세요.'})}
+    finally{setGalleryUploading(false)}
   }
 
   function addYoutubeMedia() {
@@ -204,6 +251,7 @@ export default function AdminClassesPage() {
   }
 
   function removeMediaItem(index: number) {
+    if(catalogBlocked)return
     setEditTarget(p => {
       if (!p) return p
       const media = [...(p.media ?? [])]
@@ -293,18 +341,19 @@ export default function AdminClassesPage() {
             <a href="/admin/dashboard" style={{ fontSize: 12, color: 'rgba(255,255,255,0.3)', textDecoration: 'none' }}>← 대시보드</a>
             <h1 style={{ fontSize: 24, fontWeight: 800, color: '#fff', marginTop: 6 }}>수업 관리</h1>
           </div>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button onClick={openNew} style={{
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button onClick={openNew} disabled={catalogBlocked} style={{
             padding: '10px 18px', background: 'linear-gradient(135deg,#0066FF,#4d8bf5)',
             border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer',
           }}>+ 수업 추가</button>
-          <button onClick={openBundle} style={{padding:'10px 18px',background:'rgba(77,139,245,0.15)',border:'1px solid #4d8bf5',borderRadius:10,color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>+ 묶음상품 추가</button></div>
+          <button onClick={openBundle} disabled={catalogBlocked} style={{padding:'10px 18px',background:'rgba(77,139,245,0.15)',border:'1px solid #4d8bf5',borderRadius:10,color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>+ 묶음상품 추가</button></div>
         </div>
 
         {msg&&<p role="alert" style={{color:msg.type==='error'?'#f08888':'#6ef5b0',fontSize:13}}>{msg.text}</p>}
+        {catalogError&&<div role="alert" style={{color:'#f08888',fontSize:13,marginBottom:16}}>{catalogError}<p>목록을 다시 확인하기 전에는 수업 추가·수정·삭제를 할 수 없습니다.</p><button onClick={()=>void load()} disabled={loading}>목록 다시 불러오기</button></div>}
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: 60, color: 'rgba(255,255,255,0.3)' }}>불러오는 중…</div>
-        ) : classes.length === 0 ? (
+        ) : catalogError&&!classes.length ? null : classes.length === 0 ? (
           <div style={{ ...card, padding: 40, textAlign: 'center', color: 'rgba(255,255,255,0.3)' }}>
             등록된 수업이 없습니다.
           </div>
@@ -316,7 +365,7 @@ export default function AdminClassesPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flexShrink: 0 }}>
                   <button
                     onClick={() => moveClass(index, -1)}
-                    disabled={index === 0}
+                    disabled={catalogBlocked||index === 0}
                     title="위로 이동"
                     style={{
                       width: 26, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -327,7 +376,7 @@ export default function AdminClassesPage() {
                   >▲</button>
                   <button
                     onClick={() => moveClass(index, 1)}
-                    disabled={index === classes.length - 1}
+                    disabled={catalogBlocked||index === classes.length - 1}
                     title="아래로 이동"
                     style={{
                       width: 26, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -365,7 +414,7 @@ export default function AdminClassesPage() {
                 </div>
 
                 {/* 공개 토글 */}
-                <button onClick={() => toggleVisible(cls)} disabled={cls.saleKind==='BUNDLE'&&!cls.visible&&!bundlePublishingReady} title={cls.saleKind==='BUNDLE'&&!bundlePublishingReady?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
+                <button onClick={() => toggleVisible(cls)} disabled={catalogBlocked||cls.saleKind==='BUNDLE'&&!cls.visible&&!bundlePublishingReady} title={cls.saleKind==='BUNDLE'&&!bundlePublishingReady?'판매 준비 완료 후 공개할 수 있습니다.':undefined} style={{
                   padding: '5px 12px', fontSize: 11, fontWeight: 700, borderRadius: 20, cursor: 'pointer',
                   background: cls.visible ? 'rgba(52,209,126,0.15)' : 'rgba(255,255,255,0.06)',
                   color: cls.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
@@ -374,8 +423,8 @@ export default function AdminClassesPage() {
                   {cls.visible ? '공개' : '비공개'}
                 </button>
 
-                <button onClick={() => openEdit(cls)} style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.2)', borderRadius: 8, color: '#4d8bf5', cursor: 'pointer' }}>수정</button>
-                <button onClick={() => deleteClass(cls)} style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(239,84,84,0.08)', border: '1px solid rgba(239,84,84,0.15)', borderRadius: 8, color: '#ef5454', cursor: 'pointer' }}>삭제</button>
+                <button onClick={() => openEdit(cls)} disabled={catalogBlocked} style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.2)', borderRadius: 8, color: '#4d8bf5', cursor: 'pointer' }}>수정</button>
+                <button onClick={() => deleteClass(cls)} disabled={catalogBlocked} style={{ padding: '7px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(239,84,84,0.08)', border: '1px solid rgba(239,84,84,0.15)', borderRadius: 8, color: '#ef5454', cursor: 'pointer' }}>삭제</button>
               </div>
             ))}
           </div>
@@ -402,7 +451,7 @@ export default function AdminClassesPage() {
               color: e.visible ? '#34d17e' : 'rgba(255,255,255,0.3)',
               border: `1px solid ${e.visible ? 'rgba(52,209,126,0.25)' : 'rgba(255,255,255,0.1)'}` as string,
             }}>{e.visible ? '공개 중' : '비공개'}</button>
-            <button onClick={save} disabled={saving} style={{
+            <button onClick={save} disabled={saving||catalogBlocked} style={{
               padding: '8px 20px', background: saving ? 'rgba(0,102,255,0.3)' : 'linear-gradient(135deg,#0066FF,#4d8bf5)',
               border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer',
             }}>{saving ? '저장 중…' : '저장'}</button>
@@ -410,6 +459,7 @@ export default function AdminClassesPage() {
         </div>
 
         {msg && <div role="alert" style={{ borderRadius: 10, padding: '11px 16px', marginBottom: 16, fontSize: 13, background: msg.type === 'success' ? 'rgba(52,209,126,0.08)' : 'rgba(239,84,84,0.08)', border: `1px solid ${msg.type === 'success' ? 'rgba(52,209,126,0.2)' : 'rgba(239,84,84,0.2)'}`, color: msg.type === 'success' ? '#6ef5b0' : '#f08888' }}>{msg.text}</div>}
+        {catalogError&&<div role="alert" style={{color:'#f08888',fontSize:13,marginBottom:16}}>{catalogError}<p>입력한 내용을 저장하기 전에 목록을 다시 확인해주세요.</p><button onClick={()=>void load()} disabled={loading}>목록 다시 불러오기</button></div>}
         {e.saleKind==='BUNDLE'&&!bundlePublishingReady&&<p style={{color:'#b8c6df',fontSize:13,marginBottom:16}}>판매 준비 중에는 비공개로 저장됩니다.</p>}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -426,7 +476,7 @@ export default function AdminClassesPage() {
               </div>
               <div>
                 <input ref={imgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={ev => { const f = ev.target.files?.[0]; if (f) uploadImage(f) }} />
-                <button onClick={() => imgRef.current?.click()} disabled={imgUploading || isNew} style={{
+                <button onClick={() => imgRef.current?.click()} disabled={catalogBlocked || imgUploading || isNew} style={{
                   padding: '8px 16px', background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.25)',
                   borderRadius: 8, color: '#4d8bf5', fontSize: 12, fontWeight: 700, cursor: isNew ? 'not-allowed' : 'pointer', opacity: isNew ? 0.5 : 1,
                 }}>{imgUploading ? '업로드 중…' : '이미지 선택'}</button>
@@ -482,7 +532,7 @@ export default function AdminClassesPage() {
 
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <input ref={galleryRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={ev => { const f = ev.target.files?.[0]; if (f) uploadMediaImage(f); ev.target.value = '' }} />
-              <button onClick={() => galleryRef.current?.click()} disabled={galleryUploading || isNew} style={{
+              <button onClick={() => galleryRef.current?.click()} disabled={catalogBlocked || galleryUploading || isNew} style={{
                 padding: '8px 16px', background: 'rgba(77,139,245,0.12)', border: '1px solid rgba(77,139,245,0.25)',
                 borderRadius: 8, color: '#4d8bf5', fontSize: 12, fontWeight: 700, cursor: isNew ? 'not-allowed' : 'pointer', opacity: isNew ? 0.5 : 1,
               }}>{galleryUploading ? '업로드 중…' : '+ 사진 추가'}</button>
@@ -740,7 +790,7 @@ export default function AdminClassesPage() {
 
         <div style={{ marginTop: 20, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <button onClick={closeEdit} style={{ padding: '11px 20px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, color: 'rgba(255,255,255,0.5)', fontSize: 13, cursor: 'pointer' }}>취소</button>
-          <button onClick={save} disabled={saving} style={{ padding: '11px 24px', background: saving ? 'rgba(0,102,255,0.3)' : 'linear-gradient(135deg,#0066FF,#4d8bf5)', border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? '저장 중…' : '저장하기'}</button>
+          <button onClick={save} disabled={saving||catalogBlocked} style={{ padding: '11px 24px', background: saving ? 'rgba(0,102,255,0.3)' : 'linear-gradient(135deg,#0066FF,#4d8bf5)', border: 'none', borderRadius: 10, color: '#fff', fontSize: 13, fontWeight: 700, cursor: saving ? 'not-allowed' : 'pointer' }}>{saving ? '저장 중…' : '저장하기'}</button>
         </div>
       </div>
     </div>

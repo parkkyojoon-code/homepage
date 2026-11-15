@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { isAdminAuthed } from '@/lib/admin-auth'
-import { loadClasses, saveClasses, generateId, ClassData } from '@/lib/classes'
+import { loadClasses, saveClasses, generateId, classesRevision, CatalogStoreError, ClassData } from '@/lib/classes'
+import {catalogFailure} from '@/lib/catalog-http'
 import { isOriginalProduct, parsePurchaseProcess } from '@/lib/purchase-process'
 import { resolveClassBinding, ClassBindingError } from '@/lib/daechion/class-binding'
 import { saleKindForWrite, validateBundle, SalePolicyError, bundlePublishingReady } from '@/lib/daechion/orders/sale-policy'
@@ -10,14 +11,16 @@ import {validateDiscounts,DiscountPolicyError} from '@/lib/daechion/orders/disco
 // GET: 전체 수업 목록 (visible 무관)
 export async function GET() {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  try{
   const classes=loadClasses()
-  return NextResponse.json(classes.map(item=>({...item,bundleCompositionIssue:bundleCompositionIssue(item,classes)})),{headers:{'Cache-Control':'no-store','X-Bundle-Publishing-Ready':String(bundlePublishingReady(process.env))}})
+  return NextResponse.json(classes.map(item=>({...item,bundleCompositionIssue:bundleCompositionIssue(item,classes)})),{headers:{'Cache-Control':'no-store','X-Catalog-Revision':classesRevision(classes)??'','X-Bundle-Publishing-Ready':String(bundlePublishingReady(process.env))}})
+  }catch(error){return catalogFailure(error)}
 }
 
 // POST: 새 수업 추가
 export async function POST(req: NextRequest) {
   if (!await isAdminAuthed()) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-
+  try{
   const body = await req.json()
   const now = new Date().toISOString()
 
@@ -43,7 +46,7 @@ export async function POST(req: NextRequest) {
       bindingBody={...body,daechionLectureIds:bundleComponents.map(item=>item.lectureId)}
     }
     validateBundle({...body,purchaseProcess,saleKind},bindingBody.daechionLectureIds,bundlePublishingReady(process.env))
-  }catch(error){return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError||error instanceof DiscountPolicyError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
+  }catch(error){if(error instanceof CatalogStoreError)return catalogFailure(error);return NextResponse.json({error:error instanceof SalePolicyError||error instanceof BundleComponentError||error instanceof DiscountPolicyError?error.message:'상품 설정을 확인해주세요.'},{status:400})}
 
   let daechionBinding
   try{daechionBinding=await resolveClassBinding(bindingBody,purchaseProcess,undefined,process.env)}catch(error){
@@ -90,4 +93,5 @@ export async function POST(req: NextRequest) {
   saveClasses(classes)
 
   return NextResponse.json(newClass, { status: 201 })
+  }catch(error){return catalogFailure(error)}
 }

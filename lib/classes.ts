@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import {createCatalogStore,CatalogStoreError,atomicWrite} from './catalog-store.cjs'
 import type { SubjectSelection } from './subjectPricing'
 import type { PurchaseProcess } from './purchase-process'
 import type { StoredLectureBinding } from './daechion/product-policy'
@@ -9,6 +10,7 @@ import type { DiscountRule } from './daechion/orders/discounts'
 const DATA_DIR   = process.env.DATA_DIR || '/app/data'
 const CLASSES_FILE = path.join(DATA_DIR, 'classes.json')
 const IMAGES_DIR   = path.join(DATA_DIR, 'class-images')
+export {CatalogStoreError}
 
 export const CAMPUSES = ['서울 대치', '인천 송도', '부산 센텀', '일산 후곡', '대구 수성'] as const
 export type Campus = typeof CAMPUSES[number]
@@ -111,21 +113,17 @@ function ensureDirs() {
 }
 
 export function loadClasses(): ClassData[] {
-  ensureDirs()
-  if (!fs.existsSync(CLASSES_FILE)) {
-    saveClasses(DEFAULT_CLASSES)
-    return DEFAULT_CLASSES
-  }
-  try {
-    return JSON.parse(fs.readFileSync(CLASSES_FILE, 'utf-8'))
-  } catch {
-    return DEFAULT_CLASSES
-  }
+  const snapshot=store.load()
+  revisions.set(snapshot.classes,snapshot.revision)
+  return snapshot.classes
 }
 
-export function saveClasses(classes: ClassData[]) {
-  ensureDirs()
-  fs.writeFileSync(CLASSES_FILE, JSON.stringify(classes, null, 2), 'utf-8')
+const store=createCatalogStore(CLASSES_FILE,()=>structuredClone(DEFAULT_CLASSES))
+const revisions=new WeakMap<ClassData[],string>()
+export function classesRevision(classes:ClassData[]){return revisions.get(classes)}
+export function saveClasses(classes: ClassData[],expectedRevision=revisions.get(classes)) {
+  const next=store.save(classes,expectedRevision??'')
+  revisions.set(classes,next)
 }
 
 export function getClassById(id: string): ClassData | null {
@@ -134,7 +132,7 @@ export function getClassById(id: string): ClassData | null {
 
 export function saveClassImage(filename: string, buffer: Buffer) {
   ensureDirs()
-  fs.writeFileSync(path.join(IMAGES_DIR, filename), buffer)
+  try{atomicWrite(path.join(IMAGES_DIR, filename), buffer)}catch(error){throw new CatalogStoreError('CATALOG_UNAVAILABLE',{cause:error})}
 }
 
 export function getImagePath(filename: string): string {
@@ -174,6 +172,6 @@ export function reorderClasses(orderedIds: string[]): ClassData[] {
     if (byId.has(cls.id)) reordered.push(cls)
   }
 
-  saveClasses(reordered)
+  saveClasses(reordered,revisions.get(classes))
   return reordered
 }
