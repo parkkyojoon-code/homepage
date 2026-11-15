@@ -30,11 +30,15 @@ export async function contextFromOrder(c:LedgerClient,tenantId:string,id:string,
   const items=(await c.query('SELECT snapshot FROM daechion_orders.items WHERE order_id=$1 ORDER BY product_id',[id])).rows.map(item=>item.snapshot)
   return {orderId:id,version:String(row.version),tenantId,totalWon:Number(row.total_won),contact:contactSchema.parse(contact),items}
 }
-export async function inspectExisting(context:BillingContext,studentId:number,api:ReadOnlyStudentPort&{student(id:number):Promise<DaechionStudent>}):Promise<ReviewEvidence>{
+export async function inspectExisting(context:BillingContext,studentId:number,api:ReadOnlyStudentPort&{student(id:number):Promise<DaechionStudent>},unambiguous=false):Promise<ReviewEvidence>{
   const started=Date.now(),bound=reviewContext(context)
   if(String((await api.me()).tenantId)!==context.tenantId)throw Error('MANUAL_REVIEW_TENANT_MISMATCH')
   const profile=await api.student(studentId)
-  const selected=(await resolveStudent({...api,students:(p,n)=>api.students(p,n),student:id=>api.student(id),
+  const selected=(await resolveStudent({...api,students:async(p,n)=>{
+    const candidates=await api.students(p,n)
+    if(unambiguous&&candidates.some(candidate=>candidate.id!==studentId))throw Error('MANUAL_REVIEW_AMBIGUOUS')
+    return candidates
+  },student:id=>api.student(id),
     createStudent:async()=>{throw Error('READ_ONLY_REVIEW_CANNOT_CREATE')}},
     {name:bound.contact.studentName,studentPhone:bound.contact.studentPhone,guardianPhone:bound.contact.guardianPhone||undefined},{manualApprovedId:studentId})).student
   const profileFingerprint=studentProfileFingerprint(profile)

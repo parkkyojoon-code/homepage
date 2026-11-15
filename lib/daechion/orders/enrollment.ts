@@ -17,6 +17,7 @@ export interface OrderEnrollmentPorts extends OrderConnection {
   daechion:EnrollmentPort&{
     me():Promise<{tenantId:string|number}>
     lectures():Promise<{id:number;opened:boolean;weeklyLectures:{id:number}[]}[]>
+    isAvailable?():boolean
   }
 }
 async function identityFence(c:Parameters<typeof lockOrder>[0],id:string,token:string){
@@ -33,12 +34,19 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       const context=await contextFromOrder(c,ports.tenantId,id)
       if(!context||review.binding!==reviewContext(context).binding){await holdOrder(c,id,'identity_review');return null}
     }
-    if(o.identity_state==='PASSED')return {contact,studentId:Number(o.student_id),token:null,review}
+    if(o.identity_retry_at&&new Date(o.identity_retry_at as string).getTime()>new Date(o.observed_at as string).getTime())return null
+    if(o.identity_state==='PASSED')return {contact,studentId:Number(o.student_id),token:null,review,strictStudentId:o.identity_recovery_action_id&&!o.identity_write_started?Number(o.student_id):null}
     if(o.identity_state!=='WAITING')return null
     if(o.identity_token){
       if(new Date(o.identity_until as string).getTime()<=new Date(o.observed_at as string).getTime()){
+        if(!o.identity_write_started){
+          // A stale reader cannot create after its lease has been replaced: the
+          // create fence checks this token under the order lock before writing.
+          await c.query('UPDATE daechion_orders.orders SET identity_token=NULL,identity_until=NULL WHERE id=$1',[id])
+          await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[id])
+          await orderChanged(c,id,'identity_read_expired');return null
+        }
         await c.query("UPDATE daechion_orders.orders SET identity_state='REVIEW',identity_token=NULL,identity_until=NULL WHERE id=$1",[id])
-        if(!o.identity_write_started)await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[id])
         await holdOrder(c,id,'identity_unknown')
       }
       return null
@@ -57,13 +65,23 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
     const token=randomUUID()
     await c.query("UPDATE daechion_orders.orders SET identity_token=$2,identity_until=now()+interval '10 minutes' WHERE id=$1",[id,token])
     await orderChanged(c,id,'identity_claimed')
-    return {contact,studentId:null,token,review}
+    return {contact,studentId:null,token,review,strictStudentId:null}
   }))
   if(!claim)return null
-  let resolved:DaechionStudent|undefined,createStarted=false
+  let resolved:DaechionStudent|undefined,createStarted=false,readRetryable=false
+  const read=async<T>(run:()=>Promise<T>)=>{
+    try{return await run()}catch(error){
+      readRetryable=!(error instanceof DaechionError)||error.code==='transport_unknown'||error.status===429||error.status>=500
+      throw error
+    }
+  }
   try{
-    if(String((await ports.daechion.me()).tenantId)!==ports.tenantId)throw new DaechionError('tenant_mismatch')
-    const guarded:StudentPort={students:(phone,name)=>ports.daechion.students(phone,name),student:value=>ports.daechion.student(value),createStudent:async input=>{
+    if(String((await read(()=>ports.daechion.me())).tenantId)!==ports.tenantId)throw new DaechionError('tenant_mismatch')
+    const guarded:StudentPort={students:async(phone,name)=>{
+      const candidates=await read(()=>ports.daechion.students(phone,name))
+      if(claim.strictStudentId&&candidates.some(student=>student.id!==claim.strictStudentId))throw new DaechionError('identity_changed')
+      return candidates
+    },student:value=>read(()=>ports.daechion.student(value)),createStudent:async input=>{
       if(!claim.token)throw new DaechionError('identity_changed')
       await ports.withClient(c=>orderTransaction(c,async()=>{
         await lockOrder(c,id)
@@ -79,18 +97,28 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       await ports.withClient(c=>orderTransaction(c,async()=>{
         await lockOrder(c,id)
         if(!await identityFence(c,id,claim.token!))throw new DaechionError('identity_fence_changed')
-        await c.query("UPDATE daechion_orders.orders SET identity_state='PASSED',student_id=$2,identity_token=NULL,identity_until=NULL WHERE id=$1",[id,resolved!.id])
+        await c.query("UPDATE daechion_orders.orders SET identity_state='PASSED',student_id=$2,identity_token=NULL,identity_until=NULL,identity_read_attempts=0,identity_retry_at=NULL WHERE id=$1",[id,resolved!.id])
         await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[id]);await orderChanged(c,id,'identity_verified')
       }))
+    }else{
+      await ports.withClient(c=>c.query("UPDATE daechion_orders.orders SET identity_read_attempts=0,identity_retry_at=NULL WHERE id=$1 AND identity_state='PASSED' AND student_id=$2",[id,resolved!.id]))
     }
     return {student:resolved,contact:claim.contact}
   }catch{
     await ports.withClient(c=>orderTransaction(c,async()=>{
       const o=await lockOrder(c,id);if(!o)return
       if(claim.token&&o.identity_token!==claim.token)return
+      const readOnly=claim.token?!o.identity_write_started:o.identity_state==='PASSED'&&Number(o.student_id)===claim.studentId&&!o.identity_token
+      if(readRetryable&&!createStarted&&readOnly){
+        // No create was attempted. Keep a paid order eligible for the next
+        // worker pass; business mismatches still require administrator review.
+        await c.query("UPDATE daechion_orders.orders SET identity_token=NULL,identity_until=NULL,identity_read_attempts=LEAST(identity_read_attempts+1,3),identity_retry_at=now()+CASE WHEN identity_read_attempts=0 THEN interval '1 minute' WHEN identity_read_attempts=1 THEN interval '2 minutes' ELSE interval '5 minutes' END WHERE id=$1",[id])
+        await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[id])
+        await orderChanged(c,id,'identity_read_retry');return
+      }
       if(o.identity_state!=='PASSED')await c.query("UPDATE daechion_orders.orders SET identity_state='REVIEW',student_id=COALESCE(student_id,$2),identity_token=NULL,identity_until=NULL WHERE id=$1",[id,resolved?.id??null])
       if(!createStarted)await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[id])
-      await holdOrder(c,id,createStarted?'identity_create_unknown':'identity_review')
+      await holdOrder(c,id,createStarted?'identity_create_unknown':readRetryable?'identity_lookup_failed':'identity_review')
     }))
     return null
   }
@@ -104,6 +132,7 @@ export async function grantFence(c:Parameters<typeof lockOrder>[0],job:GrantJob)
 export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollmentPorts){
   if(!enabled)return 'DISABLED'
   z.string().uuid().parse(id)
+  if(ports.daechion.isAvailable?.()===false)return 'SKIPPED'
   const identity=await prepareIdentity(id,ports);if(!identity)return 'SKIPPED'
   const job=await ports.withClient(c=>orderTransaction(c,async()=>{
     const o=await lockOrder(c,id)

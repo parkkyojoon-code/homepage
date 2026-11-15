@@ -1,6 +1,6 @@
 import {z} from 'zod'
 import type {LedgerClient} from '../ledger'
-import {listOrders,orderDetail,applyOrderAdminAction,OrderAdminError,orderSearchSchema,orderAdminActionSchema,replayOrderAction} from './admin'
+import {listOrders,orderDetail,applyOrderAdminAction,OrderAdminError,orderSearchSchema,orderAdminActionSchema,replayOrderAction,type OrderAdminAction} from './admin'
 import {contextFromOrder,type ReviewEvidence} from './manual-review'
 import type {BillingContext} from './billing'
 import {paidContext,type PaidContext,type PaidEvidence} from './paid-recovery'
@@ -11,7 +11,7 @@ export interface OrderAdminPorts {
   withClient<T>(run:(c:LedgerClient)=>Promise<T>):Promise<T>
   ready(c:LedgerClient):Promise<void>
   inspectNewIntake?(context:BillingContext):Promise<IntakeEvidence|null>
-  inspectExisting?(context:BillingContext,studentId:number):Promise<ReviewEvidence>
+  inspectExisting?(context:BillingContext,studentId:number,unambiguous?:boolean):Promise<ReviewEvidence>
   inspectPaid?(context:PaidContext):Promise<PaidEvidence|null>
   inspectAccess?(context:BillingContext,studentId:number,lectureId:number,revoke:boolean):Promise<AccessEvidence>
 }
@@ -41,6 +41,7 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
   const denied=await guard(ports);if(denied)return denied
   if(!ports.origins.includes(request.headers.get('origin')??''))return json({error:'요청 출처를 확인할 수 없습니다.'},403)
   if(request.headers.get('content-type')?.split(';')[0].trim().toLowerCase()!=='application/json')return json({error:'입력 형식을 확인해주세요.'},415)
+  let actionInput:OrderAdminAction|undefined
   try{
     const reader=request.body?.getReader();if(!reader)return json({error:'입력 내용이 없습니다.'},400)
     const chunks:Uint8Array[]=[];let length=0
@@ -52,6 +53,7 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
       return json(await readOnly(ports,c=>listOrders(c,ports.tenantId,input)))
     }
     const input=orderAdminActionSchema.parse(raw)
+    actionInput=input
     let evidence:ReviewEvidence|undefined
     let payment:PaidEvidence|undefined
     let access:AccessEvidence|undefined
@@ -68,9 +70,21 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
         if(!ports.inspectExisting)throw new OrderAdminError('STATE')
         const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
         if(!context)throw new OrderAdminError('STALE')
-        evidence=await ports.inspectExisting(context,input.studentId)
+        evidence=await ports.inspectExisting(context,input.studentId,input.action==='RECONCILE_IDENTITY')
+        if(input.action==='RECONCILE_IDENTITY'&&input.billId){
+          if(!ports.inspectPaid)throw new OrderAdminError('STATE')
+          const paid=await readOnly(ports,c=>paidContext(c,ports.tenantId,input.orderId,input.expectedVersion,input.billId!))
+          if(!paid)throw new OrderAdminError('STALE')
+          const checked=await ports.inspectPaid(paid);if(!checked)throw new OrderAdminError('PAYMENT');payment=checked
+        }
       }else if(input.action==='RESUME_PAID'){
         if(!ports.inspectPaid)throw new OrderAdminError('STATE')
+        if(input.confirmNewStudent){
+          if(!ports.inspectNewIntake)throw new OrderAdminError('STATE')
+          const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
+          if(!context)throw new OrderAdminError('STALE')
+          const checked=await ports.inspectNewIntake(context);if(!checked)throw new OrderAdminError('STATE');intake=checked
+        }
         const context=await readOnly(ports,c=>paidContext(c,ports.tenantId,input.orderId,input.expectedVersion,input.billId))
         if(!context)throw new OrderAdminError('STALE')
         const checked=await ports.inspectPaid(context)
@@ -90,6 +104,14 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
     }
     return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence,payment,access,intake)})})
   }catch(error){
+    // A duplicate may commit after the initial replay read, while this request
+    // is still obtaining its context or external read-only evidence. Return the
+    // committed audit for the exact same tenant/key/payload without repeating
+    // validation or writes; unrelated stale requests still fail below.
+    if(actionInput)try{
+      const input=actionInput,replay=await readOnly(ports,c=>replayOrderAction(c,ports.tenantId,input))
+      if(replay)return json({success:true,...replay})
+    }catch(replayError){error=replayError}
     if(error instanceof z.ZodError||error instanceof SyntaxError)return json({error:'담당자·사유·확인 항목과 입력 내용을 확인해주세요.'},400)
     if(error instanceof OrderAdminError){
       if(error.code==='NOT_FOUND')return json({error:'주문을 찾을 수 없습니다.'},404)

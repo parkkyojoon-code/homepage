@@ -30,3 +30,19 @@ export async function validateNewIntake(c:LedgerClient,o:Record<string,unknown>,
   const e=intakeEvidenceSchema.parse(raw),bound=reviewContext(context),age=Date.now()-Date.parse(e.checkedAt)
   return age>=0&&age<=60000&&e.binding===bound.binding&&JSON.stringify(e.targetIds)===JSON.stringify(bound.targetIds)?e:null
 }
+// Historical read-only failures may have been held before the retry policy was
+// available. Recheck a NEW declaration without reusing any existing-student pin.
+export function paidNewIdentity(o:Record<string,unknown>){
+  return o.checkout_state==='REVIEW'&&o.payment_state==='PAID'&&o.identity_state==='REVIEW'&&o.student_id===null&&
+    !o.identity_write_started&&!o.identity_token&&!o.identity_recovery_action_id&&!o.closed_action_id&&Boolean(o.confirmed_at)&&
+    ['identity_review','identity_unknown','identity_lookup_failed'].includes(String(o.review_code))&&
+    (o.contact_snapshot as {studentHistory?:string})?.studentHistory==='NEW'
+}
+export async function validatePaidNewIdentity(c:LedgerClient,o:Record<string,unknown>,raw:unknown){
+  if(!paidNewIdentity(o)||await latestReview(c,String(o.id)))return null
+  if((await c.query(`SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND (state<>'PENDING' OR enrollment_recorded OR lease_token IS NOT NULL OR weekly_ids<>'[]'::jsonb)
+    UNION ALL SELECT 1 FROM daechion_orders.ready_receipts WHERE order_id=$1 LIMIT 1`,[o.id])).rows.length)return null
+  const context=await contextFromOrder(c,String(o.tenant_id),String(o.id));if(!context)return null
+  const e=intakeEvidenceSchema.parse(raw),bound=reviewContext(context),age=Date.now()-Date.parse(e.checkedAt)
+  return age>=0&&age<=60000&&e.binding===bound.binding&&JSON.stringify(e.targetIds)===JSON.stringify(bound.targetIds)?e:null
+}

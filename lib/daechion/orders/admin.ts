@@ -8,13 +8,15 @@ import {paidRecoveryAllowed,resumePaid,type PaidEvidence} from './paid-recovery'
 import {queueSheetRecovery} from './sheet-recovery'
 import {recordManualAccess,type AccessEvidence} from './manual-access'
 import {identityRecoveryAllowed,reconcileIdentity} from './identity-recovery'
-import {unattemptedIntake,intakeUntouched,validateNewIntake,type IntakeEvidence} from './intake-review'
+import {unattemptedIntake,intakeUntouched,validateNewIntake,paidNewIdentity,validatePaidNewIdentity,type IntakeEvidence} from './intake-review'
 
 const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
 const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
 const common={requestKey:z.string().uuid(),orderId:z.string().uuid(),expectedVersion:z.string().regex(/^[1-9]\d{0,18}$/),operatorName:text(80),reason,confirmed:z.literal(true)}
 export const orderAdminActionSchema=z.discriminatedUnion('action',[
-  z.object({...common,action:z.literal('RECONCILE_IDENTITY'),studentId:z.number().int().positive().safe(),confirmCreatedAccount:z.literal(true)}).strict(),
+  z.object({...common,action:z.literal('RECONCILE_IDENTITY'),studentId:z.number().int().positive().safe(),confirmCreatedAccount:z.literal(true).optional(),
+    confirmNotOwned:z.literal(true).optional(),targetIds:z.array(z.number().int().positive().safe()).min(1).max(30).optional(),
+    billId:z.string().regex(/^\d{20}$/).optional(),confirmPaid:z.literal(true).optional()}).strict(),
   z.object({...common,action:z.literal('CONFIRM_NEW_INTAKE'),confirmNewStudent:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('CLOSE_INTAKE'),confirmClose:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('HOLD')}).strict(),
@@ -22,7 +24,7 @@ export const orderAdminActionSchema=z.discriminatedUnion('action',[
   z.object({...common,action:z.literal('APPROVE_EXISTING'),studentId:z.number().int().positive().safe(),
     targetIds:z.array(z.number().int().positive().safe()).min(1).max(30).refine(ids=>new Set(ids).size===ids.length),confirmNotOwned:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('RESUME_UNBILLED')}).strict(),
-  z.object({...common,action:z.literal('RESUME_PAID'),billId:z.string().regex(/^\d{20}$/),confirmPaid:z.literal(true)}).strict(),
+  z.object({...common,action:z.literal('RESUME_PAID'),billId:z.string().regex(/^\d{20}$/),confirmPaid:z.literal(true),confirmNewStudent:z.literal(true).optional()}).strict(),
   z.object({...common,action:z.literal('RECONCILE_SHEETS'),jobId:z.string().uuid(),confirmExistingRow:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('MANUAL_ACCESS'),studentId:z.number().int().positive().safe(),lectureId:z.number().int().positive().safe(),
     confirmVideo:z.literal(true),confirmLessonMaterials:z.literal(true),confirmCourseMaterials:z.literal(true)}).strict(),
@@ -69,11 +71,11 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
       AND o.identity_state='PASSED' AND daechion_orders.paid_eligible(o.id)) AS can_retry
     FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id WHERE g.order_id=$1 ORDER BY g.lecture_id`,[id])).rows
   const messages=(await c.query('SELECT phone,state,accepted_at FROM daechion_orders.ready_receipts WHERE order_id=$1 ORDER BY phone',[id])).rows
-  const jobs=(await c.query('SELECT id,kind,state,attempts,last_error,event_version::text FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
+  const jobs=(await c.query('SELECT id,kind,state,attempts,last_error,event_version::text,sheet_write_started,sheet_read_attempts FROM daechion_orders.jobs WHERE order_id=$1 ORDER BY event_version DESC,kind LIMIT 100',[id])).rows
   const actions=(await c.query('SELECT action,lecture_id::text,student_id::text,target_ids,recovery_evidence,operator_name,reason,before_version::text,after_version::text,created_at FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 100',[id])).rows
   const workerStatus=(await c.query('SELECT session_issue,started_at,finished_at,result,next_run_at FROM daechion_orders.scheduler_orders WHERE order_id=$1',[id])).rows[0]??null
   const recoveries=(await c.query('SELECT request_key,job_id,state,result_code,created_at FROM daechion_orders.sheet_recoveries WHERE order_id=$1 ORDER BY created_at DESC,request_key DESC LIMIT 10',[id])).rows
-  const sheetBlockers=(await c.query("SELECT id,state FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state IN ('UNKNOWN','RUNNING')",[id])).rows
+  const sheetBlockers=(await c.query("SELECT id,state,sheet_write_started FROM daechion_orders.jobs WHERE order_id=$1 AND kind='SHEETS' AND state IN ('UNKNOWN','RUNNING')",[id])).rows
   const activeRecovery=(await c.query("SELECT request_key FROM daechion_orders.sheet_recoveries WHERE order_id=$1 AND state IN ('PENDING','RUNNING')",[id])).rows.length>0
   const sheetRecoveryJobId=!activeRecovery&&sheetBlockers.length===1&&sheetBlockers[0].state==='UNKNOWN'?String(sheetBlockers[0].id):null
   const status=(await c.query('SELECT identity_write_started,identity_token,confirmed_at,identity_recovery_action_id,intake_action_id,closed_action_id FROM daechion_orders.orders WHERE id=$1',[id])).rows[0]
@@ -83,11 +85,16 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const manualGrantIds=manualIdentity&&paidCurrent?grants.filter(g=>['PENDING','REVIEW'].includes(String(g.state))).map(g=>String(g.lecture_id)):[]
   const manualRevokeIds=manualIdentity?grants.filter(g=>g.state!=='REVOKED').map(g=>String(g.lecture_id)):[]
   const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
+  const paidNew=paidNewIdentity({...order,...status}),paidNewReady=paidNew&&!reviewed&&!messages.length&&grants.length>0&&grants.every(g=>g.state==='PENDING'&&!g.enrollment_recorded&&Array.isArray(g.weekly_ids)&&g.weekly_ids.length===0)
   const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
   return {order,items,bills,grants,messages,jobs,actions,recoveries,workerStatus,manualGrantIds,manualRevokeIds,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
+    sheetRecoveryCanCreateRow:sheetRecoveryJobId!==null&&sheetBlockers[0].sheet_write_started===false,
     canCloseIntake:untouched,canConfirmNewIntake:untouched&&!reviewed&&order.checkout_state==='REVIEW'&&(order.contact_snapshot as {studentHistory?:string}).studentHistory==='NEW',
-    canReconcileIdentity:identityRecoveryAllowed({...order,...status})&&grants.length>0&&grants.every(g=>g.state==='PENDING'&&!g.enrollment_recorded),
-    canResumePaid:!grants.some(g=>g.state==='REVOKED')&&paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT'&&!status.closed_action_id,canApproveExisting:unbilled,
+    identityRecoveryRequiresOwnership:status.identity_write_started===false,
+    paidIdentityRequiresNewCheck:paidNewReady,
+    canReconcileIdentity:identityRecoveryAllowed({...order,...status})&&grants.length>0&&grants.every(g=>g.state==='PENDING'&&!g.enrollment_recorded)&&
+      (status.identity_write_started||bills.some(b=>b.is_current&&b.state==='SENT')),
+    canResumePaid:(!paidNew||paidNewReady)&&!grants.some(g=>g.state==='REVOKED')&&paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT'&&!status.closed_action_id,canApproveExisting:unbilled,
     canResumeUnbilled:unbilled&&order.checkout_state==='REVIEW'&&order.review_code==='admin_hold'&&status.confirmed_at!==null&&(!reviewed||age>=0&&age<=15*60000)}
 }
 export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence,payment?:PaidEvidence,access?:AccessEvidence,intakeEvidence?:IntakeEvidence){
@@ -102,10 +109,15 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
     if(String(order.version)!==input.expectedVersion)throw new OrderAdminError('STALE')
     let review:ReviewEvidence|undefined
     let intake:IntakeEvidence|undefined
+    let paidIntake:IntakeEvidence|undefined
     if(order.closed_action_id&&input.action!=='RECONCILE_SHEETS')throw new OrderAdminError('STATE')
     if(input.action==='CLOSE_INTAKE'&&(!unattemptedIntake(order)||!await intakeUntouched(c,input.orderId)))throw new OrderAdminError('STATE')
     if(input.action==='CONFIRM_NEW_INTAKE'){
       const checked=await validateNewIntake(c,order,intakeEvidence);if(!checked)throw new OrderAdminError('STATE');intake=checked
+    }
+    if(input.action==='RESUME_PAID'&&paidNewIdentity(order)){
+      if(!input.confirmNewStudent||!intakeEvidence||!payment||input.billId!==payment.billId)throw new OrderAdminError('STATE')
+      const checked=await validatePaidNewIdentity(c,order,intakeEvidence);if(!checked)throw new OrderAdminError('STATE');paidIntake=checked
     }
     if(input.action==='APPROVE_EXISTING'||input.action==='RESUME_UNBILLED'){
       if(order.payment_state!=='PENDING'||order.student_id!==null||order.identity_state!=='WAITING'||order.identity_write_started||order.identity_token||
@@ -123,16 +135,22 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
           JSON.stringify(review.targetIds)!==JSON.stringify(bound.targetIds)||JSON.stringify(ids)!==JSON.stringify(bound.targetIds))throw new OrderAdminError('STATE')
       }
     }
-    if(input.action==='RECONCILE_IDENTITY')review=reviewEvidenceSchema.parse(evidence)
+    if(input.action==='RECONCILE_IDENTITY'){
+      review=reviewEvidenceSchema.parse(evidence)
+      if(order.identity_write_started){if(!input.confirmCreatedAccount)throw new OrderAdminError('STATE')}
+      else if(!input.confirmNotOwned||!input.confirmPaid||input.billId!==payment?.billId||
+        JSON.stringify([...(input.targetIds??[])].sort((a,b)=>a-b))!==JSON.stringify(review.targetIds))throw new OrderAdminError('STATE')
+    }
     const nextVersion=(BigInt(input.expectedVersion)+1n).toString()
-    const recoveryEvidence=input.action==='RESUME_PAID'?{billId:payment?.billId,amountWon:payment?.amountWon,paidAt:payment?.paidAt,checkedAt:payment?.checkedAt}:
+    const recoveryEvidence=input.action==='RECONCILE_IDENTITY'&&!order.identity_write_started?{allTargetsNotOwned:true,payment}:
+      input.action==='RESUME_PAID'?{billId:payment?.billId,amountWon:payment?.amountWon,paidAt:payment?.paidAt,checkedAt:payment?.checkedAt,...(paidIntake?{newIdentity:paidIntake,payment}:{})}:
       input.action==='RECONCILE_SHEETS'?{jobId:input.jobId}:input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED'?
         {studentId:access?.studentId,lectureId:access?.lectureId,weeklyLectureIds:access?.weeklyLectureIds,checkedAt:access?.checkedAt,profileFingerprint:access?.profileFingerprint,contextFingerprint:access?.binding,requestFingerprint:order.request_fingerprint}:{}
     const writeAudit=()=>c.query(`INSERT INTO daechion_orders.admin_actions(request_key,order_id,fingerprint,action,lecture_id,operator_name,reason,before_version,after_version,
       student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb)`,[input.requestKey,input.orderId,fingerprint,input.action,'lectureId' in input?input.lectureId:null,
       input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??intake?.binding??null,review||intake?order.request_fingerprint:null,JSON.stringify(review?.targetIds??intake?.targetIds??[]),review?.checkedAt??intake?.checkedAt??null,JSON.stringify(recoveryEvidence)])
-    const auditFirst=['APPROVE_EXISTING','RECONCILE_IDENTITY','CONFIRM_NEW_INTAKE','CLOSE_INTAKE','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
+    const auditFirst=Boolean(paidIntake)||['APPROVE_EXISTING','RECONCILE_IDENTITY','CONFIRM_NEW_INTAKE','CLOSE_INTAKE','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
     if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!access)throw new OrderAdminError('STATE')
     if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!(await c.query('SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2',[input.orderId,input.lectureId])).rows.length)throw new OrderAdminError('STATE')
     if(auditFirst)await writeAudit()
@@ -145,7 +163,7 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
       await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[input.orderId])
       await orderChanged(c,input.orderId,'intake_closed')
     }else if(input.action==='RECONCILE_IDENTITY'){
-      if(!review||!await reconcileIdentity(c,order,input.studentId,input.requestKey,review))throw new OrderAdminError('STATE')
+      if(!review||!await reconcileIdentity(c,order,input.studentId,input.requestKey,review,payment))throw new OrderAdminError('STATE')
       await orderChanged(c,input.orderId,'identity_reconciled')
     }else if(input.action==='HOLD'){
       if(order.checkout_state==='DRAFT')throw new OrderAdminError('STATE')
@@ -153,7 +171,7 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
     }else if(input.action==='RETRY_ACCESS'){
       if(!await retryRecordedAccessInTransaction(c,input))throw new OrderAdminError('STATE')
     }else if(input.action==='RESUME_PAID'){
-      if(!payment||input.billId!==payment.billId||!await resumePaid(c,order,payment))throw new OrderAdminError('STATE')
+      if(!payment||input.billId!==payment.billId||!await resumePaid(c,order,payment,paidIntake))throw new OrderAdminError('STATE')
       await orderChanged(c,input.orderId,'paid_order_resumed')
     }else if(input.action==='RECONCILE_SHEETS'){
       if(!await queueSheetRecovery(c,input.orderId,input.jobId,input.requestKey))throw new OrderAdminError('STATE')

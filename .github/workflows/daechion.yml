@@ -26,6 +26,7 @@ on:
       - 'tests/daechion-orders.test.ts'
       - 'tests/daechion-orders-ledger.test.mjs'
       - 'tests/daechion-orders-service.test.mjs'
+      - 'tests/daechion-orders-sheet-retry.test.mjs'
       - 'tests/daechion-order-migrations.test.mjs'
       - 'tests/daechion-order-worker.test.mjs'
       - 'tests/daechion-order-admin-preview.mjs'

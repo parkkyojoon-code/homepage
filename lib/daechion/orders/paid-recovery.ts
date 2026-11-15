@@ -2,6 +2,7 @@ import {z} from 'zod'
 import {randomUUID} from 'node:crypto'
 import type {LedgerClient} from '../ledger'
 import type {PaymentProvider} from '../payssam'
+import {paidNewIdentity,validatePaidNewIdentity,type IntakeEvidence} from './intake-review'
 
 const iso=z.string().datetime({offset:true}),time=(v:unknown)=>v==null?NaN:new Date(v as string).getTime()
 export const paidEvidenceSchema=z.object({orderId:z.string().uuid(),tenantId:z.string().min(1),version:z.string().regex(/^[1-9]\d*$/),
@@ -32,26 +33,40 @@ export async function inspectPaid(context:PaidContext,provider:PaymentProvider):
   return paidEvidenceSchema.parse({orderId:context.orderId,tenantId:context.tenantId,version:context.version,requestFingerprint:context.requestFingerprint,
     recordId:context.bill.id,token:context.bill.token,accountId:provider.accountId,billId:p.billId,amountWon:p.amountWon,paidAt:p.paidAt,checkedAt:new Date().toISOString()})
 }
-const recoverable=new Set(['identity_reconciled','admin_hold','payment_query_unknown','unpaid_wait_closed','payment_amount_mismatch','payment_time_unknown','payment_evidence_changed','payment_regressed','worker_execution_unknown'])
+const recoverable=new Set(['identity_reconciled','identity_lookup_failed','admin_hold','payment_query_unknown','unpaid_wait_closed','payment_amount_mismatch','payment_time_unknown','payment_evidence_changed','payment_regressed','worker_execution_unknown'])
 export function paidRecoveryAllowed(o:Record<string,unknown>){
-  return ['REVIEW','CLOSED'].includes(String(o.checkout_state))&&recoverable.has(String(o.review_code))&&o.payment_state!=='CANCELLED'&&
+  return paidNewIdentity(o)||['REVIEW','CLOSED'].includes(String(o.checkout_state))&&recoverable.has(String(o.review_code))&&o.payment_state!=='CANCELLED'&&
     ['WAITING','PASSED'].includes(String(o.identity_state))&&!o.identity_token&&(!o.identity_write_started||o.identity_state==='PASSED')&&Boolean(o.confirmed_at)
 }
-// Caller owns the order row lock and its audit transaction. Never calls a provider.
-export async function resumePaid(c:LedgerClient,o:Record<string,unknown>,raw:unknown){
-  if(!paidRecoveryAllowed(o))return false
-  if((await c.query("SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND state='REVOKED'",[o.id])).rows.length)return false
+// Read-only evidence validation under the caller's order/bill row locks. The
+// token also fences concurrent payment observations, including cancellations.
+export async function currentPaidEvidence(c:LedgerClient,o:Record<string,unknown>,raw:unknown){
+  if(o.payment_state==='CANCELLED')return null
   const e=paidEvidenceSchema.parse(raw),age=Date.now()-Date.parse(e.checkedAt)
   if(age<0||age>60000||e.orderId!==o.id||e.tenantId!==o.tenant_id||e.version!==String(o.version)||e.requestFingerprint!==o.request_fingerprint||
-    e.amountWon!==Number(o.total_won)||o.paid_at&&time(o.paid_at)!==Date.parse(e.paidAt))return false
+    e.amountWon!==Number(o.total_won)||o.paid_at&&time(o.paid_at)!==Date.parse(e.paidAt))return null
   const bill=(await c.query(`SELECT * FROM daechion_orders.bills WHERE id=$1 AND order_id=$2 AND is_current AND state='SENT'
     AND provider_account=$3 AND bill_id=$4 AND checked_at IS NOT DISTINCT FROM $5::timestamptz FOR UPDATE`,[e.recordId,o.id,e.accountId,e.billId,e.token])).rows[0]
   if(!bill||Number(bill.amount_won)!==e.amountWon||!Number.isFinite(time(bill.sent_at))||!Number.isFinite(time(bill.due_at))||
-    Date.parse(e.paidAt)<time(bill.sent_at)-60000||Date.parse(e.paidAt)>time(bill.due_at)||Date.parse(e.paidAt)>Date.now()+60000)return false
+    Date.parse(e.paidAt)<time(bill.sent_at)-60000||Date.parse(e.paidAt)>time(bill.due_at)||Date.parse(e.paidAt)>Date.now()+60000)return null
   await c.query('SELECT pg_advisory_xact_lock(61130,hashtext($1))',[e.accountId+'|'+e.billId])
-  if((await c.query('SELECT id FROM daechion_automation.bills WHERE provider_account=$1 AND bill_id=$2',[e.accountId,e.billId])).rows.length)return false
+  if((await c.query('SELECT id FROM daechion_automation.bills WHERE provider_account=$1 AND bill_id=$2',[e.accountId,e.billId])).rows.length)return null
+  return e
+}
+// Caller owns the order row lock and its audit transaction. Never calls a provider.
+export async function resumePaid(c:LedgerClient,o:Record<string,unknown>,raw:unknown,intake?:IntakeEvidence){
+  if(!paidRecoveryAllowed(o))return false
+  if((await c.query("SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND state='REVOKED'",[o.id])).rows.length)return false
+  const e=await currentPaidEvidence(c,o,raw);if(!e)return false
+  const retryNew=paidNewIdentity(o)
+  if(retryNew&&(!intake||!await validatePaidNewIdentity(c,o,intake)))return false
+  const updateOrder=()=>c.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL,payment_state='PAID',paid_at=$2,identity_state=CASE WHEN $3 THEN 'WAITING' ELSE identity_state END WHERE id=$1",[o.id,e.paidAt,retryNew])
+  // The NEW-identity trigger verifies the original payment read token. All
+  // changes stay in this audit transaction under the same order/bill locks.
+  if(retryNew)await updateOrder()
   await c.query(`UPDATE daechion_orders.bills SET last_payment_state='PAID',checked_at=GREATEST(clock_timestamp(),COALESCE(checked_at+interval '1 microsecond',clock_timestamp())) WHERE id=$1`,[e.recordId])
-  await c.query("UPDATE daechion_orders.orders SET checkout_state='READY',review_code=NULL,payment_state='PAID',paid_at=$2 WHERE id=$1",[o.id,e.paidAt])
+  if(!retryNew)await updateOrder()
+  if(retryNew||o.review_code==='identity_lookup_failed')await c.query('UPDATE daechion_orders.orders SET identity_read_attempts=0,identity_retry_at=NULL WHERE id=$1',[o.id])
   await queueUnattemptedNotice(c,o)
   return true
 }

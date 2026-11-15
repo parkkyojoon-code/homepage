@@ -19,9 +19,9 @@ function ports(){
     withClient:withAutomationClient,inspectNewIntake:(context:BillingContext)=>{
       if(!process.env.DAECHION_API_KEY)throw Error('ORDER_REVIEW_API_REQUIRED')
       return inspectNewIntake(context,daechionClient({apiKey:process.env.DAECHION_API_KEY}),process.env.DAECHION_ORDERS_SUBJECT_SECRET??'')
-    },inspectExisting:async(context:BillingContext,studentId:number)=>{
+    },inspectExisting:async(context:BillingContext,studentId:number,unambiguous=false)=>{
       if(!process.env.DAECHION_API_KEY)throw Error('ORDER_REVIEW_API_REQUIRED')
-      return inspectExisting(context,studentId,daechionClient({apiKey:process.env.DAECHION_API_KEY}))
+      return inspectExisting(context,studentId,daechionClient({apiKey:process.env.DAECHION_API_KEY}),unambiguous)
     },inspectAccess:(context:BillingContext,studentId:number,lectureId:number,revoke:boolean)=>{
       if(!process.env.DAECHION_API_KEY)throw Error('ORDER_REVIEW_API_REQUIRED')
       return inspectManualAccess(context,studentId,lectureId,revoke,daechionClient({apiKey:process.env.DAECHION_API_KEY}))
