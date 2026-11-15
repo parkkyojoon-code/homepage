@@ -947,7 +947,6 @@ export default function ClassesPage() {
       </section>
 
       {/* Minimal Filter & Search Section */}
-      <CartEntry/>
       <section style={{
         position: 'sticky',
         top: '56px',
@@ -999,20 +998,22 @@ export default function ClassesPage() {
             </motion.div>
           </div>
 
-          {/* Search & View Mode */}
+          {/* Purchase & View Mode */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            gap: isMobileOrTablet ? '16px' : '32px',
+            gap: isMobile ? '8px' : isTablet ? '16px' : '32px',
             marginBottom: '24px',
-            flexDirection: isMobile ? 'column' : 'row'
+            flexWrap: 'wrap'
           }}>
-            <div style={{ flex: 1 }}></div>
+            <CartEntry/>
 
             {/* View Mode Right Side */}
             <div style={{
               display: 'flex',
+              marginLeft: 'auto',
+              flexShrink: 0,
               background: 'rgba(255, 255, 255, 0.03)',
               borderRadius: '8px',
               padding: '2px',

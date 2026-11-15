@@ -1,6 +1,7 @@
 'use client'
 import {useEffect,useState} from 'react'
 import Link from 'next/link'
+import styles from './cart-entry.module.css'
 export default function CartEntry(){
   const [available,setAvailable]=useState(false)
   useEffect(()=>{const controller=new AbortController()
@@ -9,5 +10,5 @@ export default function CartEntry(){
     return()=>controller.abort()
   },[])
   if(!available)return null
-  return <div style={{maxWidth:1200,margin:'0 auto',padding:'16px 20px'}}><Link href="/classes/cart" style={{display:'inline-block',padding:'12px 20px',background:'#0066ff',borderRadius:10,color:'#fff',fontWeight:700}}>여러 강의 함께 구매하기</Link></div>
+  return <Link href="/classes/cart" className={styles.entry}>여러 강의 함께 구매하기</Link>
 }

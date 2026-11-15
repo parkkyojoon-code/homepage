@@ -1,0 +1,26 @@
+.entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  background: #0066ff;
+  color: #fff;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.entry:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+@media (max-width: 767px) {
+  .entry {
+    padding: 12px;
+    font-size: 0.875rem;
+  }
+}
