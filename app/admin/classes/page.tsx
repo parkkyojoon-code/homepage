@@ -7,6 +7,7 @@ import LectureBindingPicker from '@/components/daechion/LectureBindingPicker'
 import type { StoredLectureBinding } from '@/lib/daechion/product-policy'
 import BundleProductPicker from '@/components/daechion/BundleProductPicker'
 import {bundleSource,bundleCompositionIssue,type BundleComponent} from '@/lib/daechion/orders/bundle-components'
+import {CLASS_CATEGORIES} from '@/lib/class-categories'
 
 interface MediaItem { type: 'image' | 'youtube'; value: string }
 interface ClassMode { enabled: boolean; price: number; campuses?: string[] }
@@ -542,8 +543,7 @@ export default function AdminClassesPage() {
               <div>
                 <label style={lbl}>카테고리</label>
                 <select style={{ ...inp }} value={e.category} onChange={ev => upd(['category'], ev.target.value)}>
-                  <option value="수리논술">수리논술</option>
-                  <option value="수능수학">수능수학</option>
+                  {CLASS_CATEGORIES.map(category=><option key={category} value={category}>{category}</option>)}
                 </select>
               </div>
               <div>

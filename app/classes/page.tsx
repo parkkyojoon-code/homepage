@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import ClassCard from "@/components/classes/ClassCard"
 import CartEntry from '@/components/daechion/CartEntry'
+import {CLASS_CATEGORIES,matchesClassCategory} from '@/lib/class-categories'
 import {
   Grid3X3, Grid2X2, Search, ChevronDown,
   X, Sparkles, BookOpen,
@@ -551,7 +552,7 @@ const getResponsiveConfig = (breakpoint: 'mobile' | 'tablet' | 'desktop') => {
 interface Class {
   id: string
   type: 'free' | 'premium'
-  category: '수능수학' | '수리논술'
+  category: string
   title: string
   instructor: string
   description: string
@@ -582,8 +583,7 @@ interface CategoryOption {
 // 클래스 데이터 - API에서 로드
 const premiumCategories: CategoryOption[] = [
   { id: "all", label: "전체" },
-  { id: "수리논술", label: "수리논술" },
-  { id: "수능수학", label: "수능수학" }
+  ...CLASS_CATEGORIES.map(category => ({ id: category, label: category }))
 ]
 
 export default function ClassesPage() {
@@ -683,7 +683,7 @@ export default function ClassesPage() {
   // 메모이제이션된 필터링 및 검색
   const filteredClasses = useMemo(() => {
     return classesData.filter(cls => {
-      const matchCategory = selectedCategory === "all" || cls.category === selectedCategory
+      const matchCategory = matchesClassCategory(cls.category, selectedCategory)
       const matchSearch = cls.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           cls.description.toLowerCase().includes(searchQuery.toLowerCase())
       return matchCategory && matchSearch
@@ -979,6 +979,7 @@ export default function ClassesPage() {
                 aria-label="강의 카테고리 선택"
                 style={{
                 display: 'flex',
+                flexWrap: 'wrap',
                 gap: responsiveConfig.tabGap,
                 justifyContent: 'center',
                 position: 'relative'

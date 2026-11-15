@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from "react"
 import { useParams, useRouter, useSearchParams } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import {purchaseEntryHref} from '@/lib/purchase-process'
+import {isMathEssayCategory} from '@/lib/class-categories'
 import {
   Clock, Users, Star, CheckCircle, PlayCircle, BookOpen,
   MessageSquare, Calendar, User, Shield, ChevronDown, ChevronUp,
@@ -434,7 +435,7 @@ const PurchaseOptions = ({ classDetail, isMobile }: { classDetail: ClassDetail, 
   const textbookPrice = classDetail.textbookPrice
   
   // 수리논술은 교재 필수
-  const isSuriNonsul = classDetail.category === "수리논술"
+  const isSuriNonsul = isMathEssayCategory(classDetail.category)
 
   // 캠퍼스 목록 - 수리논술: 4개, 수능수학: 2개
   const campusList = isSuriNonsul

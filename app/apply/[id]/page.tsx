@@ -9,6 +9,7 @@ import { calcSubjectSelectionPrice, type SubjectSelection } from "@/lib/subjectP
 import type { PurchaseProcess } from '@/lib/purchase-process'
 import ProcessTwoApplicationForm from '@/components/daechion/ApplicationForm'
 import CartCheckout from '@/components/daechion/CartCheckout'
+import {isMathEssayCategory} from '@/lib/class-categories'
 
 // 수업 정보
 const courseTypeMap = (category: string, option: string, campus: string, hasSubjectSelection: boolean): string => {
@@ -16,7 +17,7 @@ const courseTypeMap = (category: string, option: string, campus: string, hasSubj
   if (hasSubjectSelection) {
     return isOnline ? 'sunung-subject-select-online' : 'sunung-subject-select-offline'
   }
-  if (category === '수리논술') {
+  if (isMathEssayCategory(category)) {
     return isOnline ? 'surinonseul-online' : `surinonseul-offline`
   }
   return isOnline ? 'sunung-blueprint-online' : 'sunung-blueprint-offline'
