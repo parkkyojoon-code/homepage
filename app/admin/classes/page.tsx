@@ -59,6 +59,7 @@ export default function AdminClassesPage() {
   const [catalogError,setCatalogError]=useState<string|null>(null)
   const [catalogRevision,setCatalogRevision]=useState('')
   const loadSequence=useRef(0)
+  const newDraftId=useRef('')
   const [bundlePublishingReady,setBundlePublishingReady]=useState(false)
   const [editTarget, setEditTarget] = useState<ClassData | null>(null)
   const [isNew, setIsNew] = useState(false)
@@ -150,6 +151,7 @@ export default function AdminClassesPage() {
 
   function openNew() {
     if(catalogBlocked)return
+    newDraftId.current=`class-${crypto.randomUUID()}`
     setMsg(null)
     setEditTarget(JSON.parse(JSON.stringify(EMPTY_CLASS)))
     setIsNew(true)
@@ -157,6 +159,7 @@ export default function AdminClassesPage() {
 
   function openBundle(){
     if(catalogBlocked)return
+    newDraftId.current=`bundle-${crypto.randomUUID()}`
     setMsg(null)
     setEditTarget({...JSON.parse(JSON.stringify(EMPTY_CLASS)),saleKind:'BUNDLE',purchaseProcess:'PROCESS_2',bundleProductIds:[]})
     setIsNew(true)
@@ -176,7 +179,7 @@ export default function AdminClassesPage() {
     setSaving(true); setMsg(null)
     const method = isNew ? 'POST' : 'PUT'
     const url    = isNew ? '/api/admin/classes' : `/api/admin/classes/${editTarget.id}`
-    const body={...editTarget,...(!isNew?{expectedUpdatedAt:editTarget.updatedAt}:{}),...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||undefined}:{})}
+    const body={...editTarget,...(!isNew?{expectedUpdatedAt:editTarget.updatedAt}:{}),...(editTarget.purchaseProcess==='PROCESS_2'?{expectedDaechionBindingAt:editTarget.daechionBinding?.verifiedAt??null}:{}),...(isNew?{id:(editTarget as any).customId||newDraftId.current}:{})}
     if(editTarget.saleKind==='BUNDLE'){
       Object.assign(body,{bundleProductIds:editTarget.bundleProductIds??[],expectedBundleComponents:(editTarget.bundleProductIds??[]).map(id=>{
         const product=classes.find(item=>item.id===id)

@@ -40,10 +40,17 @@ try{
   await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort())
   const page=await context.newPage()
   let unavailable=true,reads=0,writes=0
+  const catalogData=[product],createdIds=[],createdStatuses=[]
   const failure={error:'수업 데이터를 읽거나 저장하지 못했습니다. 관리자에게 확인을 요청해주세요.',code:'CATALOG_UNAVAILABLE'}
-  await page.route('**/api/admin/classes',route=>{
+  await page.route('**/api/admin/classes',async route=>{
+    if(route.request().method()==='POST'){
+      createdIds.push(route.request().postDataJSON().id)
+      const response=await route.fetch();createdStatuses.push(response.status())
+      if(response.status()===201){catalogData.push(await response.json());unavailable=true;return route.fulfill({status:503,json:failure})}
+      return route.fulfill({response})
+    }
     reads++
-    return route.fulfill(unavailable?{status:503,json:failure}:{json:[product],headers:{'X-Catalog-Revision':'a'.repeat(64)}})
+    return route.fulfill(unavailable?{status:503,json:failure}:{json:catalogData,headers:{'X-Catalog-Revision':'a'.repeat(64)}})
   })
   await page.route('**/api/admin/classes/fixture',route=>{writes++;unavailable=true;return route.fulfill({status:503,json:failure})})
   await page.goto(origin+'/admin/classes')
@@ -66,13 +73,27 @@ try{
   await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='저장').disabled)
   assert.equal(await page.getByLabel('수업명',{exact:true}).inputValue(),'입력 내용 보존')
   assert.equal(writes,1);assert.ok(reads>=3)
+  await page.getByRole('button',{name:'← 목록으로',exact:true}).click()
+  await page.getByRole('button',{name:'+ 수업 추가',exact:true}).click()
+  await page.getByLabel('수업명',{exact:true}).fill('응답 불명 중복 방지 검수')
+  await page.getByRole('button',{name:'저장',exact:true}).click()
+  await page.getByRole('button',{name:'목록 다시 불러오기',exact:true}).waitFor()
+  assert.deepEqual(createdStatuses,[201])
+  unavailable=false
+  await page.getByRole('button',{name:'목록 다시 불러오기',exact:true}).click()
+  await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='저장').disabled)
+  await page.getByRole('button',{name:'저장',exact:true}).click()
+  await page.getByRole('alert').filter({hasText:'이미 사용 중인 ID입니다'}).waitFor()
+  assert.deepEqual(createdStatuses,[201,409]);assert.equal(createdIds[0],createdIds[1]);assert.ok(createdIds[0])
+  const saved=await (await fetch(origin+'/api/admin/classes',{headers:{cookie:'admin_session=disposable-catalog-ui-session'}})).json()
+  assert.equal(saved.filter(item=>item.name==='응답 불명 중복 방지 검수').length,1)
   let publicReads=0
   await page.route('**/api/classes',route=>{publicReads++;return route.fulfill(publicReads===1?{status:503,json:failure}:{json:[product]})})
   await page.goto(origin+'/classes')
   await page.getByRole('button',{name:/다시 시도/}).click()
   await page.getByText(product.name,{exact:true}).first().waitFor()
   assert.equal(publicReads,2)
-  console.log('Catalog UI regression passed: unavailable/read retry/save guard/form preservation/public retry.')
+  console.log('Catalog UI regression passed: unavailable/read retry/save guard/form preservation/uncertain POST duplicate prevention/public retry.')
 }finally{
   if(browser)await browser.close()
   if(child.exitCode===null){const stopped=once(child,'exit');child.kill();await stopped}
