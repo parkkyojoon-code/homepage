@@ -1369,6 +1369,47 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       const input=await adminAction(orderId,'RECONCILE_IDENTITY',{studentId:student.id,confirmCreatedAccount:true})
       return {orderId,payment,api,row,student,admin,input}
     }
+    await t.test('a duplicate committed between replay and context reads returns its exact audit result while other keys or payloads stay stale',async()=>{
+      for(const change of ['same','key','payload']){
+        const {orderId,api,admin,input}=await identityUnknownFixture()
+        let pause,release,calls=0;const paused=new Promise(resolve=>{pause=resolve}),continueRead=new Promise(resolve=>{release=resolve})
+        const delayed={...admin,withClient:async run=>{
+          // Pause outside the connection so the winning request can commit on
+          // both real PostgreSQL and the serial PGlite connection adapter.
+          if(++calls===2){pause();await continueRead}
+          return admin.withClient(run)
+        },inspectExisting:async()=>{throw Error('An outdated context must not be inspected')}}
+        const laterInput=change==='key'?{...input,requestKey:randomUUID()}:change==='payload'?{...input,reason:'다른 처리 근거'}:input
+        const later=orderAdminHttp.orderAdminPost(request(laterInput),delayed)
+        await paused
+        const first=await orderAdminHttp.orderAdminPost(request(input),admin)
+        assert.equal(first.status,200,JSON.stringify(await first.clone().json()))
+        const firstBody=await first.json();release()
+        const last=await later,lastBody=await last.json()
+        assert.equal(last.status,change==='same'?200:409,JSON.stringify(lastBody))
+        if(change==='same'){assert.equal(lastBody.replayed,true);assert.equal(lastBody.version,firstBody.version)}
+        assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId])).rows[0].n,1)
+        assert.equal((await db.query('SELECT identity_recovery_action_id FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].identity_recovery_action_id,input.requestKey)
+        assert.equal(api.creates,1);assert.deepEqual(api.enrolled,[])
+      }
+    })
+    await t.test('a duplicate returns its committed audit when a concurrent read-only identity or payment inspection fails',async()=>{
+      for(const phase of ['new','paid','api']){
+        const {orderId,api,admin,input}=await (phase==='api'?identityUnknownFixture():paidNewReadReviewFixture())
+        let pause,release;const paused=new Promise(resolve=>{pause=resolve}),continueRead=new Promise(resolve=>{release=resolve})
+        const fail=async()=>{pause();await continueRead;if(phase==='api')throw Error('Temporary profile lookup outage');return null}
+        const delayed={...admin,...(phase==='new'?{inspectNewIntake:fail}:phase==='paid'?{inspectPaid:fail}:{inspectExisting:fail})}
+        const later=orderAdminHttp.orderAdminPost(request(input),delayed)
+        await paused
+        const first=await orderAdminHttp.orderAdminPost(request(input),admin)
+        assert.equal(first.status,200,JSON.stringify(await first.clone().json()))
+        const firstBody=await first.json();release()
+        const last=await later,lastBody=await last.json()
+        assert.equal(last.status,200,JSON.stringify(lastBody));assert.equal(lastBody.replayed,true);assert.equal(lastBody.version,firstBody.version)
+        assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.admin_actions WHERE order_id=$1',[orderId])).rows[0].n,1)
+        assert.equal(api.creates,phase==='api'?1:0);assert.deepEqual(api.enrolled,[])
+      }
+    })
     await t.test('unknown account creation is reconciled read-only to one exact profile, stays held and resumes only after a current payment read',async()=>{
       const {orderId,payment,api,student,admin,input}=await identityUnknownFixture()
       assert.equal((await db.withClient(c=>orderAdmin.orderDetail(c,'fixture',orderId))).canReconcileIdentity,true)
