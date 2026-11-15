@@ -62,6 +62,7 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
     if(operation.current||!checked||checked.conflicts.length||checking||pending)return
     invalidate()
     if(!history||!form.applicantType||!form.studentName.trim()||!form.studentPhone.trim()||!form.payerPhone.trim()||!form.confirmPayment||!form.agreePrivacy){setError('필수 정보와 동의 항목을 확인해주세요.');return}
+    if(!window.confirm('입력하신 이름과 전화번호는 LMS 사이트 초기 아이디/비밀번호로 사용됩니다. 입력하신 정보가 정확한지 다시 한번 확인해 주세요. 계속하시겠습니까?'))return
     operation.current=true;setBusy(true)
     try{
       const r=await fetch('/api/daechion/orders/quotes',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId})),discountCode:appliedCode,contact:{...form,studentHistory:history},expectedTotalWon:checked.totalWon})})
