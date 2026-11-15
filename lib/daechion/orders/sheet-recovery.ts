@@ -30,10 +30,11 @@ export async function deliverOrderSheet(id:string,enabled:boolean,ports:SheetPor
   try{result=await syncOrderSheet(id,true,{...ports,recovery:requested,authorise:async()=>true},true)}catch{}
   return ports.withClient(c=>orderTransaction(c,async()=>{
     await lockOrder(c,id)
-    const state=result==='DONE'?'DONE':result==='SKIPPED'?'FAILED':'UNKNOWN'
+    const deferred=result==='DEFERRED'
+    const state=result==='DONE'?'DONE':result==='SKIPPED'||deferred?'FAILED':'UNKNOWN'
     const saved=await c.query(`UPDATE daechion_orders.sheet_recoveries SET state=$3,result_code=$4,lease_token=NULL,lease_until=NULL
       WHERE request_key=$1 AND lease_token=$2 AND state='RUNNING' AND lease_until>now() RETURNING state`,
-      [requested.requestKey,requested.leaseToken,state,state==='DONE'?null:state==='FAILED'?'sheet_recovery_target_changed':'sheet_recovery_unknown'])
-    return saved.rows.length&&state==='DONE'?'DONE':'UNKNOWN'
+      [requested.requestKey,requested.leaseToken,state,state==='DONE'?null:deferred?'sheet_read_retry':state==='FAILED'?'sheet_recovery_target_changed':'sheet_recovery_unknown'])
+    return saved.rows.length?(deferred?'DEFERRED':state==='DONE'?'DONE':'UNKNOWN'):'UNKNOWN'
   }))
 }

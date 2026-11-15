@@ -1,6 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
+import {EventEmitter} from 'node:events'
 import provider from '../workers/daechion/browser/provider.cjs'
 import contentVerify from '../scripts/daechion-content-verify.cjs'
 import sessionStore from '../workers/daechion/browser/session-store.cjs'
@@ -13,6 +14,161 @@ const input={studentId:77,lectureId:10,weeklyLectureIds:[100],studentName:'검�
 const api={me:async()=>({tenantId:116}),student:async()=>({id:77,name:'검수학생',studentPhoneNumber:'010-0000-0001',active:false}),
   students:async()=>[{id:77}],
   lectures:async()=>[{id:10,name:'같은 이름',opened:true,weeklyLectures:[{id:100,name:'차시 A'}]}]}
+
+const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}}
+const nextTurn=()=>new Promise(resolve=>setImmediate(resolve))
+const never=()=>new Promise(()=>{})
+const shortDeadline={operationTimeoutMs:100,cleanupTimeoutMs:30}
+function refreshFixture(overrides={}){
+  let currentUrl=''
+  const locator={waitFor:async()=>{},getAttribute:async()=>'/crm/admin'}
+  const page={getByRole:()=>locator,goto:async value=>{currentUrl=value},url:()=>currentUrl,...overrides.page}
+  const context={setDefaultTimeout:()=>{},route:async()=>{},newPage:async()=>page,storageState:async()=>JSON.parse(env.DAECHION_BROWSER_STORAGE_STATE),close:async()=>{},...overrides.context}
+  return {page,context,browser:{newContext:async()=>context,close:async()=>{},...overrides.browser}}
+}
+
+test('the whole browser lifetime bounds hung lease/API checks, launch, context, routing, page creation, refresh and save',
+  {timeout:5000},async()=>{
+  for(const at of ['acquire','lease','api','launch','context','route','page','refresh','save','release']){
+    let launched=0,closed=0,saves=0
+    const fixture=refreshFixture({
+      page:at==='refresh'?{goto:never}:{},
+      context:{...(at==='route'?{route:never}:{}),...(at==='page'?{newPage:never}:{})},
+      browser:{...(at==='context'?{newContext:never}:{}),close:async()=>{closed++}},
+    })
+    const sessions={run:async work=>{
+      if(at==='acquire')return never()
+      const result=await work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,
+        assert:at==='lease'?never:async()=>{},save:async()=>{saves++;if(at==='save')await never()}})
+      if(at==='release')return never()
+      return result
+    }}
+    const access=provider.browserAccessProvider(env,{...api,...(at==='api'?{me:never}:{})},{...shortDeadline,sessions,
+      launch:async()=>{launched++;return at==='launch'?never():fixture.browser}})
+    const started=Date.now()
+    await assert.rejects(access.refreshSession(),error=>error.message==='CONTENT_ACCESS_UNCONFIRMED'&&
+      error.stage===({acquire:'API_PREFLIGHT',lease:'API_PREFLIGHT',api:'API_PREFLIGHT',launch:'BROWSER_LAUNCH',context:'BROWSER_CONTEXT',route:'BROWSER_CONTEXT',page:'BROWSER_CONTEXT',refresh:'SESSION_REFRESH',save:'SESSION_REFRESH',release:'SESSION_REFRESH'})[at])
+    assert.ok(Date.now()-started<1000,at+' must finish within its injected lifetime bound')
+    assert.equal(launched,['acquire','lease','api'].includes(at)?0:1,at)
+    assert.equal(closed,['acquire','lease','api','launch'].includes(at)?0:1,at)
+    assert.equal(saves,['save','release'].includes(at)?1:0,at)
+  }
+})
+
+test('a late launch is closed and a late context is discarded after the deadline without opening a page',
+  {timeout:2000},async()=>{
+  for(const at of ['launch','context']){
+    const pending=deferred();let closed=0,contexts=0,contextCloses=0,pages=0
+    const fixture=refreshFixture({context:{newPage:async()=>{pages++;throw Error('must not create a page')},close:async()=>{contextCloses++}},
+      browser:{close:async()=>{closed++}}})
+    fixture.browser.newContext=async()=>{contexts++;return at==='context'?pending.promise:fixture.context}
+    const access=provider.browserAccessProvider(env,api,{...shortDeadline,launch:()=>at==='launch'?pending.promise:fixture.browser})
+    await assert.rejects(access.refreshSession(),/CONTENT_ACCESS_UNCONFIRMED/)
+    pending.resolve(at==='launch'?fixture.browser:fixture.context)
+    await nextTurn()
+    assert.equal(closed,1);assert.equal(contexts,at==='context'?1:0);assert.equal(contextCloses,at==='context'?1:0);assert.equal(pages,0)
+  }
+})
+
+test('DB abort is installed before a pending context and retains the shared lease until browser close confirms',
+  {timeout:2000},async()=>{
+  const controller=new AbortController(),contextPending=deferred(),contextEntered=deferred(),closing=deferred(),closed=deferred()
+  let released=0,pages=0,saves=0,lateContextCloses=0
+  const context={close:async()=>{lateContextCloses++},newPage:async()=>{pages++}}
+  const sessions={run:async work=>{try{return await work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:controller.signal,assert:async()=>{},save:async()=>{saves++}})}finally{released++}}}
+  const access=provider.browserAccessProvider(env,api,{operationTimeoutMs:1000,cleanupTimeoutMs:500,sessions,launch:async()=>({
+    newContext:()=>{contextEntered.resolve();return contextPending.promise},close:()=>{closing.resolve();return closed.promise},
+  })})
+  const result=access.refreshSession(),rejection=assert.rejects(result,error=>error.message==='CONTENT_ACCESS_UNCONFIRMED'&&error.stage==='BROWSER_CONTEXT')
+  await contextEntered.promise
+  controller.abort()
+  await closing.promise
+  assert.equal(released,0,'the browser must stop before the DB lease is released')
+  closed.resolve()
+  await rejection
+  assert.equal(released,1)
+  contextPending.resolve(context)
+  await nextTurn()
+  assert.equal(lateContextCloses,1);assert.equal(pages,0);assert.equal(saves,0)
+})
+
+test('an already-aborted DB lease never starts API authentication or a browser',async()=>{
+  const controller=new AbortController();controller.abort();let calls=0
+  const sessions={run:work=>work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:controller.signal,assert:async()=>{calls++},save:async()=>{calls++}})}
+  const access=provider.browserAccessProvider(env,{...api,me:async()=>{calls++}},{...shortDeadline,sessions,launch:async()=>{calls++}})
+  await assert.rejects(access.refreshSession(),error=>error.stage==='API_PREFLIGHT')
+  assert.equal(calls,0)
+})
+
+test('DB connection loss immediately kills an owned browser instead of waiting through the close grace period',
+  {timeout:2000},async()=>{
+  const controller=new AbortController(),entered=deferred();let killed=0,released=0,saves=0
+  const fixture=refreshFixture({page:{goto:()=>{entered.resolve();return never()}},browser:{close:never}})
+  const server={close:never,kill:async()=>{killed++},wsEndpoint:()=> 'ws://127.0.0.1/synthetic'}
+  const chromium={launchServer:async()=>server,connect:async()=>fixture.browser}
+  const sessions={run:async work=>{try{return await work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:controller.signal,assert:async()=>{},save:async()=>{saves++}})}finally{released++}}}
+  const access=provider.browserAccessProvider(env,api,{operationTimeoutMs:1000,cleanupTimeoutMs:500,chromium,sessions})
+  const result=access.refreshSession(),rejection=assert.rejects(result,error=>error.stage==='SESSION_REFRESH')
+  await entered.promise
+  controller.abort()
+  await nextTurn()
+  assert.equal(killed,1,'kill must start immediately after DB loss')
+  await rejection
+  assert.equal(released,1);assert.equal(saves,0)
+})
+
+test('a cancelled registration fence cannot submit a write when its late DB result arrives',
+  {timeout:2000},async()=>{
+  const controller=new AbortController(),fence=deferred(),entered=deferred();let writes=0,recorded=0,currentUrl=''
+  const row={waitFor:async()=>{},count:async()=>1,getByText:()=>row,getByRole:()=>row,setChecked:async()=>{}}
+  const picker={filter(){return this},getByRole(role,options){
+    return role==='row'?{filter:()=>row}:{fill:async()=>{},press:async()=>{},click:async()=>{if(/^1명 추가/.test(String(options.name)))writes++}}
+  }}
+  const ready={waitFor:async()=>{},or(){return this},isVisible:async()=>true,click:async()=>{}}
+  const page={goto:async value=>{currentUrl=value},url:()=>currentUrl,getByText:()=>ready,
+    getByRole:role=>role==='dialog'?picker:ready}
+  const fixture=refreshFixture({context:{newPage:async()=>page}})
+  const sessions={run:work=>work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:controller.signal,assert:async()=>{},save:async()=>{}})}
+  const access=provider.browserAccessProvider(env,api,{operationTimeoutMs:1000,cleanupTimeoutMs:100,sessions,launch:async()=>fixture.browser})
+  const result=access.ensureFirstLessonAccess({...input,weeklyLectureId:100,enrollmentRecorded:false,
+    beforeWrite:()=>{entered.resolve();return fence.promise},recordEnrollment:async()=>{recorded++}})
+  const rejection=assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
+  await entered.promise
+  controller.abort()
+  await rejection
+  fence.resolve()
+  await nextTurn()
+  assert.equal(writes,0);assert.equal(recorded,0)
+})
+
+test('owned browser processes are force-terminated when graceful close or the BrowserServer kill promise hangs',
+  {timeout:2000},async()=>{
+  for(const hungKill of [false,true]){
+    let killed=0,signals=0,launched=0,connected=0
+    const child=new EventEmitter();child.exitCode=null;child.signalCode=null
+    child.kill=signal=>{assert.equal(signal,'SIGKILL');signals++;child.signalCode=signal;child.emit('exit');return true}
+    const fixture=refreshFixture({browser:{close:never}})
+    const server={close:never,kill:async()=>{killed++;if(hungKill)await never()},process:()=>child,wsEndpoint:()=> 'ws://127.0.0.1/synthetic'}
+    const chromium={launchServer:async options=>{assert.equal(options.headless,true);assert.ok(options.timeout>0);launched++;return server},
+      connect:async endpoint=>{assert.equal(endpoint,server.wsEndpoint());connected++;return fixture.browser}}
+    const access=provider.browserAccessProvider(env,api,{...shortDeadline,chromium})
+    assert.deepEqual(await access.refreshSession(),{refreshed:true})
+    assert.equal(killed,1);assert.equal(signals,hungKill?1:0);assert.equal(launched,1);assert.equal(connected,1)
+  }
+})
+
+test('unconfirmed browser termination returns a bounded redacted failure, holds the lease and prevents another launch',
+  {timeout:2000},async()=>{
+  let acquired=0,released=0,launched=0
+  const fixture=refreshFixture({browser:{close:never}})
+  const sessions={run:async work=>{acquired++;try{return await work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,assert:async()=>{},save:async()=>{}})}finally{released++}}}
+  const access=provider.browserAccessProvider(env,api,{...shortDeadline,sessions,launch:async()=>{launched++;return fixture.browser}})
+  assert.equal(access.isAvailable(),true)
+  for(let attempt=0;attempt<2;attempt++)await assert.rejects(access.refreshSession(),error=>
+    error.message==='CONTENT_ACCESS_UNCONFIRMED'&&error.browserTerminationUnconfirmed===true&&!error.message.includes('synthetic'))
+  assert.equal(access.isAvailable(),false)
+  assert.equal(acquired,1);assert.equal(launched,1);assert.equal(released,0)
+})
 
 const fixtureToken=exp=>Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url')+'.'+Buffer.from(JSON.stringify({exp})).toString('base64url')+'.synthetic-signature'
 test('expiration acceptance changes only an isolated access-token copy and preserves the refresh cookie',()=>{
@@ -92,6 +248,34 @@ test('academy API authentication failure is reported before browser launch and w
   }
   assert.equal(launched,0)
 })
+test('production BrowserServer launch/connect/close APIs terminate the owned Chromium process after a local refresh',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:20000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  let server,saves=0
+  const ownedChromium={launchServer:async options=>{server=await chromium.launchServer(options);return server},
+    connect:async(...args)=>{
+      const browser=await chromium.connect(...args),newContext=browser.newContext.bind(browser)
+      browser.newContext=async options=>{
+        const context=await newContext(options),newPage=context.newPage.bind(context)
+        context.newPage=async()=>{
+          const page=await newPage()
+          await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><h2>강의 관리</h2><button role="tab">강의 목록</button><a href="/crm/admin">관리자</a>'}))
+          return page
+        }
+        return context
+      }
+      return browser
+    }}
+  const sessions={run:work=>work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,assert:async()=>{},save:async()=>{saves++}})}
+  try{
+    const access=provider.browserAccessProvider(env,api,{chromium:ownedChromium,sessions})
+    assert.deepEqual(await access.refreshSession(),{refreshed:true})
+    assert.equal(saves,1)
+    const child=server.process()
+    assert.ok(child.exitCode!==null||child.signalCode!==null,'the owned browser process must exit before returning')
+  }finally{if(server)await server.kill()}
+})
+
 test('academy health ignores deleted courses and empty catalogs, is read-only and rejects missing admin identity',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:20000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')

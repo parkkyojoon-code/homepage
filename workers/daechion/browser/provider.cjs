@@ -246,29 +246,118 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
 
-function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
+function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,operationTimeoutMs=300000,cleanupTimeoutMs=5000}={}) {
   if(env.DAECHION_CONTENT_BROWSER_ENABLED!=='true'||env.DAECHION_CONTENT_BROWSER_VERIFIED!=='true')throw Error('CONTENT_BROWSER_DISABLED')
-  let state=storageState(env.DAECHION_BROWSER_STORAGE_STATE),memoryBusy=false
-  const launchBrowser=launch??(options=>require('playwright').chromium.launch(options))
-  if(!launch)require.resolve('playwright')
-  async function execute(input,lease,refreshOnly=false){
-    let browser,context,abort
-    let stage='API_PREFLIGHT'
-    const report=value=>{stage=value;onStage(value)}
+  if(!Number.isSafeInteger(operationTimeoutMs)||operationTimeoutMs<20||operationTimeoutMs>300000||
+    !Number.isSafeInteger(cleanupTimeoutMs)||cleanupTimeoutMs<2||cleanupTimeoutMs>=operationTimeoutMs)throw Error('CONTENT_BROWSER_CONFIGURATION_REQUIRED')
+  let state=storageState(env.DAECHION_BROWSER_STORAGE_STATE),memoryBusy=false,quarantined=false
+  // BrowserServer exposes public close/kill/process APIs. A connected Browser
+  // alone cannot force-terminate its owned Chromium process after a stuck close.
+  const browserType=launch?undefined:(chromium??require('playwright').chromium)
+  const pendingForever=()=>new Promise(()=>{})
+  const outcome=promise=>Promise.resolve(promise).then(()=>true,()=>false)
+  async function until(promise,milliseconds){
+    let timer
+    try{return await Promise.race([promise,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),Math.max(0,milliseconds))})])}
+    finally{clearTimeout(timer)}
+  }
+  function guardedPage(page,scope){
+    const wrappers=new WeakMap(),originals=new WeakMap()
+    const wrap=value=>{
+      if(Array.isArray(value))return value.map(wrap)
+      if(!value||typeof value!=='object'||typeof value.getByRole!=='function')return value
+      if(wrappers.has(value))return wrappers.get(value)
+      const wrapped=new Proxy(value,{get(target,key){
+        const member=Reflect.get(target,key)
+        if(typeof member!=='function')return member
+        return (...args)=>{
+          scope.check()
+          const result=Reflect.apply(member,target,args.map(arg=>originals.get(arg)??arg))
+          return result&&typeof result.then==='function'?scope.step(()=>result).then(wrap):wrap(result)
+        }
+      }})
+      wrappers.set(value,wrapped);originals.set(wrapped,value)
+      return wrapped
+    }
+    return wrap(page)
+  }
+  function operation(){
+    let stopped=false,stopWork,rejectCaller,terminationPending=false,stage='API_PREFLIGHT'
+    const deadline=Date.now()+operationTimeoutMs,listeners=new Set()
+    const error=()=>Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage,...(quarantined?{browserTerminationUnconfirmed:true}:{})})
+    const interrupted=new Promise((_,reject)=>{stopWork=reject})
+    // Cancellation can precede the first awaited step, or occur during cleanup.
+    interrupted.catch(()=>{})
+    const callerFailure=new Promise((_,reject)=>{rejectCaller=reject})
+    const stop=()=>{if(!stopped){stopped=true;stopWork(error());for(const listener of listeners)listener()}}
+    const check=()=>{if(stopped)throw error()}
+    const workTimer=setTimeout(stop,operationTimeoutMs-cleanupTimeoutMs)
+    const lifetimeTimer=setTimeout(()=>{if(terminationPending)quarantined=true;stop();rejectCaller(error())},operationTimeoutMs)
+    return {deadline,error,stop,check,callerFailure,
+      report(value){check();stage=value;onStage(value)},
+      onStop(listener){listeners.add(listener);if(stopped)listener();return ()=>listeners.delete(listener)},
+      async step(action){check();return Promise.race([Promise.resolve().then(()=>{check();return action()}).then(value=>{check();return value}),interrupted])},
+      resourcesStarted(){terminationPending=true},resourcesStopped(){terminationPending=false},
+      unsafe(){quarantined=true;rejectCaller(error())},
+      clear(){clearTimeout(workTimer);clearTimeout(lifetimeTimer)},
+    }
+  }
+  async function execute(input,lease,scope,refreshOnly=false){
+    let browser,server,context,finished=false,closeBrowser,closeServer,killServer
+    const report=scope.report
+    const step=scope.step
+    const requestClose=()=>{
+      if(browser&&!closeBrowser)closeBrowser=outcome(Promise.resolve().then(()=>browser.close()))
+      if(server&&!closeServer)closeServer=outcome(Promise.resolve().then(()=>server.close()))
+    }
+    const requestKill=()=>killServer??(killServer=outcome(Promise.resolve().then(()=>server.kill())))
+    const acceptServer=value=>{server=value;scope.resourcesStarted();if(finished){requestClose();void requestKill()}return value}
+    const acceptBrowser=value=>{browser=value;scope.resourcesStarted();if(finished)requestClose();return value}
+    const abort=()=>{
+      scope.stop()
+      // A disconnected DB has already lost its advisory lock. Stop the owned
+      // browser immediately rather than spending the grace interval unlocked.
+      if(server)void requestKill()
+    }
+    // Install before lease checks, launch and newContext: DB loss must interrupt
+    // any pending step, including a promise which never resolves.
+    lease.signal.addEventListener('abort',abort,{once:true})
+    const removeStop=scope.onStop(requestClose)
+    if(lease.signal.aborted)scope.stop()
+    async function cleanup(){
+      finished=true
+      requestClose()
+      const remaining=()=>Math.max(0,scope.deadline-Date.now()-1)
+      const grace=Math.min(Math.floor(cleanupTimeoutMs/2),remaining())
+      const closed=()=>server?(killServer?Promise.race([closeServer,killServer]):closeServer):(browser?closeBrowser:Promise.resolve(true))
+      if(await until(closed(),grace))return true
+      // Only kill the BrowserServer created by this operation. Never discover
+      // or kill a shared browser, PID from configuration, or unrelated process.
+      if(!server)return false
+      const killed=requestKill()
+      if(await until(killed,Math.min(Math.floor(cleanupTimeoutMs/4),remaining())))return true
+      try{
+        const child=server.process()
+        if(child.exitCode!==null||child.signalCode!==null)return true
+        const exited=new Promise(resolve=>child.once('exit',()=>resolve(true)))
+        child.kill('SIGKILL')
+        return await until(Promise.race([killed,exited]),remaining())
+      }catch{return false}
+    }
     try {
-      await lease.assert()
+      await step(()=>lease.assert())
       report('API_PREFLIGHT')
       if(!refreshOnly&&(!Number.isSafeInteger(input.lectureId)||input.lectureId<=0))fail()
       if(!refreshOnly&&(!uniqueIds(input.weeklyLectureIds)||!Number.isSafeInteger(input.studentId)||input.studentId<=0||
         !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()||typeof input.beforeWrite!=='function'))fail()
-      if(String((await api.me()).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
+      if(String((await step(()=>api.me())).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
       if(!refreshOnly){
-        const student=await api.student(input.studentId)
+        const student=await step(()=>api.student(input.studentId))
         if(student.id!==input.studentId||phone(student.studentPhoneNumber)!==input.studentPhone||student.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim())fail()
       }
       let lecture
       if(!refreshOnly){
-        const matches=(await api.lectures()).filter(item=>item.id===input.lectureId)
+        const matches=(await step(()=>api.lectures())).filter(item=>item.id===input.lectureId)
         if(matches.length!==1)fail()
         lecture=matches[0]
         const names=lecture.weeklyLectures.map(week=>week.name.replace(/\s+/g,' ').trim())
@@ -279,72 +368,96 @@ function browserAccessProvider(env,api,{launch,onStage=()=>{},sessions}={}) {
         }else if(!sameIds(lecture.weeklyLectures.map(week=>week.id),input.weeklyLectureIds)||new Set(names).size!==names.length)fail()
       }
       report('BROWSER_LAUNCH')
-      browser=await launchBrowser({headless:true})
+      const launchOptions={headless:true,timeout:Math.max(1,scope.deadline-Date.now()-cleanupTimeoutMs)}
+      if(launch)await step(()=>Promise.resolve(launch(launchOptions)).then(acceptBrowser))
+      else{
+        await step(()=>Promise.resolve(browserType.launchServer(launchOptions)).then(acceptServer))
+        await step(()=>Promise.resolve(browserType.connect(server.wsEndpoint(),{timeout:launchOptions.timeout})).then(acceptBrowser))
+      }
       report('BROWSER_CONTEXT')
       let initialState=lease.state
       if(refreshOnly&&input.exerciseExpiredAccess){
         if(env.DAECHION_CONTENT_TEST_ONLY!=='true'||env.DAECHION_CONTENT_TEST_LECTURE_ID!==String(input.lectureId))fail()
         initialState=require('./token-state.cjs').expiredAccessCopy(initialState)
       }
-      context=await browser.newContext({storageState:storageState(initialState),acceptDownloads:false})
-      abort=()=>{void browser.close().catch(()=>{})}
-      lease.signal.addEventListener('abort',abort,{once:true})
-      if(lease.signal.aborted)fail()
+      context=await step(()=>Promise.resolve(browser.newContext({storageState:storageState(initialState),acceptDownloads:false})).then(value=>{
+        // A late context must never continue into routing/page creation. Closing
+        // it also covers synthetic or disconnected browser implementations.
+        if(finished)void outcome(Promise.resolve().then(()=>value.close()))
+        return value
+      }))
       context.setDefaultTimeout(10000)
       // Do not record traces, screenshots, requests, cookies or student lists.
-      await context.route('**/*',route=>{
+      await step(()=>context.route('**/*',route=>{
         const request=route.request(),url=new URL(request.url())
         return url.protocol==='https:'&&[ORIGIN,'https://api.daechion.com'].includes(url.origin)&&request.method()!=='DELETE'?route.continue():route.abort()
-      })
-      const page=await context.newPage()
-      const authenticated=async()=>{await lease.assert();await lease.save(JSON.stringify(await context.storageState()))}
+      }))
+      const page=guardedPage(await step(()=>context.newPage()),scope)
+      const authenticated=async()=>{
+        await step(()=>lease.assert())
+        const saved=await step(()=>context.storageState())
+        await step(()=>lease.save(JSON.stringify(saved)))
+      }
       if(refreshOnly){
         report('SESSION_REFRESH')
         // Authentication is academy-wide. Deleted courses, empty catalogs and
         // roster changes must never make a valid administrator session fail.
         const target=`${ORIGIN}/crm/lectures`
-        await page.goto(target)
-        await page.getByRole('heading',{name:'강의 관리',exact:true}).waitFor({state:'visible'})
-        await page.getByRole('tab',{name:'강의 목록',exact:true}).waitFor({state:'visible'})
+        await step(()=>page.goto(target))
+        await step(()=>page.getByRole('heading',{name:'강의 관리',exact:true}).waitFor({state:'visible'}))
+        await step(()=>page.getByRole('tab',{name:'강의 목록',exact:true}).waitFor({state:'visible'}))
         const admin=page.getByRole('link',{name:'관리자',exact:true})
-        await admin.waitFor({state:'visible'})
-        if(await admin.getAttribute('href')!=='/crm/admin')fail()
+        await step(()=>admin.waitFor({state:'visible'}))
+        if(await step(()=>admin.getAttribute('href'))!=='/crm/admin')fail()
         if(page.url()!==target)fail()
         if(input.exerciseExpiredAccess){
-          const expiry=require('./token-state.cjs').accessExpiry(JSON.stringify(await context.storageState()))
+          const expiry=require('./token-state.cjs').accessExpiry(JSON.stringify(await step(()=>context.storageState())))
           if(!expiry||expiry<=Date.now()/1000+30)fail()
         }
         await authenticated()
         return {refreshed:true,...(input.exerciseExpiredAccess?{expiredAccessExercised:true}:{})}
       }
-      // Closing the browser on the deadline also stops an in-flight UI action;
-      // a DB lease alone must never race a still-running browser.
       const guardedInput={...input,beforeWrite:async()=>{
-        const current=await api.student(input.studentId),matches=await api.students(input.studentPhone,'')
+        const current=await step(()=>api.student(input.studentId)),matches=await step(()=>api.students(input.studentPhone,''))
         if(current.id!==input.studentId||phone(current.studentPhoneNumber)!==input.studentPhone||current.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim()||
           matches.length!==1||matches[0].id!==input.studentId)fail()
-        await lease.assert()
-        await input.beforeWrite()
-      }}
-      let timer
-      try{
-        const result=await Promise.race([applyAndVerify(page,guardedInput,lecture,report,authenticated),new Promise((_,reject)=>{timer=setTimeout(()=>{void browser.close().catch(()=>{});reject(Error('CONTENT_ACCESS_UNCONFIRMED'))},300000)})])
-        await authenticated()
-        return result
+        await step(()=>lease.assert())
+        await step(()=>input.beforeWrite())
+      },recordEnrollment:()=>step(()=>input.recordEnrollment())}
+      const result=await step(()=>applyAndVerify(page,guardedInput,lecture,report,authenticated))
+      await authenticated()
+      return result
+    } catch {throw scope.error()}
+    finally{
+      scope.stop()
+      if(!await cleanup()){
+        // Return a bounded failure to the caller, but keep sessions.run pending
+        // and its advisory lock held while a browser may still perform writes.
+        // Recovery requires terminating/replacing this worker process.
+        scope.unsafe()
+        await pendingForever()
       }
-      finally{clearTimeout(timer)}
-    } catch {throw Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage})}
-    finally{if(abort)lease.signal.removeEventListener('abort',abort);if(browser)await browser.close().catch(()=>{})}
+      scope.resourcesStopped()
+      removeStop()
+      lease.signal.removeEventListener('abort',abort)
+    }
   }
   async function run(input,refreshOnly=false){
-    if(sessions)return sessions.run(lease=>execute(input,lease,refreshOnly))
+    if(quarantined)throw Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage:'BROWSER_CONTEXT',browserTerminationUnconfirmed:true})
+    const scope=operation()
+    if(sessions){
+      try{return await Promise.race([Promise.resolve().then(()=>sessions.run(lease=>execute(input,lease,scope,refreshOnly))),scope.callerFailure])}
+      finally{scope.clear()}
+    }
     // Isolated tests/local tooling only. Production injects durable sessions.
-    if(memoryBusy)throw Error('CONTENT_SESSION_BUSY')
+    if(memoryBusy){scope.clear();throw Error('CONTENT_SESSION_BUSY')}
     memoryBusy=true
-    try{return await execute(input,{state:JSON.stringify(state),signal:new AbortController().signal,assert:async()=>{},save:async value=>{state=storageState(value)}},refreshOnly)}
-    finally{memoryBusy=false}
+    const work=execute(input,{state:JSON.stringify(state),signal:new AbortController().signal,assert:async()=>{},save:async value=>{state=storageState(value)}},scope,refreshOnly)
+      .finally(()=>{memoryBusy=false})
+    try{return await Promise.race([work,scope.callerFailure])}
+    finally{scope.clear()}
   }
-  return {ensureContentAccess:input=>run(input),
+  return {isAvailable:()=>!quarantined,ensureContentAccess:input=>run(input),
     ensureFirstLessonAccess:input=>run({...input,firstOnly:true,weeklyLectureIds:[input.weeklyLectureId]}),
     refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }

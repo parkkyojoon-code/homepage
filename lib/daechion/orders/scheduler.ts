@@ -54,9 +54,9 @@ export async function finishScheduledOrder(c:LedgerClient,id:string,failed:boole
       OR EXISTS(SELECT 1 FROM daechion_orders.jobs WHERE order_id=o.id AND state='PENDING' AND (kind='SHEETS' AND $4::boolean OR kind='READY_MESSAGE' AND $5::boolean)) THEN interval '30 seconds' ELSE interval '5 minutes' END
     FROM daechion_orders.orders o WHERE s.order_id=$1 AND o.id=s.order_id`,[id,failed?'FAILED':'OK',failed,f.sheets,f.message,f.read,f.enroll,f.send])
 }
-export async function sessionReady(ports:OrderConnection,tenantId:string,refresh:()=>Promise<{refreshed?:boolean}>){
+export async function sessionReady(ports:OrderConnection,tenantId:string,refresh:()=>Promise<{refreshed?:boolean}>,forceRefresh=false){
   const row=await ports.withClient(async c=>(await c.query('SELECT state,next_check_at>now() AS fresh FROM daechion_orders.scheduler_sessions WHERE tenant_id=$1',[tenantId])).rows[0])
-  if(row?.fresh)return row.state==='READY'
+  if(row?.fresh&&!forceRefresh)return row.state==='READY'
   // Record uncertainty before launching the browser; a crash never reports READY.
   await ports.withClient(c=>c.query(`INSERT INTO daechion_orders.scheduler_sessions(tenant_id,state,checked_at,next_check_at) VALUES($1,'UNKNOWN',now(),now()+interval '60 seconds')
     ON CONFLICT(tenant_id) DO UPDATE SET state='UNKNOWN',checked_at=now(),next_check_at=now()+interval '60 seconds'`,[tenantId]))

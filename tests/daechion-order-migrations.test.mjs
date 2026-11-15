@@ -49,7 +49,7 @@ test('isolated order migration operations fail closed and preserve the existing 
       await assert.rejects(migrations.status(db),/ORDER_MIGRATION_HISTORY_MISMATCH/)
       await db.query('INSERT INTO daechion_orders.schema_migrations(name,checksum) VALUES($1,$2)',[first.name,first.checksum])
       await assert.rejects(migrations.checkReady(db),/ORDER_SCHEMA_NOT_READY/)
-      assert.deepEqual(await migrations.migrate(db),['002_workers.sql','003_delivery.sql','004_admin.sql','005_manual_review.sql','006_recovery.sql','007_manual_access.sql','008_identity_recovery.sql','009_intake_review.sql','010_scheduler.sql'])
+      assert.deepEqual(await migrations.migrate(db),['002_workers.sql','003_delivery.sql','004_admin.sql','005_manual_review.sql','006_recovery.sql','007_manual_access.sql','008_identity_recovery.sql','009_intake_review.sql','010_scheduler.sql','011_identity_read_recovery.sql','012_sheet_read_recovery.sql'])
       await migrations.checkReady(db)
       await db.query('DELETE FROM daechion_orders.schema_migrations WHERE name=$1',[first.name])
       await assert.rejects(migrations.status(db),/ORDER_MIGRATION_HISTORY_MISMATCH/)
@@ -82,6 +82,11 @@ test('isolated order migration operations fail closed and preserve the existing 
       await assert.rejects(command.run(db,['check']),/ORDER_SCHEMA_GUARDS_NOT_READY/)
       await db.exec('ALTER TABLE daechion_orders.grants ENABLE TRIGGER guard_worker_grant')
       await migrations.checkReady(db)
+      for(const [table,guard] of [['orders','guard_paid_new_identity'],['admin_actions','guard_paid_new_identity_commit'],['jobs','guard_sheet_write_evidence']]){
+        await db.exec(`ALTER TABLE daechion_orders.${table} DISABLE TRIGGER ${guard}`)
+        await assert.rejects(command.run(db,['check']),/ORDER_SCHEMA_GUARDS_NOT_READY/)
+        await db.exec(`ALTER TABLE daechion_orders.${table} ENABLE TRIGGER ${guard}`)
+      }
       await db.exec('ALTER TABLE daechion_orders.jobs DROP COLUMN last_error')
       await assert.rejects(command.run(db,['check']),/last_error/)
     })

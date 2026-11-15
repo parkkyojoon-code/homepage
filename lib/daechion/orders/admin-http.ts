@@ -11,7 +11,7 @@ export interface OrderAdminPorts {
   withClient<T>(run:(c:LedgerClient)=>Promise<T>):Promise<T>
   ready(c:LedgerClient):Promise<void>
   inspectNewIntake?(context:BillingContext):Promise<IntakeEvidence|null>
-  inspectExisting?(context:BillingContext,studentId:number):Promise<ReviewEvidence>
+  inspectExisting?(context:BillingContext,studentId:number,unambiguous?:boolean):Promise<ReviewEvidence>
   inspectPaid?(context:PaidContext):Promise<PaidEvidence|null>
   inspectAccess?(context:BillingContext,studentId:number,lectureId:number,revoke:boolean):Promise<AccessEvidence>
 }
@@ -68,9 +68,21 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
         if(!ports.inspectExisting)throw new OrderAdminError('STATE')
         const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
         if(!context)throw new OrderAdminError('STALE')
-        evidence=await ports.inspectExisting(context,input.studentId)
+        evidence=await ports.inspectExisting(context,input.studentId,input.action==='RECONCILE_IDENTITY')
+        if(input.action==='RECONCILE_IDENTITY'&&input.billId){
+          if(!ports.inspectPaid)throw new OrderAdminError('STATE')
+          const paid=await readOnly(ports,c=>paidContext(c,ports.tenantId,input.orderId,input.expectedVersion,input.billId!))
+          if(!paid)throw new OrderAdminError('STALE')
+          const checked=await ports.inspectPaid(paid);if(!checked)throw new OrderAdminError('PAYMENT');payment=checked
+        }
       }else if(input.action==='RESUME_PAID'){
         if(!ports.inspectPaid)throw new OrderAdminError('STATE')
+        if(input.confirmNewStudent){
+          if(!ports.inspectNewIntake)throw new OrderAdminError('STATE')
+          const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
+          if(!context)throw new OrderAdminError('STALE')
+          const checked=await ports.inspectNewIntake(context);if(!checked)throw new OrderAdminError('STATE');intake=checked
+        }
         const context=await readOnly(ports,c=>paidContext(c,ports.tenantId,input.orderId,input.expectedVersion,input.billId))
         if(!context)throw new OrderAdminError('STALE')
         const checked=await ports.inspectPaid(context)

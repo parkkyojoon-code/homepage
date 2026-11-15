@@ -90,13 +90,112 @@ test('phase prerequisites reject competing writers and incomplete enrollment set
     {DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_ORDER_READY_MESSAGE_ENABLED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true',DAECHION_READY_MESSAGE_ENABLED:'true'}])
     assert.throws(()=>worker.runtime({...base,...changed}))
 })
-test('an unsafe Sheet destination stops before processing or constructing a Google provider',async()=>{
+test('an unsafe Sheet destination disables only sheet delivery without constructing a Google provider',async()=>{
   let processed=false
   const runtime=worker.runtime({...base,DAECHION_ORDER_SHEETS_ENABLED:'true',
     DAECHION_ORDER_SHEETS_SPREADSHEET_ID:'1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g',DAECHION_ORDER_SHEETS_SHEET_ID:'0',
     GOOGLE_SHEET_ID:'1jzwafX-L-QatwQUxlv5VnLqYZIZB3GQjRKmTEUp2L3g',DAECHION_SHEETS_SPREADSHEET_ID:'fixture_new_workflow_sheet_id',DAECHION_SHEETS_SHEET_ID:'0'},
-    {withClient:fakeDatabase([]),providers:new Proxy({},{get(){assert.fail('Unsafe target must be rejected first')}}),processOrder:async()=>{processed=true}})
-  await assert.rejects(runtime.once(id));assert.equal(processed,false)
+    {withClient:fakeDatabase([]),providers:new Proxy({},{get(){assert.fail('Unsafe target must be rejected first')}}),processOrder:async()=>{processed=true},
+      deliverOrder:async(_id,flags)=>{assert.deepEqual(flags,{message:false,sheets:false})}})
+  const result=await runtime.once(id);assert.equal(processed,true);assert.deepEqual(result.deferredPhases,['sheets'])
+})
+
+const loopEnv={DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_LOOP_ENABLED:'true',DAECHION_TENANT_ID:'fixture',
+  DAECHION_API_KEY:'x'.repeat(48),DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_ORDER_ENROLLMENT_ENABLED:'true',
+  DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true',DAECHION_ORDER_SESSION_MAINTENANCE_ENABLED:'true'}
+function loopDatabase(selected=[{id,request_fingerprint:fingerprint,needs_enrollment:true}]){
+  const calls=[]
+  const c=new EventEmitter()
+  c.query=async(sql,args)=>{
+    calls.push({sql,args})
+    if(sql.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]}
+    if(sql.includes('pg_advisory_unlock'))return {rows:[{unlocked:true}]}
+    if(sql.startsWith('SELECT state,next_check_at'))return {rows:[{state:'READY',fresh:true}]}
+    if(sql.startsWith('SELECT o.id,o.request_fingerprint'))return {rows:selected}
+    if(sql.startsWith('SELECT request_fingerprint'))return {rows:[{request_fingerprint:fingerprint,tenant_id:'fixture'}]}
+    if(sql.startsWith('SELECT *,now()'))return {rows:[{id,checkout_state:'READY',payment_state:'PAID'}]}
+    if(sql.startsWith('SELECT 1 FROM daechion_orders.grants'))return {rows:[{ok:1}]}
+    return {rows:[]}
+  }
+  return {calls,withClient:async run=>run(c)}
+}
+test('broken message and sheet setup do not block healthy payment and enrollment phases, and readiness reports them',async()=>{
+  for(const optional of ['message','sheets']){
+    const db=loopDatabase(),runs=[],deliveries=[];let refreshed=0
+    const settings={...loopEnv,
+      ...(optional==='message'?{DAECHION_ORDER_READY_MESSAGE_ENABLED:'true',SOLAPI_SENDER:'bad'}:
+        {DAECHION_ORDER_SHEETS_ENABLED:'true',DAECHION_ORDER_SHEETS_SPREADSHEET_ID:'fixture_order_sheet_123456789',DAECHION_ORDER_SHEETS_SHEET_ID:'2',
+          DAECHION_SHEETS_SPREADSHEET_ID:'fixture_single_sheet_123456789',DAECHION_SHEETS_SHEET_ID:'0',GOOGLE_SHEET_ID:'fixture_legacy_sheet_123456789',GOOGLE_SERVICE_ACCOUNT_JSON:'private-invalid-json'})}
+    const service=worker.runtime(settings,{withClient:db.withClient,checkSchemas:async()=>{},
+      providers:{payment:{accountId:'fixture'},daechion:{refreshSession:async()=>{refreshed++;return {refreshed:true}}}},
+      processOrder:async(_id,flags)=>runs.push(flags),deliverOrder:async(_id,flags)=>deliveries.push(flags)})
+    const checked=await service.check();assert.equal(checked.providersReady[optional],false)
+    const result=await service.cycle()
+    assert.equal(result.processed,1);assert.equal(result.failed,1);assert.equal(result.sessionReady,true)
+    assert.deepEqual(runs,[{send:false,read:true,enroll:true}]);assert.deepEqual(deliveries,[{message:false,sheets:false}]);assert.equal(refreshed,1)
+    assert.equal(JSON.stringify(db.calls).includes('private-invalid-json'),false)
+  }
+})
+test('enrollment quarantine invalidates cached READY before the next order and preserves payment reads and Sheets',async()=>{
+  const second=id.replace(/1$/,'2'),selected=[id,second].map(id=>({id,request_fingerprint:fingerprint,needs_enrollment:true}))
+  const db=loopDatabase(selected),runs=[],deliveries=[];let available=true,refreshed=0
+  const service=worker.runtime({...loopEnv,DAECHION_ORDER_SEND_ENABLED:'true',DAECHION_ORDERS_SUBJECT_SECRET:'s'.repeat(32),
+    DAECHION_ORDER_SHEETS_ENABLED:'true',DAECHION_ORDER_SHEETS_SPREADSHEET_ID:'fixture_order_sheet_123456789',DAECHION_ORDER_SHEETS_SHEET_ID:'2',
+    DAECHION_SHEETS_SPREADSHEET_ID:'fixture_single_sheet_123456789',DAECHION_SHEETS_SHEET_ID:'0',GOOGLE_SHEET_ID:'fixture_legacy_sheet_123456789'},
+    {withClient:db.withClient,checkSchemas:async()=>{},
+      providers:{payment:{accountId:'fixture'},api:{},sheets:{},daechion:{isAvailable:()=>available,refreshSession:async()=>{refreshed++;return {refreshed:true}}}},
+      processOrder:async(orderId,flags)=>{
+        runs.push({id:orderId,...flags})
+        if(flags.enroll)available=false
+        else assert.ok(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_sessions')&&row.args[1]==='FAILED'))
+      },deliverOrder:async(orderId,flags)=>{deliveries.push({id:orderId,...flags})}})
+  const first=await service.cycle()
+  assert.equal(first.processed,2);assert.equal(first.sessionReady,false);assert.equal(first.browserRestartRequired,true)
+  assert.deepEqual(runs,[{id,send:true,read:true,enroll:true},{id:second,send:false,read:true,enroll:false}])
+  assert.deepEqual(deliveries,[{id,sheets:true,message:false},{id:second,sheets:true,message:false}])
+  assert.ok(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_orders SET session_issue')&&row.args[0]===second&&row.args[1]===true))
+  assert.equal((await service.check()).providersReady.browser,false)
+  const next=await service.cycle()
+  assert.equal(next.sessionReady,false);assert.equal(next.browserRestartRequired,true);assert.equal(refreshed,1)
+  assert.ok(runs.slice(2).every(row=>row.read&&!row.send&&!row.enroll),'quarantine must not be reset or trusted from cached READY')
+})
+
+test('a new process rechecks cached READY and isolates unavailable browser credentials from payment reads',async()=>{
+  const db=loopDatabase(),runs=[],deliveries=[]
+  const service=worker.runtime({...loopEnv,DAECHION_CONTENT_BROWSER_ENABLED:'false',DAECHION_BROWSER_STORAGE_STATE:'private-invalid-auth'},
+    {withClient:db.withClient,providers:{payment:{accountId:'fixture'}},
+      processOrder:async(_id,flags)=>runs.push(flags),deliverOrder:async(_id,flags)=>deliveries.push(flags)})
+  const result=await service.cycle()
+  assert.equal(result.sessionReady,false);assert.equal(result.processed,1)
+  assert.deepEqual(runs,[{send:false,read:true,enroll:false}]);assert.equal(deliveries.length,1)
+  assert.ok(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_sessions')&&row.args[1]==='FAILED'))
+  assert.equal(JSON.stringify(db.calls).includes('private-invalid-auth'),false)
+})
+test('missing new-checkout secret defers only billing while existing payment and enrollment work continues',async()=>{
+  const db=loopDatabase(),runs=[]
+  const service=worker.runtime({...loopEnv,DAECHION_ORDER_SEND_ENABLED:'true'},
+    {withClient:db.withClient,providers:{payment:{accountId:'fixture'},api:{},daechion:{refreshSession:async()=>({refreshed:true})}},
+      processOrder:async(_id,flags)=>runs.push(flags),deliverOrder:async()=>{}})
+  const result=await service.cycle()
+  assert.equal(result.processed,1);assert.deepEqual(runs,[{send:false,read:true,enroll:true}])
+  const once=worker.runtime({...base,...loopEnv,DAECHION_ORDER_LOOP_ENABLED:'false',DAECHION_ORDER_SEND_ENABLED:'true'},
+    {withClient:db.withClient,providers:{payment:{accountId:'fixture'},api:{},daechion:{}},processOrder:async()=>{},deliverOrder:async()=>{}})
+  assert.deepEqual((await once.once(id)).deferredPhases,['billing'])
+})
+test('a cycle error drains its boundary and retries on the next interval without exposing upstream details',async()=>{
+  const controller=new AbortController(),writes=[];let cycles=0,waits=0
+  await worker.main({argv:['--loop'],env:loopEnv,signal:controller.signal,write:value=>writes.push(value),
+    makeRuntime:()=>({check:async()=>{},cycle:async()=>{if(++cycles===1)throw Error('private-database-error');return {processed:1}}}),
+    wait:async()=>{if(++waits===2)controller.abort()}})
+  assert.equal(cycles,2);assert.deepEqual(writes,[{cycleFailed:true,code:'ORDER_CYCLE_UNAVAILABLE'},{processed:1}])
+  assert.equal(JSON.stringify(writes).includes('private-database-error'),false)
+})
+test('explicit checks expose incomplete provider readiness without starting a business cycle',async()=>{
+  const writes=[]
+  await assert.rejects(worker.main({argv:['--check'],env:{},write:value=>writes.push(value),
+    makeRuntime:()=>({check:async()=>({schemaChecked:true,active:true,providersReady:{payment:true,message:false}}),
+      cycle:async()=>assert.fail('A check must never run a cycle')})}),/ORDER_PROVIDER_CONFIGURATION_REQUIRED/)
+  assert.deepEqual(writes,[{schemaChecked:true,active:true,providersReady:{payment:true,message:false}}])
 })
 test('one selected order flows through processing then delivery; a processing exception is held and never sends a ready message',async()=>{
   const env={...base,DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_ORDER_READY_MESSAGE_ENABLED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true'}
