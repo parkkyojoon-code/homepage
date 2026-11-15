@@ -7,6 +7,8 @@ import {contactSchema,type OrderContact} from './checkout'
 import {orderTransaction,lockOrder,orderChanged,holdOrder,eligible,type OrderConnection} from './worker-store'
 import {latestReview,contextFromOrder,reviewContext,studentProfileFingerprint} from './manual-review'
 import {firstLessonTarget} from '../first-lesson'
+import type {PaymentProvider} from '../payssam'
+import {checkOrderPayment} from './billing'
 
 const ids=z.array(z.number().int().positive().safe()).min(1).max(1000).refine(v=>new Set(v).size===v.length)
 const sorted=(v:number[])=>[...v].sort((a,b)=>a-b)
@@ -14,11 +16,21 @@ const same=(a:number[],b:number[])=>JSON.stringify(sorted(a))===JSON.stringify(s
 function contactOf(o:Record<string,unknown>){const {noticeVersion:_notice,...raw}=o.contact_snapshot as Record<string,unknown>;return contactSchema.parse(raw)}
 export interface OrderEnrollmentPorts extends OrderConnection {
   tenantId:string
+  provider?:PaymentProvider
   daechion:EnrollmentPort&{
     me():Promise<{tenantId:string|number}>
     lectures():Promise<{id:number;opened:boolean;weeklyLectures:{id:number}[]}[]>
     isAvailable?():boolean
   }
+}
+class PaymentBoundaryError extends Error {}
+// Production's runner supplies the provider. Older internal adapters still
+// fail closed at the unchanged three-minute DB fence when no provider exists.
+async function refreshPayment(id:string,ports:OrderEnrollmentPorts){
+  if(!ports.provider)return
+  try{
+    if(await checkOrderPayment(id,true,{withClient:ports.withClient,provider:ports.provider})!=='PAID')throw new PaymentBoundaryError()
+  }catch{throw new PaymentBoundaryError()}
 }
 async function identityFence(c:Parameters<typeof lockOrder>[0],id:string,token:string){
   return (await c.query(`SELECT id FROM daechion_orders.orders WHERE id=$1 AND identity_token=$2 AND identity_until>now()
@@ -83,6 +95,7 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       return candidates
     },student:value=>read(()=>ports.daechion.student(value)),createStudent:async input=>{
       if(!claim.token)throw new DaechionError('identity_changed')
+      await refreshPayment(id,ports)
       await ports.withClient(c=>orderTransaction(c,async()=>{
         await lockOrder(c,id)
         if(!await identityFence(c,id,claim.token!))throw new DaechionError('identity_fence_changed')
@@ -94,6 +107,7 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       {history:claim.contact.studentHistory,...(claim.review?{manualApprovedId:claim.review.studentId}:claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
     if(claim.review&&(studentProfileFingerprint(resolved)!==claim.review.profileFingerprint||claim.studentId&&resolved.id!==claim.studentId))throw new DaechionError('identity_changed')
     if(claim.token){
+      await refreshPayment(id,ports)
       await ports.withClient(c=>orderTransaction(c,async()=>{
         await lockOrder(c,id)
         if(!await identityFence(c,id,claim.token!))throw new DaechionError('identity_fence_changed')
@@ -104,10 +118,15 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       await ports.withClient(c=>c.query("UPDATE daechion_orders.orders SET identity_read_attempts=0,identity_retry_at=NULL WHERE id=$1 AND identity_state='PASSED' AND student_id=$2",[id,resolved!.id]))
     }
     return {student:resolved,contact:claim.contact}
-  }catch{
+  }catch(error){
     await ports.withClient(c=>orderTransaction(c,async()=>{
       const o=await lockOrder(c,id);if(!o)return
       if(claim.token&&o.identity_token!==claim.token)return
+      if(error instanceof PaymentBoundaryError&&!createStarted&&!o.identity_write_started){
+        await c.query('UPDATE daechion_orders.orders SET identity_token=NULL,identity_until=NULL WHERE id=$1',[id])
+        await c.query('DELETE FROM daechion_orders.phone_claims WHERE order_id=$1',[id])
+        await orderChanged(c,id,'identity_payment_wait');return
+      }
       const readOnly=claim.token?!o.identity_write_started:o.identity_state==='PASSED'&&Number(o.student_id)===claim.studentId&&!o.identity_token
       if(readRetryable&&!createStarted&&readOnly){
         // No create was attempted. Keep a paid order eligible for the next
@@ -124,16 +143,19 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
   }
 }
 interface GrantJob {orderId:string;lectureId:number;studentId:number;token:string;weeklyIds:number[];enrollmentRecorded:boolean;contact:OrderContact}
-export async function grantFence(c:Parameters<typeof lockOrder>[0],job:GrantJob){
+async function grantOwnership(c:Parameters<typeof lockOrder>[0],job:GrantJob,requirePayment=true){
   return (await c.query(`SELECT g.order_id FROM daechion_orders.grants g JOIN daechion_orders.orders o ON o.id=g.order_id
     WHERE g.order_id=$1 AND g.lecture_id=$2 AND g.state='RUNNING' AND g.lease_token=$3 AND g.lease_until>now()
-    AND o.identity_state='PASSED' AND o.student_id=$4 AND daechion_orders.paid_eligible(o.id)`,[job.orderId,job.lectureId,job.token,job.studentId])).rows.length>0
+    AND o.identity_state='PASSED' AND o.student_id=$4 AND (NOT $5::boolean OR daechion_orders.paid_eligible(o.id)) AND g.weekly_ids=$6::jsonb`,[job.orderId,job.lectureId,job.token,job.studentId,requirePayment,JSON.stringify(job.weeklyIds)])).rows.length>0
 }
+export const grantFence=(c:Parameters<typeof lockOrder>[0],job:GrantJob)=>grantOwnership(c,job)
 export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollmentPorts){
   if(!enabled)return 'DISABLED'
   z.string().uuid().parse(id)
   if(ports.daechion.isAvailable?.()===false)return 'SKIPPED'
+  try{await refreshPayment(id,ports)}catch{return 'SKIPPED'}
   const identity=await prepareIdentity(id,ports);if(!identity)return 'SKIPPED'
+  try{await refreshPayment(id,ports)}catch{return 'SKIPPED'}
   const job=await ports.withClient(c=>orderTransaction(c,async()=>{
     const o=await lockOrder(c,id)
     if(!o||o.student_id==null||Number(o.student_id)!==identity.student.id||!await eligible(c,id))return null
@@ -148,11 +170,15 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
     return {orderId:id,lectureId:Number(next.lecture_id),studentId:identity.student.id,token,weeklyIds:next.weekly_ids as number[],enrollmentRecorded:next.enrollment_recorded===true,contact:identity.contact}
   }))
   if(!job)return 'SKIPPED'
+  let writeMayHaveStarted=false,paymentStopped=false
+  const refresh=async()=>{try{await refreshPayment(id,ports)}catch(error){paymentStopped=true;throw error}}
   const fence=async()=>{if(!await ports.withClient(c=>grantFence(c,job)))throw new DaechionError('grant_fence_changed')}
+  const beforeWrite=async()=>{await refresh();await fence();writeMayHaveStarted=true}
   try{
     if(!ports.daechion.ensureFirstLessonAccess)throw new DaechionError('content_unverified')
     if(job.enrollmentRecorded&&job.weeklyIds.length!==1)throw Error('FIRST_LESSON_CHANGED')
     const target=firstLessonTarget(await ports.daechion.lectures(),job.lectureId,job.weeklyIds)
+    await refresh()
     await fence()
     if(!job.weeklyIds.length){
       await ports.withClient(c=>orderTransaction(c,async()=>{
@@ -165,7 +191,10 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
     const recordEnrollment=async()=>{
       if(job.enrollmentRecorded)return
       await ports.withClient(c=>orderTransaction(c,async()=>{
-        await lockOrder(c,id);if(!await grantFence(c,job))throw new DaechionError('grant_fence_changed')
+        // Record the vendor acknowledgement even if a long browser step aged
+        // the payment snapshot. The same live lease/student/target must remain
+        // ours; a cancellation or hold that cleared the lease still wins.
+        await lockOrder(c,id);if(!await grantOwnership(c,job,false))throw new DaechionError('grant_fence_changed')
         await c.query('UPDATE daechion_orders.grants SET enrollment_recorded=true WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3',[id,job.lectureId,job.token])
         await orderChanged(c,id,'grant_enrolled')
       }))
@@ -173,9 +202,10 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
     }
     await fence()
     const result=await ports.daechion.ensureFirstLessonAccess({lectureId:job.lectureId,studentId:job.studentId,weeklyLectureId:target,
-      enrollmentRecorded:job.enrollmentRecorded,recordEnrollment,studentName:job.contact.studentName,studentPhone:job.contact.studentPhone,beforeWrite:fence})
+      enrollmentRecorded:job.enrollmentRecorded,recordEnrollment,studentName:job.contact.studentName,studentPhone:job.contact.studentPhone,beforeWrite})
     if(!job.enrollmentRecorded||result?.verified!==true||result.lectureId!==job.lectureId||result.studentId!==job.studentId||!same(ids.parse(result.weeklyLectureIds),job.weeklyIds))throw new DaechionError('content_unverified')
-    return ports.withClient(c=>orderTransaction(c,async()=>{
+    await refresh()
+    return await ports.withClient(c=>orderTransaction(c,async()=>{
       await lockOrder(c,id);if(!await grantFence(c,job))throw new DaechionError('grant_fence_changed')
       await c.query("UPDATE daechion_orders.grants SET state='VERIFIED',verified_at=now(),review_code=NULL,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3",[id,job.lectureId,job.token])
       const version=await orderChanged(c,id,'grant_verified')
@@ -186,8 +216,22 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
       return 'VERIFIED'
     }))
   }catch(error){
+    if(paymentStopped&&!writeMayHaveStarted&&!job.enrollmentRecorded){
+      const deferred=await ports.withClient(c=>orderTransaction(c,async()=>{
+        const o=await lockOrder(c,id);if(!o||o.identity_state!=='PASSED'||Number(o.student_id)!==job.studentId)return false
+        const g=(await c.query('SELECT * FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2 FOR UPDATE',[id,job.lectureId])).rows[0]
+        if(!g||g.enrollment_recorded||!same(g.weekly_ids as number[],job.weeklyIds))return false
+        const owned=g.state==='RUNNING'&&g.lease_token===job.token
+        const stoppedByRead=g.state==='REVIEW'&&!g.lease_token&&g.review_code==='order_held'&&o.review_code==='payment_query_unknown'&&o.payment_state!=='CANCELLED'
+        if(!owned&&!stoppedByRead)return false
+        if(!['READY','REVIEW'].includes(String(o.checkout_state))||o.review_code&&o.review_code!=='payment_query_unknown')return false
+        await c.query("UPDATE daechion_orders.grants SET state='PENDING',review_code=NULL,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2",[id,job.lectureId])
+        await orderChanged(c,id,'grant_payment_wait');return true
+      }))
+      if(deferred)return 'SKIPPED'
+    }
     const code=error instanceof Error&&error.message==='FIRST_LESSON_UNAVAILABLE'?'lecture_unavailable':
-      error instanceof Error&&error.message==='FIRST_LESSON_CHANGED'?'first_lesson_changed':'grant_unknown'
+      error instanceof Error&&error.message==='FIRST_LESSON_CHANGED'?'first_lesson_changed':paymentStopped?'payment_recheck_required':'grant_unknown'
     await ports.withClient(c=>orderTransaction(c,async()=>{
       await lockOrder(c,id)
       const changed=await c.query("UPDATE daechion_orders.grants SET state='REVIEW',review_code=$4,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3 AND state='RUNNING' RETURNING lecture_id",[id,job.lectureId,job.token,code])

@@ -644,7 +644,7 @@ export default function ClassesPage() {
         setIsInitialLoading(true)
         setError(null)
 
-        const res = await fetch('/api/classes')
+        const res = await fetch('/api/classes',{cache:'no-store'})
         if (!res.ok) throw new Error('수업 데이터를 불러오는데 실패했습니다.')
         const data = await res.json()
 
@@ -839,12 +839,7 @@ export default function ClassesPage() {
             {error}
           </p>
           <button
-            onClick={() => {
-              setError(null)
-              setIsInitialLoading(true)
-              // Retry loading
-              setTimeout(() => setIsInitialLoading(false), 1000)
-            }}
+            onClick={() => window.location.reload()}
             style={{
               padding: '12px 24px',
               background: 'linear-gradient(145deg, rgba(0, 122, 255, 0.9), rgba(0, 100, 220, 0.8))',

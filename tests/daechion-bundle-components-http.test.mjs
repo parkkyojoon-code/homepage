@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process'
 import {createServer} from 'node:net'
 import {once} from 'node:events'
 import {randomBytes} from 'node:crypto'
-import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises'
+import {mkdtemp,writeFile,readFile,unlink,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -17,8 +17,8 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
     createdAt:'2026-11-09T00:00:00Z',updatedAt:'2026-11-09T00:00:00Z'}
   const binding=id=>({tenantId:'test-only',lectures:[{id,name:'동일 강의명'}],verifiedAt:base.createdAt})
   await writeFile(path.join(dir,'classes.json'),JSON.stringify([
-    {...base,id:'source-a',daechionBinding:binding(101)},{...base,id:'source-b',daechionBinding:binding(102)},
-    {...base,id:'12course',visible:true,purchaseProcess:'PROCESS_1'},
+    {...base,id:'source-a',daechionBinding:binding(101),legacyUnknown:{keep:true},modes:{...base.modes,online:{...base.modes.online,futureField:'retain'}}},{...base,id:'source-b',daechionBinding:binding(102)},
+    {...base,id:'12course',visible:true,purchaseProcess:'PROCESS_1',legacyUnknown:{original:true}},
     {...base,id:'purchase-entry-single',visible:true,daechionBinding:binding(101)},
   ]))
   const reservation=createServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening')
@@ -141,6 +141,65 @@ for(const publishingReady of [false,true])test('website-product bundle HTTP vali
     assert.deepEqual(disk.find(item=>item.id==='website-bundle').bundleComponents,components)
     assert.ok(!disk.some(item=>Object.hasOwn(item,'expectedBundleComponents')||Object.hasOwn(item,'bundleProductIds')||Object.hasOwn(item,'bundleCompositionIssue')))
     assert.deepEqual(await (await request('/api/daechion/orders/catalog')).json(),{available:false,products:[]})
+    // All products use the optional item fence; file CAS also protects callers
+    // that await LMS validation before saving a freshly read complete catalog.
+    const file=path.join(dir,'classes.json'),readRaw=()=>readFile(file,'utf8')
+    const adminList=async()=>{const response=await request('/api/admin/classes');assert.equal(response.status,200);return {rows:await response.json(),revision:response.headers.get('X-Catalog-Revision')}}
+    const singleBefore=(await adminList()).rows.find(item=>item.id==='source-a')
+    let bytes=await readRaw()
+    const stale=await request('/api/admin/classes/source-a',{name:'오래된 편집',expectedUpdatedAt:'1900-01-01T00:00:00.000Z'},'PUT')
+    assert.equal(stale.status,409);assert.equal(await readRaw(),bytes)
+    const edit=await request('/api/admin/classes/source-a',{name:'개별상품 저장 검수',expectedUpdatedAt:singleBefore.updatedAt},'PUT')
+    assert.equal(edit.status,200);const edited=await edit.json();assert.ok(edited.updatedAt>singleBefore.updatedAt)
+    assert.deepEqual(edited.legacyUnknown,{keep:true});assert.equal(edited.modes.online.futureField,'retain')
+    bytes=await readRaw()
+    const staleDelete=await fetch(origin+'/api/admin/classes/source-a',{method:'DELETE',headers:{origin,cookie,'X-Class-Updated-At':singleBefore.updatedAt}})
+    assert.equal(staleDelete.status,409);assert.equal(await readRaw(),bytes)
+    const upload=async expected=>{
+      const data=new FormData();data.set('expectedUpdatedAt',expected);data.set('image',new Blob([Buffer.from('synthetic local image')],{type:'image/png'}),'fixture.png')
+      return fetch(origin+'/api/admin/classes/source-a/image',{method:'POST',headers:{origin,cookie},body:data})
+    }
+    assert.equal((await upload(singleBefore.updatedAt)).status,409);assert.equal(await readRaw(),bytes)
+    const image=await upload(edited.updatedAt);assert.equal(image.status,200)
+    const imageResult=await image.json();assert.ok(imageResult.updatedAt>edited.updatedAt)
+    assert.equal((await readFile(path.join(dir,'class-images',imageResult.filename))).toString(),'synthetic local image')
+    const current=await adminList();assert.match(current.revision,/^[a-f0-9]{64}$/)
+    const ids=current.rows.map(item=>item.id).reverse();bytes=await readRaw()
+    const reorder=(revision)=>fetch(origin+'/api/admin/classes/reorder',{method:'PUT',headers:{origin,cookie,'content-type':'application/json','X-Catalog-Revision':revision},body:JSON.stringify({ids})})
+    assert.equal((await reorder('a'.repeat(64))).status,409);assert.equal(await readRaw(),bytes)
+    const reordered=await reorder(current.revision);assert.equal(reordered.status,200);assert.deepEqual((await reordered.json()).map(item=>item.id),ids)
+    const preserved=JSON.parse(await readRaw())
+    assert.deepEqual(preserved.find(item=>item.id==='12course').legacyUnknown,{original:true})
+    assert.deepEqual(preserved.find(item=>item.id==='source-a').legacyUnknown,{keep:true})
+    assert.equal(preserved.find(item=>item.id==='source-a').modes.online.futureField,'retain')
+
+    const validBytes=await readRaw(),backupBytes=await readFile(file+'.bak','utf8'),corrupt='{intentionally incomplete catalog'
+    await writeFile(file,corrupt)
+    for(const route of ['/api/classes','/api/classes/12course','/api/admin/classes']){
+      const response=await request(route);assert.equal(response.status,503);assert.equal((await response.json()).code,'CATALOG_UNAVAILABLE')
+    }
+    const mutations=[
+      ()=>request('/api/admin/classes',{...base,id:'must-not-be-created',purchaseProcess:'PROCESS_1'}),
+      ()=>request('/api/admin/classes/source-a',{visible:true},'PUT'),
+      ()=>request('/api/admin/classes/source-a',undefined,'DELETE'),
+      ()=>request('/api/admin/classes/reorder',{ids},'PUT'),
+      ()=>upload(imageResult.updatedAt),
+      ()=>fetch(origin+'/api/admin/classes/source-a/gallery',{method:'POST',headers:{origin,cookie},body:new FormData()}),
+      ()=>request('/api/admin/classes/source-a/gallery',{filename:imageResult.filename},'DELETE'),
+    ]
+    for(const mutate of mutations){const response=await mutate();assert.equal(response.status,503);assert.equal((await response.json()).code,'CATALOG_UNAVAILABLE');assert.equal(await readRaw(),corrupt)}
+    assert.equal(await readFile(file+'.bak','utf8'),backupBytes)
+    await unlink(file)
+    for(const route of ['/api/classes','/api/classes/12course','/api/admin/classes'])assert.equal((await request(route)).status,503)
+    assert.equal((await mutations[0]()).status,503);await assert.rejects(readRaw(),{code:'ENOENT'})
+    assert.equal(await readFile(file+'.bak','utf8'),backupBytes)
+    // Operator restoration is explicit; subsequent reads use the recovered
+    // file and preserve both original and new products without a default reset.
+    await writeFile(file,validBytes)
+    const restored=await adminList();assert.deepEqual(restored.rows.map(item=>item.id),ids)
+    assert.equal((await request('/api/classes/12course')).status,200)
+    assert.equal((await request('/api/classes/purchase-entry-single')).status,200)
+    assert.equal(await readRaw(),validBytes)
   }finally{
     child.kill();if(child.exitCode===null)await Promise.race([once(child,'exit'),new Promise(resolve=>setTimeout(resolve,3000))])
     if(path.dirname(path.resolve(dir))!==path.resolve(tmpdir())||!path.basename(dir).startsWith('pkjmath-bundle-sources-'))throw Error('UNSAFE_TEST_DIRECTORY')

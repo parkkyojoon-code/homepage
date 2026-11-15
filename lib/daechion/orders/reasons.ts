@@ -12,6 +12,7 @@ const reasons:Record<string,string>={billing_preflight_review:'청구 전 학생
   identity_lookup_failed:'학생 조회 장애 확인 필요 — 현재 결제·신규 또는 기존 학생 재조회 필요',
   identity_unknown:'학생 조회·생성 처리 결과 확인 필요',identity_create_unknown:'학생 생성 결과 확인 필요 — 재생성 금지',identity_review:'학생·보호자 번호와 기존 수강 여부 대조 필요',identity_phone_busy:'같은 번호의 다른 등록 처리 확인 필요',
   grant_unknown:'강의 등록·영상·자료 권한 확인 필요',order_held:'주문 보류로 권한 처리 중단',payment_regressed:'기존 결제와 현재 조회 결과가 다름',
+  payment_recheck_required:'등록·권한 처리 후 현재 결제 재확인 필요 — 자동 재등록 보류',
   message_result_unknown:'안내 문자 발송 결과 확인 필요 — 재발송 금지',message_lease_expired:'안내 문자 처리 중단·발송 결과 확인 필요',
   sheet_publish_unknown:'시트 반영 결과 확인 필요',sheet_read_retry:'시트 조회 재확인 대기',sheet_headers_changed:'시트 열 제목 변경 확인 필요',sheet_not_initialized:'주문 전용 탭 초기 설정 필요'}
 export function orderReason(code:unknown){
