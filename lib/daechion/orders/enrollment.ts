@@ -157,7 +157,8 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
       return 'VERIFIED'
     }))
   }catch(error){
-    const code=error instanceof Error&&['FIRST_LESSON_UNAVAILABLE','FIRST_LESSON_CHANGED'].includes(error.message)?'first_lesson_changed':'grant_unknown'
+    const code=error instanceof Error&&error.message==='FIRST_LESSON_UNAVAILABLE'?'lecture_unavailable':
+      error instanceof Error&&error.message==='FIRST_LESSON_CHANGED'?'first_lesson_changed':'grant_unknown'
     await ports.withClient(c=>orderTransaction(c,async()=>{
       await lockOrder(c,id)
       const changed=await c.query("UPDATE daechion_orders.grants SET state='REVIEW',review_code=$4,lease_token=NULL,lease_until=NULL WHERE order_id=$1 AND lecture_id=$2 AND lease_token=$3 AND state='RUNNING' RETURNING lecture_id",[id,job.lectureId,job.token,code])

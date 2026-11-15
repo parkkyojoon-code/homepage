@@ -125,14 +125,13 @@ function runtime(env, overrides = {}) {
       // Validate all configured providers before any financial phase.
       if (flags.send || flags.read || deliveryFlags.message) paymentProvider()
       if (flags.send) apiProvider()
-      if (flags.enroll || maintain) enrollmentProvider()
+      // Construct the browser inside sessionReady as well: expired/corrupt
+      // stored authentication must not abort payment reads or sheet delivery.
       if (deliveryFlags.message) messageProvider()
       if (deliveryFlags.sheets) sheetProvider()
       let healthy = true
       if (maintain) {
-        const lectureId = Number(env.DAECHION_BROWSER_CHECK_LECTURE_ID ?? env.DAECHION_CONTENT_TEST_LECTURE_ID)
-        if (!Number.isSafeInteger(lectureId) || lectureId <= 0) throw Error('ORDER_SESSION_CHECK_TARGET_REQUIRED')
-        healthy = await scheduler.sessionReady({ withClient: guarded }, tenant, () => enrollmentProvider().refreshSession(lectureId))
+        healthy = await scheduler.sessionReady({ withClient: guarded }, tenant, () => enrollmentProvider().refreshSession())
       }
       const selected = await guarded(c => scheduler.selectScheduledOrders(c, tenant, { ...flags, ...deliveryFlags }))
       let processed = 0, failed = 0
@@ -140,8 +139,8 @@ function runtime(env, overrides = {}) {
         if (signal?.aborted) break
         await assert()
         await guarded(c => scheduler.startScheduledOrder(c, row.id))
-        const result = await runBound(row.id, row.request_fingerprint, { ...flags, enroll: flags.enroll && healthy && row.needs_enrollment === true }, guarded,
-          () => scheduler.recordSessionIssue({ withClient: guarded }, row.id, healthy || !flags.enroll))
+        const result = await runBound(row.id, row.request_fingerprint, { ...flags, send: flags.send && healthy, enroll: flags.enroll && healthy && row.needs_enrollment === true }, guarded,
+          () => scheduler.recordSessionIssue({ withClient: guarded }, row.id, healthy || (!flags.enroll && !flags.send)))
         const bad = result.processingFailed || result.deliveryFailed
         await guarded(c => scheduler.finishScheduledOrder(c, row.id, bad, { ...flags, ...deliveryFlags }))
         processed++; if (bad) failed++

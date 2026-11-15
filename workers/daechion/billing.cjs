@@ -109,10 +109,8 @@ function runtime(env,{withClient,providers={}}={}) {
     return browserProvider()
   }
   async function maintainSession(){
-    const id=Number(env.DAECHION_BROWSER_CHECK_LECTURE_ID??env.DAECHION_CONTENT_TEST_LECTURE_ID)
-    if(!Number.isSafeInteger(id)||id<=0)throw Error('CONTENT_SESSION_CHECK_TARGET_REQUIRED')
     try{
-      const result=await browserProvider().refreshSession(id)
+      const result=await browserProvider().refreshSession()
       await observe('sessionRefresh',undefined,result?.refreshed===true)
       return result
     }catch(error){await observe('sessionRefresh',undefined,false,sessionFailureStage(error));throw error}

@@ -4,7 +4,7 @@ import { operationLabels, type OperationPhase } from './operations'
 
 const title='자동화 점검', marker='pkjmath_operations_v1', ownedId=611061501
 const headers=['상태','신청번호 / 범위','실패 단계','오류 구분','누적 발생 횟수','최초 발생시각','최근 발생시각','복구 확인시각']
-const codes:Record<string,string>={FAILED:'처리 실패',UNKNOWN:'결과 확인 필요',DEFERRED:'재시도 대기',API_PREFLIGHT:'API 연결 점검',BROWSER_LAUNCH:'브라우저 시작',BROWSER_CONTEXT:'로그인 상태 준비',SESSION_REFRESH:'인증 화면 확인'}
+const codes:Record<string,string>={FAILED:'처리 실패',UNKNOWN:'결과 확인 필요',DEFERRED:'재시도 대기',API_PREFLIGHT:'공식 API·학원 인증 점검 실패',BROWSER_LAUNCH:'브라우저 시작 실패',BROWSER_CONTEXT:'로그인 상태 준비 실패',SESSION_REFRESH:'관리자 공통 화면 접근 실패'}
 const time=(value:unknown)=>value?new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(value as string)):''
 const cells=(values:(string|number)[])=>values.map(value=>({userEnteredValue:typeof value==='number'?{numberValue:value}:{stringValue:value}}))
 const tone=(sheetId:number,column:number,text:string,green=false)=>({addConditionalFormatRule:{index:0,rule:{ranges:[{sheetId,startRowIndex:4,startColumnIndex:column,endColumnIndex:column+1}],booleanRule:{condition:{type:'TEXT_EQ',values:[{userEnteredValue:text}]},format:{backgroundColor:green?{red:.85,green:.93,blue:.83}:{red:.72,green:.11,blue:.11},textFormat:{bold:true,foregroundColor:green?{red:.15,green:.3,blue:.07}:{red:1,green:1,blue:1}}}}}}})

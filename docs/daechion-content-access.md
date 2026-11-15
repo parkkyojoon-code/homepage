@@ -35,7 +35,7 @@
 ```
 cd workers/daechion/browser
 npm ci
-npm run auth -- --lecture-id 6006577
+npm run auth
 ```
 
 마지막 명령은 검수 강의를 열고 직접 관리자 로그인을 마칠 때까지 기다린다. 로그인 후 터미널에서 Enter를 누르면 관리자 화면 접근을 확인하고 `.auth/admin.storage-state.json`에 저장한다. 이 파일은 Git과 Docker 빌드에서 제외한다. 생성한 JSON은 별도 검증 작업자의 Railway 비공개 변수에 직접 입력한다. 현재 일반 Chrome의 로그인 상태가 서버에 자동 전달되는 것은 아니다. 세션 만료 때는 재인증이 필요하며 자동 우회나 비밀번호 초기화는 하지 않는다. 공식 API가 동등한 권한 기능을 제공하면 이 브라우저 어댑터를 교체할 수 있다.
@@ -70,7 +70,9 @@ node scripts/daechion-session-check.cjs --lecture-id 6006577 --exercise-expired-
 node workers/daechion/billing.cjs --session-only
 ```
 
-`DAECHION_SESSION_MAINTENANCE_ENABLED=true`, 브라우저 실행·검증 플래그, `DAECHION_BROWSER_CHECK_LECTURE_ID`가 필요하다. 정상 시 15분, 실패 시 1분 간격으로 관리자 페이지 접근과 암호화 저장만 수행한다. 다른 발송 플래그가 켜져도 금융·수강 등록·Sheets·문자 작업 주기를 호출하지 않는다. `--once`는 한 번만 실행하며 `--check`가 함께 있으면 DB 점검이 우선한다. 이 모드의 성공은 결제부터 안내까지 전체 운영 검수 완료를 뜻하지 않는다.
+`DAECHION_SESSION_MAINTENANCE_ENABLED=true`와 브라우저 실행·검증 플래그가 필요하다. 공식 API의 학원 인증과 `/crm/lectures`의 관리자 공통 화면을 확인하며 특정 강의나 수강생 수에 의존하지 않는다. `DAECHION_BROWSER_CHECK_LECTURE_ID`는 사용하지 않으며 기존 값이 남아 있어도 무시한다. 정상 시 15분, 실패 시 1분 간격으로 관리자 페이지 접근과 암호화 저장만 수행한다. 다른 발송 플래그가 켜져도 금융·수강 등록·Sheets·문자 작업 주기를 호출하지 않는다. `--once`는 한 번만 실행하며 `--check`가 함께 있으면 DB 점검이 우선한다. 이 모드의 성공은 결제부터 안내까지 전체 운영 검수 완료를 뜻하지 않는다.
+
+일괄 주문 작업자도 같은 공통 화면으로 인증을 확인한다. 실패하면 신규 청구와 자동 등록만 대기시키고 기존 청구의 결제 조회와 Sheets 반영은 계속한다. 실패 단계는 자동화 점검 탭에서 API·브라우저 시작·로그인 상태 준비·관리자 공통 화면 접근으로 구분한다. 인증 복구 후 기존 청구·계정·등록·문자의 처리 기록을 유지한 채 미완료 단계만 이어간다. 개별 주문의 강의 삭제·종료·첫 차시 변경은 해당 주문의 확인 필요 사유로 남기며 학원 전체의 인증 실패로 취급하지 않는다.
 
 ## 전체 흐름 검수
 
