@@ -1122,16 +1122,18 @@ export default function ClassDetailPage() {
             animate={{ opacity: 1, y: 0 }}
             style={{
               width: '100%',
-              height: '400px',
-              background: `linear-gradient(180deg, transparent, rgba(0,0,0,0.8)), url(${classDetail.thumbnail})`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
+              background: '#131720',
               borderRadius: '20px',
               marginBottom: '60px',
               position: 'relative',
               overflow: 'hidden'
             }}
           >
+            <img
+              src={classDetail.thumbnail}
+              alt={classDetail.title}
+              style={{ width: '100%', height: '400px', objectFit: 'contain', objectPosition: 'center', display: 'block' }}
+            />
             {classDetail.badge && (
               <div style={{
                 position: 'absolute',
@@ -1148,10 +1150,8 @@ export default function ClassDetailPage() {
             )}
 
             <div style={{
-              position: 'absolute',
-              bottom: '20px',
-              left: '20px',
-              right: '20px'
+              padding: '20px',
+              background: 'linear-gradient(180deg, rgba(0,0,0,0.2), rgba(0,0,0,0.8))'
             }}>
               <h1 style={{
                 fontSize: '2.5rem',

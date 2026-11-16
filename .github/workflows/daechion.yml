@@ -6,8 +6,8 @@ on:
     paths:
       - 'lib/daechion/**'
       - 'components/daechion/**'
-      - 'app/classes/cart/**'
-      - 'app/classes/page.tsx'
+      - 'components/classes/**'
+      - 'app/classes/**'
       - 'lib/cart-checkout-contract.ts'
       - 'tsconfig.daechion-cart.json'
       - 'lib/purchase-process.ts'
