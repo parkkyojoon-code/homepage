@@ -466,7 +466,8 @@ export default function ClassCard({ class: cls, viewMode = 'grid' }: ClassCardPr
             fill
             sizes="(max-width: 768px) 100vw, 400px"
             style={{
-              objectFit: 'cover',
+              objectFit: 'contain',
+              objectPosition: 'center',
               transition: 'transform 0.4s ease'
             }}
           />
