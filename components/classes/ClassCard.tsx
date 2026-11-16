@@ -397,10 +397,10 @@ export default function ClassCard({ class: cls, viewMode = 'grid' }: ClassCardPr
           right: '1rem',
           width: '40px',
           height: '40px',
-          background: 'rgba(255, 255, 255, 0.1)',
+          background: 'rgba(255, 255, 255, 0.9)',
           backdropFilter: 'blur(16px)',
           WebkitBackdropFilter: 'blur(16px)',
-          border: '1px solid rgba(255, 255, 255, 0.2)',
+          border: '1px solid rgba(0, 0, 0, 0.12)',
           borderRadius: '50%',
           display: 'flex',
           alignItems: 'center',
@@ -413,7 +413,7 @@ export default function ClassCard({ class: cls, viewMode = 'grid' }: ClassCardPr
         <Heart
           size={18}
           style={{
-            color: isLiked ? '#FF3B30' : 'rgba(255, 255, 255, 0.8)',
+            color: isLiked ? '#FF3B30' : '#5b6573',
             fill: isLiked ? '#FF3B30' : 'none',
             filter: isLiked ? 'drop-shadow(0 0 8px rgba(255, 59, 48, 0.5))' : 'none'
           }}
