@@ -1132,7 +1132,7 @@ export default function ClassDetailPage() {
             <img
               src={classDetail.thumbnail}
               alt={classDetail.title}
-              style={{ width: '100%', height: '400px', objectFit: 'contain', objectPosition: 'center', display: 'block' }}
+              style={{ width: '100%', height: '400px', objectFit: 'contain', objectPosition: 'center', backgroundColor: '#fff', display: 'block' }}
             />
             {classDetail.badge && (
               <div style={{

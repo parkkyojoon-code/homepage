@@ -390,7 +390,7 @@ export default function AdminClassesPage() {
                 {/* 이미지 */}
                 <div style={{ width: 64, height: 48, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', flexShrink: 0 }}>
                   {cls.image
-                    ? <img src={`/api/images/${cls.image}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center', display: 'block' }} />
+                    ? <img src={`/api/images/${cls.image}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center', backgroundColor: '#fff', display: 'block' }} />
                     : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 }}>📚</div>
                   }
                 </div>
@@ -470,7 +470,7 @@ export default function AdminClassesPage() {
             <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
               <div style={{ width: 120, height: 80, borderRadius: 10, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', flexShrink: 0 }}>
                 {e.image
-                  ? <img src={`/api/images/${e.image}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center', display: 'block' }} />
+                  ? <img src={`/api/images/${e.image}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'center', backgroundColor: '#fff', display: 'block' }} />
                   : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>📷</div>
                 }
               </div>

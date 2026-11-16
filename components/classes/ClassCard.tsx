@@ -424,6 +424,7 @@ export default function ClassCard({ class: cls, viewMode = 'grid' }: ClassCardPr
       <div style={{
         position: 'relative',
         paddingTop: '56.25%',
+        zIndex: 2,
         background: `linear-gradient(135deg,
           rgba(0, 122, 255, 0.1) 0%,
           rgba(0, 198, 255, 0.05) 50%,
@@ -468,6 +469,7 @@ export default function ClassCard({ class: cls, viewMode = 'grid' }: ClassCardPr
             style={{
               objectFit: 'contain',
               objectPosition: 'center',
+              backgroundColor: '#fff',
               transition: 'transform 0.4s ease'
             }}
           />
@@ -498,19 +500,6 @@ export default function ClassCard({ class: cls, viewMode = 'grid' }: ClassCardPr
           </div>
         )}
 
-        {/* Hover Overlay */}
-        <motion.div
-          animate={{
-            opacity: isHovered && !cls.soldOut ? 1 : 0
-          }}
-          transition={{ duration: 0.2 }}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, transparent 50%)',
-            pointerEvents: 'none'
-          }}
-        />
       </div>
 
       {/* Content with Glass Overlay */}
