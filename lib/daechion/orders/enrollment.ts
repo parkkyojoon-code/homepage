@@ -104,7 +104,7 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       createStarted=true;return ports.daechion.createStudent(input)
     }}
     resolved=(await resolveStudent(guarded,{name:claim.contact.studentName,studentPhone:claim.contact.studentPhone,guardianPhone:claim.contact.guardianPhone||undefined},
-      {history:claim.contact.studentHistory,...(claim.review?{manualApprovedId:claim.review.studentId}:claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
+      {history:claim.contact.studentHistory,...(claim.review?(claim.review.automatic?{knownCreatedId:claim.review.studentId}:{manualApprovedId:claim.review.studentId}):claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
     if(claim.review&&(studentProfileFingerprint(resolved)!==claim.review.profileFingerprint||claim.studentId&&resolved.id!==claim.studentId))throw new DaechionError('identity_changed')
     if(claim.token){
       await refreshPayment(id,ports)

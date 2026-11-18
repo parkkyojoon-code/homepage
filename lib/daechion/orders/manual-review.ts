@@ -11,7 +11,7 @@ import type {ReadOnlyStudentPort} from './ownership'
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export const reviewEvidenceSchema=z.object({studentId:z.number().int().positive().safe(),profileFingerprint:z.string().regex(/^[a-f0-9]{64}$/),
   binding:z.string().regex(/^[a-f0-9]{64}$/),targetIds:z.array(z.number().int().positive().safe()).min(1).max(30),checkedAt:z.string().datetime({offset:true})}).strict()
-export type ReviewEvidence=z.infer<typeof reviewEvidenceSchema>
+export type ReviewEvidence=z.infer<typeof reviewEvidenceSchema>&{automatic?:boolean}
 export function studentProfileFingerprint(student:DaechionStudent){
   return hash({id:student.id,name:student.name.trim().normalize('NFC'),studentPhone:normalizePhone(student.studentPhoneNumber??''),
     guardians:[...new Set([student.parentPhoneNumber,student.parentPhoneNumber2].filter(Boolean).map(phone=>normalizePhone(phone!)))].sort()})
@@ -46,11 +46,12 @@ export async function inspectExisting(context:BillingContext,studentId:number,ap
   return {studentId,profileFingerprint,binding:bound.binding,targetIds:bound.targetIds,checkedAt:new Date().toISOString()}
 }
 export async function latestReview(c:LedgerClient,orderId:string):Promise<ReviewEvidence|null>{
-  const row=(await c.query(`SELECT a.student_id,a.profile_fingerprint,a.context_fingerprint,a.target_ids,a.checked_at
+  const row=(await c.query(`SELECT a.student_id,a.profile_fingerprint,a.context_fingerprint,a.target_ids,a.checked_at,a.operator_name,a.reason
     FROM daechion_orders.admin_actions a JOIN daechion_orders.orders o ON o.id=a.order_id
     WHERE a.order_id=$1 AND a.action IN ('APPROVE_EXISTING','RECONCILE_IDENTITY') AND a.order_request_fingerprint=o.request_fingerprint
     ORDER BY a.after_version DESC LIMIT 1`,[orderId])).rows[0]
   if(!row)return null
-  return reviewEvidenceSchema.parse({studentId:Number(row.student_id),profileFingerprint:row.profile_fingerprint,binding:row.context_fingerprint,
+  const proof=reviewEvidenceSchema.parse({studentId:Number(row.student_id),profileFingerprint:row.profile_fingerprint,binding:row.context_fingerprint,
     targetIds:row.target_ids,checkedAt:new Date(row.checked_at as string).toISOString()})
+  return {...proof,...(row.operator_name==='시스템 자동 확인'&&String(row.reason).startsWith('자동 보유 강의 확인:')?{automatic:true}:{})}
 }

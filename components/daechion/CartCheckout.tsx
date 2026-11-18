@@ -95,8 +95,8 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
   const locked=busy||Boolean(pending),total=checked?.totalWon??selected.reduce((sum,id)=>sum+(products.find(p=>p.productId===id)?.priceWon??0),0)
   const expired=quote&&Date.parse(quote.expiresAt)<=now
   const field=(key:'studentName'|'studentPhone'|'guardianName'|'guardianPhone'|'payerPhone',label:string,required=false)=><label className={base.field}>{label}{required?' *':' (선택)'}<input name={key} type={key.endsWith('Phone')?'tel':'text'} value={form[key]} maxLength={key.endsWith('Phone')?40:80} autoComplete="off" required={required} onChange={e=>update(key,e.target.value)}/></label>
-  if(receipt)return <main className={base.page}><section className={base.card} aria-live="polite"><h1>{receipt.reviewRequired?'담당자 확인 요청을 접수했습니다.':'신청이 접수되었습니다.'}</h1>
-    <p>{receipt.reviewRequired?'담당자가 수강 정보와 선택한 상품을 확인한 뒤 안내드립니다. 아직 청구서가 발송된 상태는 아닙니다.':'결제 안내는 입력하신 결제 전화번호로 발송됩니다. 결제 확인과 모든 강의의 수강 등록이 완료되면 대치온 이용 안내를 보내드립니다.'}</p>
+  if(receipt)return <main className={base.page}><section className={base.card} aria-live="polite"><h1>신청이 접수되었습니다.</h1>
+    <p>{receipt.reviewRequired?'학생 정보와 기존 강의 보유 여부를 확인한 뒤, 중복이 없으면 결제 전화번호로 청구서를 발송합니다. 자동 확인이 어렵거나 이미 등록된 강의가 있으면 담당자가 확인합니다. 아직 청구서가 발송된 상태는 아닙니다.':'결제 안내는 입력하신 결제 전화번호로 발송됩니다. 결제 확인과 모든 강의의 수강 등록이 완료되면 대치온 이용 안내를 보내드립니다.'}</p>
     <Link href="/classes" className={base.link}>수업 목록으로</Link></section></main>
   return <main className={base.page}><div className={styles.container}>
     <Link href="/classes" className={base.link}>← 수업 목록</Link><h1 className={styles.heading}>강의 장바구니</h1><p className={base.sub}>한 학생이 수강할 강의를 선택해주세요. 묶음상품은 표시된 판매가로 구매합니다.</p>
@@ -137,10 +137,10 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
         {quote.excluded.length>0&&<p className={styles.notice}>이미 수강 가능한 개별 강의는 제외했습니다: {quote.excluded.map(i=>i.title).join(', ')}. 변경된 상품과 금액을 다시 확인해주세요.</p>}
         <ul>{quote.items.map(i=><li key={i.productId}>{i.title} · {i.regularPriceWon&&i.regularPriceWon>i.priceWon&&<><del>{i.regularPriceWon.toLocaleString('ko-KR')}원</del> → </>}{i.priceWon.toLocaleString('ko-KR')}원</li>)}</ul>
         {quote.discountCode&&<p>할인코드 {quote.discountCode} · 총 할인액 {quote.discountWon?.toLocaleString('ko-KR')}원</p>}
-        {quote.status==='REVIEW'&&<p className={styles.notice}>기존 수강 정보 또는 묶음상품에 포함된 강의의 보유 여부를 담당자가 확인해야 합니다. 일부 강의를 임의로 빼거나 차감하지 않으며, 확인 전에는 청구하지 않습니다.</p>}
+        {quote.status==='REVIEW'&&<p className={styles.notice}>신청 후 학생 정보와 강의 보유 여부를 확인합니다. 기존 학생도 중복 강의가 없으면 자동으로 청구서를 발송합니다. 중복이나 확인이 필요한 정보가 있으면 담당자가 확인하며, 상품과 금액을 임의로 바꾸거나 확인 전에 청구하지 않습니다.</p>}
         <p className={styles.total}>{quote.status==='REVIEW'?'확인 요청 금액':'최종 신청 금액'} <strong>{quote.totalWon.toLocaleString('ko-KR')}원</strong></p>
         {expired?<p role="status">확인 시간이 지났습니다. 위의 ‘신청 내용 확인’을 다시 눌러주세요.</p>:<label className={base.consent}><input type="checkbox" checked={finalConfirmed} disabled={busy} onChange={e=>setFinalConfirmed(e.target.checked)}/>위 상품과 최종 금액을 확인했습니다.</label>}
-        <button type="button" className={base.submit} disabled={busy||!finalConfirmed||Boolean(expired)} onClick={()=>submitOrder()}>{quote.status==='REVIEW'?'담당자 확인 요청':'강의 구매 신청'}</button>
+        <button type="button" className={base.submit} disabled={busy||!finalConfirmed||Boolean(expired)} onClick={()=>submitOrder()}>강의 구매 신청</button>
       </section>}
     </>)}
   </div></main>

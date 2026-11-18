@@ -31,8 +31,12 @@ export async function selectScheduledOrders(c:LedgerClient,tenantId:string,f:Sch
       EXISTS(SELECT 1 FROM daechion_orders.grants WHERE order_id=o.id AND state IN ('PENDING','RUNNING')) AS needs_enrollment FROM daechion_orders.orders o
     LEFT JOIN daechion_orders.scheduler_orders s ON s.order_id=o.id
     WHERE o.tenant_id=$1 AND (s.order_id IS NULL OR s.next_run_at<=now() OR s.last_version<o.version)
-    AND (($2::boolean AND o.checkout_state='READY' AND o.payment_state='PENDING' AND o.review_code IS NULL
-      AND NOT EXISTS(SELECT 1 FROM daechion_orders.bills WHERE order_id=o.id))
+    AND (($2::boolean AND (o.checkout_state='READY' OR o.checkout_state='REVIEW' AND o.confirmed_at IS NULL
+      AND o.contact_snapshot->>'studentHistory'='EXISTING' AND o.identity_state='WAITING' AND o.student_id IS NULL
+      AND NOT o.identity_write_started AND o.identity_token IS NULL AND o.closed_action_id IS NULL
+      AND NOT EXISTS(SELECT 1 FROM daechion_orders.admin_actions WHERE order_id=o.id)
+      AND NOT EXISTS(SELECT 1 FROM daechion_orders.grants WHERE order_id=o.id AND (state<>'PENDING' OR enrollment_recorded OR lease_token IS NOT NULL OR weekly_ids<>'[]'::jsonb)))
+      AND o.payment_state='PENDING' AND o.review_code IS NULL AND NOT EXISTS(SELECT 1 FROM daechion_orders.bills WHERE order_id=o.id))
       OR ($3::boolean AND EXISTS(SELECT 1 FROM daechion_orders.bills WHERE order_id=o.id AND is_current AND state IN ('SENT','SEND_UNKNOWN')))
       OR ($4::boolean AND o.checkout_state='READY' AND o.payment_state='PAID' AND EXISTS(SELECT 1 FROM daechion_orders.grants WHERE order_id=o.id AND state IN ('PENDING','RUNNING')))
       OR ($5::boolean AND EXISTS(SELECT 1 FROM daechion_orders.jobs WHERE order_id=o.id AND kind='READY_MESSAGE'
