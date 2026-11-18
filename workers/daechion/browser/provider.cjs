@@ -274,6 +274,7 @@ async function inspectRosterOwnership(page,input,onStage=()=>{}) {
       if(!match||!Number.isSafeInteger(Number(match[1])))fail()
       return Number(match[1])
     }
+    const filterLabel=count=>page.getByText(new RegExp('^필터 적용됨\\s*:\\s*'+count+'명$'))
     const empty=page.getByText('차시에서 수강생 추가가 가능해요.',{exact:true})
     if(count===0&&await empty.count()===1&&await empty.isVisible()){
       if(await rows.count()!==0||await total()!==0)fail()
@@ -285,7 +286,7 @@ async function inspectRosterOwnership(page,input,onStage=()=>{}) {
     // Prove the initial roster is unfiltered before using a phone search to
     // establish absence. Existing hidden filters must never hide a student.
     await search.fill('')
-    await page.waitForLoadState('networkidle',{timeout:10000})
+    await filterLabel(count).waitFor({state:'visible'})
     if(await filteredCount()!==count||await total()!==count)fail()
     const headers=(await page.locator('thead th').allTextContents()).map(value=>value.replace(/\s+/g,' ').trim())
     if(headers.length!==9||headers[2]!=='이름'||headers[4]!=='학부모 전화번호'||headers[5]!=='학생 전화번호')fail()
@@ -304,7 +305,19 @@ async function inspectRosterOwnership(page,input,onStage=()=>{}) {
     }
     const initialIds=await completeRosterIds()
     await search.fill(input.studentPhone)
-    await page.waitForLoadState('networkidle',{timeout:10000})
+    // The document may already be network-idle while the debounced search has
+    // not rendered. Wait for this student's result, never the preceding row.
+    await Promise.race([
+      (async()=>{
+        await filterLabel(0).waitFor({state:'visible'})
+        await rows.first().waitFor({state:'detached'})
+      })(),
+      (async()=>{
+        await filterLabel(1).waitFor({state:'visible'})
+        await page.locator(`tbody tr[data-row-id="${input.studentId}"]`).waitFor({state:'attached'})
+        await rows.nth(1).waitFor({state:'detached'})
+      })(),
+    ])
     if(await total()!==count)fail()
     const found=await filteredCount(),visible=await rows.count()
     if(found===0){
@@ -312,7 +325,8 @@ async function inspectRosterOwnership(page,input,onStage=()=>{}) {
       // Independently reread the complete unfiltered roster. A premature empty
       // search result or a concurrent membership change is never nonownership.
       await search.fill('')
-      await page.waitForLoadState('networkidle',{timeout:10000})
+      await filterLabel(count).waitFor({state:'visible'})
+      if(count)await rows.nth(count-1).waitFor({state:'attached'})
       if(await total()!==count||await filteredCount()!==count||
         JSON.stringify(await completeRosterIds())!==JSON.stringify(initialIds))fail()
       result.push({id:lectureId,state:'NOT_OWNED'})
@@ -526,7 +540,13 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
             }
           }catch{failedRead=true}
         })
-        page.on('requestfailed',request=>{try{if(apiRead(request))failedRead=true}catch{failedRead=true}})
+        page.on('requestfailed',request=>{
+          try{
+            // Search/navigation may deliberately cancel an obsolete client
+            // read. Real transport failures still invalidate the result.
+            if(apiRead(request)&&request.failure()?.errorText!=='net::ERR_ABORTED')failedRead=true
+          }catch{failedRead=true}
+        })
         page.on('pageerror',()=>{failedRead=true})
         const result=await step(()=>inspectRosterOwnership(page,input,report))
         if(failedRead||!observedRead)fail()
