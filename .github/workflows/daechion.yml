@@ -32,6 +32,7 @@ on:
       - 'tests/daechion-orders-service.test.mjs'
       - 'tests/daechion-orders-automatic-review.test.mjs'
       - 'tests/daechion-orders-sheet-retry.test.mjs'
+      - 'tests/daechion-bill-recovery.test.mjs'
       - 'tests/daechion-order-migrations.test.mjs'
       - 'tests/daechion-order-worker.test.mjs'
       - 'tests/daechion-order-admin-preview.mjs'

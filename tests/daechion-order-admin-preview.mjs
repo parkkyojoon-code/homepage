@@ -49,8 +49,14 @@ try{
     if(saved.has(body.requestKey)){assert.deepEqual(body,saved.get(body.requestKey));return send({success:true,replayed:true})}
     assert.equal(body.expectedVersion,detail.order.version);assert.equal(body.orderId,id);assert.equal(body.confirmed,true)
     saved.set(body.requestKey,body);const before=detail.order.version;detail.order.version=String(Number(before)+1)
-    detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:['APPROVE_EXISTING','RECONCILE_IDENTITY'].includes(body.action)?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:['MANUAL_ACCESS','RECORD_REVOKED'].includes(body.action)?{studentId:body.studentId,weeklyLectureIds:body.action==='MANUAL_ACCESS'?[2000]:[]}: {},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
-    if(body.action==='CONFIRM_NEW_INTAKE'){assert.equal(body.confirmNewStudent,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canConfirmNewIntake=false}
+    detail.actions.unshift({action:body.action,lecture_id:body.lectureId?String(body.lectureId):null,student_id:['APPROVE_EXISTING','RECONCILE_IDENTITY'].includes(body.action)?String(body.studentId):null,target_ids:body.targetIds??[],recovery_evidence:body.action==='RECONCILE_BILL'?{billRecovery:{billId:body.billId,amountWon:43500,paidAt:new Date(Date.now()-60000).toISOString(),attemptedAt:new Date(Date.now()-120000).toISOString()}}:body.action==='RESUME_PAID'?{billId:body.billId,amountWon:43500,paidAt:new Date().toISOString()}:body.action==='RECONCILE_SHEETS'?{jobId:body.jobId}:['MANUAL_ACCESS','RECORD_REVOKED'].includes(body.action)?{studentId:body.studentId,weeklyLectureIds:body.action==='MANUAL_ACCESS'?[2000]:[]}: {},operator_name:body.operatorName,reason:body.reason,before_version:before,after_version:detail.order.version,created_at:new Date().toISOString()})
+    if(body.action==='RECONCILE_BILL'){
+      assert.equal(detail.canReconcileBill,true);assert.equal(body.billId,detail.billRecoveryBillId);assert.equal(body.confirmPaid,true)
+      assert.equal(detail.bills[0].state,'SEND_UNKNOWN');assert.equal(detail.order.checkout_state,'REVIEW')
+      detail.bills[0].state='SENT';detail.bills[0].checked_at=new Date().toISOString()
+      detail.order.payment_state='PAID';detail.order.review_code='bill_reconciled'
+      detail.canReconcileBill=false;detail.billRecoveryBillId=null;detail.canResumePaid=true
+    }else if(body.action==='CONFIRM_NEW_INTAKE'){assert.equal(body.confirmNewStudent,true);detail.order.checkout_state='READY';detail.order.review_code=null;detail.canConfirmNewIntake=false}
     else if(body.action==='CLOSE_INTAKE'){assert.equal(body.confirmClose,true);detail.order.checkout_state='CLOSED';detail.order.review_code='intake_closed';detail.canCloseIntake=false;detail.canConfirmNewIntake=false;detail.canHold=false}
     else if(body.action==='RECONCILE_IDENTITY'){assert.equal(body.studentId,1001);assert.equal(body.confirmCreatedAccount,true);detail.order.identity_state='PASSED';detail.order.student_id='1001';detail.order.review_code='identity_reconciled';detail.canReconcileIdentity=false;detail.canResumePaid=true}
     else if(body.action==='RETRY_ACCESS'){assert.equal(body.lectureId,20);detail.grants[0].state='PENDING';detail.grants[0].can_retry=false;detail.grants[0].review_code=null}
@@ -65,7 +71,7 @@ try{
     return send({success:true,replayed:false})
   })
   await page.goto(origin+'/admin/daechion/orders');await page.getByRole('button',{name:'가상 학생',exact:true}).click()
-  await page.getByText('대치온 로그인 세션 확인 필요 — 자동 권한 부여 대기',{exact:false}).waitFor()
+  await page.getByText('대치온 API·관리자 연결 점검 실패 — 신규 청구·자동 등록 대기.',{exact:false}).waitFor()
   await page.screenshot({path:path.join(output,'order-scheduler-admin-20261109.png'),fullPage:true})
   await page.getByLabel('처리 종류').selectOption('RETRY_ACCESS')
   await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
@@ -176,7 +182,7 @@ try{
   detail.canReconcileIdentity=true;detail.canApproveExisting=false;detail.canResumeUnbilled=false
   await page.getByRole('button',{name:'새로 불러오기',exact:true}).click()
   await page.getByLabel('처리 종류').selectOption('RECONCILE_IDENTITY')
-  await page.getByLabel('생성 결과를 확인한 대치온 학생 ID').fill('1001')
+  await page.getByLabel('대조한 대치온 학생 ID').fill('1001')
   await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
   await page.getByLabel('확인 근거·사유').fill('응답 유실 후 생성된 계정의 이름·학생·보호자 번호 확인')
   await page.getByRole('checkbox',{name:/이 신청으로 생성된 학생 계정과/}).check()
@@ -186,7 +192,7 @@ try{
   await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))
   await page.screenshot({path:path.join(output,'identity-recovery-mobile-20261109.png'),fullPage:true})
   await page.getByRole('button',{name:'확인 내용 저장'}).click()
-  await page.getByText('학생 생성 결과 대조 완료 — 현재 결제 재조회 후 재개 필요',{exact:true}).first().waitFor()
+  await page.getByText('학생 계정 대조 완료 — 현재 결제 재조회 후 재개 필요',{exact:true}).first().waitFor()
   assert.equal(detail.order.checkout_state,'REVIEW');assert.equal(detail.order.student_id,'1001');assert.equal(saved.size,10);assert.deepEqual(errors,[])
   detail.order.checkout_state='REVIEW';detail.order.payment_state='PENDING';detail.order.identity_state='WAITING';detail.order.student_id=null;detail.order.review_code=null
   detail.order.contact_snapshot={...contact,studentHistory:'NEW'};detail.bills=[];detail.canReconcileIdentity=false;detail.canResumePaid=false
@@ -217,7 +223,54 @@ try{
   await page.getByText('관리자가 청구 전 신청을 종료함',{exact:true}).first().waitFor()
   assert.equal(detail.order.checkout_state,'CLOSED');assert.equal(saved.size,12);assert.deepEqual(errors,[])
   assert.equal(await page.getByRole('button',{name:'확인 내용 저장'}).isDisabled(),true)
-  console.log(JSON.stringify({ok:true,uniqueActions:saved.size,replayedSameRequest:true,mobileFits:true,pageErrors:errors.length}))
+  // Recover a paid but unacknowledged dispatch on the same synthetic invoice.
+  // This action records evidence only; resume remains a separate confirmation.
+  id='10000000-0000-4000-8000-000000000003'
+  Object.assign(detail.order,{id,version:'1',checkout_state:'REVIEW',payment_state:'PENDING',identity_state:'WAITING',student_id:null,review_code:'bill_send_unknown',notification_state:'NOT_READY'})
+  detail.order.contact_snapshot={...contact,studentHistory:'NEW'}
+  detail.bills=[{bill_id:'90000000000000000003',amount_won:43500,state:'SEND_UNKNOWN',is_current:true,checked_at:new Date().toISOString()}]
+  detail.grants=detail.grants.map(grant=>({...grant,state:'PENDING',review_code:null,enrollment_recorded:false,can_retry:false,weekly_ids:[]}))
+  detail.actions=[];detail.canReconcileBill=true;detail.billRecoveryBillId=detail.bills[0].bill_id;detail.canHold=true
+  detail.canConfirmNewIntake=false;detail.canCloseIntake=false;detail.canResumePaid=false;detail.canApproveExisting=false
+  detail.workerStatus.session_issue=false
+  await page.setViewportSize({width:1440,height:1000})
+  await page.getByRole('button',{name:'새로 불러오기',exact:true}).click()
+  await page.getByLabel('처리 종류').selectOption('RECONCILE_BILL')
+  await page.getByText('대조할 청구서: 90000000000000000003 · 43,500원',{exact:true}).waitFor()
+  await page.getByText('저장 후 현재 결제 재조회 후 보류 해제로 별도 재개해주세요.',{exact:false}).waitFor()
+  await page.getByLabel('담당자',{exact:true}).fill('검수 담당자')
+  await page.getByLabel('확인 근거·사유').fill('동일 청구서의 번호·43,500원·승인시각을 결제선생에서 직접 대조')
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  const recoveryCheckbox=page.getByRole('checkbox',{name:/결제선생에서 이 청구서 번호·금액·승인시각/})
+  assert.equal(await recoveryCheckbox.isChecked(),false)
+  const attemptsBeforeRecovery=attempts.length
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  assert.equal(attempts.length,attemptsBeforeRecovery,'No reconciliation before the payment evidence checkbox is checked')
+  await recoveryCheckbox.check()
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByRole('status').filter({hasText:'청구 발송 결과와 결제 대조가 기록됐습니다.'}).waitFor()
+  await page.getByText(/청구서 90000000000000000003 · 43,500원 · 승인.*원래 발송 시도/).waitFor()
+  assert.equal(detail.order.checkout_state,'REVIEW');assert.equal(detail.order.payment_state,'PAID')
+  assert.equal(detail.order.student_id,null);assert.equal(detail.bills.length,1);assert.equal(detail.bills[0].state,'SENT')
+  assert.ok(detail.grants.every(grant=>grant.state==='PENDING'&&!grant.enrollment_recorded))
+  assert.equal(saved.size,13);assert.equal(detail.actions[0].action,'RECONCILE_BILL')
+  assert.equal(await page.getByRole('option',{name:'청구 발송 결과·결제 대조 기록',exact:true}).isDisabled(),true)
+  await page.getByLabel('처리 종류').selectOption('RESUME_PAID')
+  await page.getByText('확인할 현재 청구서: 90000000000000000003 · 43,500원',{exact:true}).waitFor()
+  assert.equal(await page.getByRole('checkbox',{name:/결제선생에서 이 청구서의/}).isChecked(),false)
+  assert.equal(await page.getByRole('checkbox',{name:/가상 학생 학생의/}).isChecked(),false)
+  await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}))
+  await page.screenshot({path:path.join(output,'urgent-bill-recovery-admin-20261118.png'),fullPage:true})
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth))
+  await page.screenshot({path:path.join(output,'urgent-bill-recovery-mobile-20261118.png'),fullPage:true})
+  await page.getByLabel('확인 근거·사유').fill('발송 결과 대조 후 현재 결제를 다시 확인하고 별도 재개')
+  await page.getByRole('checkbox',{name:/결제선생에서 이 청구서의/}).check()
+  await page.getByRole('checkbox',{name:/가상 학생 학생의/}).check()
+  await page.getByRole('button',{name:'확인 내용 저장'}).click()
+  await page.getByText(`버전 ${Number(detail.order.version)-1} → ${detail.order.version}`,{exact:false}).first().waitFor()
+  assert.equal(detail.order.checkout_state,'READY');assert.equal(detail.actions[0].action,'RESUME_PAID')
+  assert.equal(saved.size,14);assert.deepEqual(errors,[])
+  console.log(JSON.stringify({ok:true,uniqueActions:saved.size,replayedSameRequest:true,billRecoveryHeldBeforeResume:true,mobileFits:true,pageErrors:errors.length}))
 }finally{
   await browser?.close()
   if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill();await exited}

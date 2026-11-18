@@ -8,12 +8,14 @@ import {paidRecoveryAllowed,resumePaid,type PaidEvidence} from './paid-recovery'
 import {queueSheetRecovery} from './sheet-recovery'
 import {recordManualAccess,type AccessEvidence} from './manual-access'
 import {identityRecoveryAllowed,reconcileIdentity} from './identity-recovery'
+import {billRecoveryContext,reconcileBill,type BillRecoveryEvidence} from './bill-recovery'
 import {unattemptedIntake,intakeUntouched,validateNewIntake,paidNewIdentity,validatePaidNewIdentity,type IntakeEvidence} from './intake-review'
 
 const text=(max:number)=>z.string().trim().min(1).max(max).regex(/^[^\u0000-\u001f\u007f]+$/)
 const reason=z.string().trim().min(1).max(1000).regex(/^[^\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/)
 const common={requestKey:z.string().uuid(),orderId:z.string().uuid(),expectedVersion:z.string().regex(/^[1-9]\d{0,18}$/),operatorName:text(80),reason,confirmed:z.literal(true)}
 export const orderAdminActionSchema=z.discriminatedUnion('action',[
+  z.object({...common,action:z.literal('RECONCILE_BILL'),billId:z.string().regex(/^\d{20}$/),confirmPaid:z.literal(true)}).strict(),
   z.object({...common,action:z.literal('RECONCILE_IDENTITY'),studentId:z.number().int().positive().safe(),confirmCreatedAccount:z.literal(true).optional(),
     confirmNotOwned:z.literal(true).optional(),targetIds:z.array(z.number().int().positive().safe()).min(1).max(30).optional(),
     billId:z.string().regex(/^\d{20}$/).optional(),confirmPaid:z.literal(true).optional()}).strict(),
@@ -87,7 +89,10 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
   const reviewed=await latestReview(c,id),age=reviewed?Date.now()-Date.parse(reviewed.checkedAt):0
   const paidNew=paidNewIdentity({...order,...status}),paidNewReady=paidNew&&!reviewed&&!messages.length&&grants.length>0&&grants.every(g=>g.state==='PENDING'&&!g.enrollment_recorded&&Array.isArray(g.weekly_ids)&&g.weekly_ids.length===0)
   const unbilled=order.payment_state==='PENDING'&&!bills.length&&order.student_id===null&&!status.identity_write_started&&!status.identity_token&&order.identity_state==='WAITING'&&['READY','REVIEW'].includes(String(order.checkout_state))
+  const uncertainBill=bills.find(b=>b.is_current&&b.state==='SEND_UNKNOWN')
+  const billRecovery=uncertainBill?await billRecoveryContext(c,tenantId,id,String(order.version),String(uncertainBill.bill_id)):null
   return {order,items,bills,grants,messages,jobs,actions,recoveries,workerStatus,manualGrantIds,manualRevokeIds,sheetRecoveryJobId,canReconcileSheets:sheetRecoveryJobId!==null,
+    canReconcileBill:Boolean(billRecovery),billRecoveryBillId:billRecovery?String(uncertainBill!.bill_id):null,
     sheetRecoveryCanCreateRow:sheetRecoveryJobId!==null&&sheetBlockers[0].sheet_write_started===false,
     canCloseIntake:untouched,canConfirmNewIntake:untouched&&!reviewed&&order.checkout_state==='REVIEW'&&(order.contact_snapshot as {studentHistory?:string}).studentHistory==='NEW',
     identityRecoveryRequiresOwnership:status.identity_write_started===false,
@@ -97,7 +102,7 @@ export async function orderDetail(c:LedgerClient,tenantId:string,id:string){
     canResumePaid:(!paidNew||paidNewReady)&&!grants.some(g=>g.state==='REVOKED')&&paidRecoveryAllowed({...order,...status})&&bills.some(b=>b.is_current&&b.state==='SENT'),canHold:order.checkout_state!=='DRAFT'&&!status.closed_action_id,canApproveExisting:unbilled,
     canResumeUnbilled:unbilled&&order.checkout_state==='REVIEW'&&order.review_code==='admin_hold'&&status.confirmed_at!==null&&(!reviewed||age>=0&&age<=15*60000)}
 }
-export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence,payment?:PaidEvidence,access?:AccessEvidence,intakeEvidence?:IntakeEvidence){
+export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:unknown,evidence?:ReviewEvidence,payment?:PaidEvidence,access?:AccessEvidence,intakeEvidence?:IntakeEvidence,billEvidence?:BillRecoveryEvidence){
   const input=orderAdminActionSchema.parse(raw)
   const fingerprint=createHash('sha256').update(JSON.stringify(input)).digest('hex')
   return orderTransaction(c,async()=>{
@@ -142,7 +147,8 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
         JSON.stringify([...(input.targetIds??[])].sort((a,b)=>a-b))!==JSON.stringify(review.targetIds))throw new OrderAdminError('STATE')
     }
     const nextVersion=(BigInt(input.expectedVersion)+1n).toString()
-    const recoveryEvidence=input.action==='RECONCILE_IDENTITY'&&!order.identity_write_started?{allTargetsNotOwned:true,payment}:
+    if(input.action==='RECONCILE_BILL'&&(!billEvidence||input.billId!==billEvidence.billId))throw new OrderAdminError('STATE')
+    const recoveryEvidence=input.action==='RECONCILE_BILL'?{billRecovery:billEvidence}:input.action==='RECONCILE_IDENTITY'&&!order.identity_write_started?{allTargetsNotOwned:true,payment}:
       input.action==='RESUME_PAID'?{billId:payment?.billId,amountWon:payment?.amountWon,paidAt:payment?.paidAt,checkedAt:payment?.checkedAt,...(paidIntake?{newIdentity:paidIntake,payment}:{})}:
       input.action==='RECONCILE_SHEETS'?{jobId:input.jobId}:input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED'?
         {studentId:access?.studentId,lectureId:access?.lectureId,weeklyLectureIds:access?.weeklyLectureIds,checkedAt:access?.checkedAt,profileFingerprint:access?.profileFingerprint,contextFingerprint:access?.binding,requestFingerprint:order.request_fingerprint}:{}
@@ -150,11 +156,14 @@ export async function applyOrderAdminAction(c:LedgerClient,tenantId:string,raw:u
       student_id,profile_fingerprint,context_fingerprint,order_request_fingerprint,target_ids,checked_at,recovery_evidence)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb)`,[input.requestKey,input.orderId,fingerprint,input.action,'lectureId' in input?input.lectureId:null,
       input.operatorName,input.reason,input.expectedVersion,nextVersion,review?.studentId??null,review?.profileFingerprint??null,review?.binding??intake?.binding??null,review||intake?order.request_fingerprint:null,JSON.stringify(review?.targetIds??intake?.targetIds??[]),review?.checkedAt??intake?.checkedAt??null,JSON.stringify(recoveryEvidence)])
-    const auditFirst=Boolean(paidIntake)||['APPROVE_EXISTING','RECONCILE_IDENTITY','CONFIRM_NEW_INTAKE','CLOSE_INTAKE','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
+    const auditFirst=Boolean(paidIntake)||['RECONCILE_BILL','APPROVE_EXISTING','RECONCILE_IDENTITY','CONFIRM_NEW_INTAKE','CLOSE_INTAKE','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)
     if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!access)throw new OrderAdminError('STATE')
     if((input.action==='MANUAL_ACCESS'||input.action==='RECORD_REVOKED')&&!(await c.query('SELECT 1 FROM daechion_orders.grants WHERE order_id=$1 AND lecture_id=$2',[input.orderId,input.lectureId])).rows.length)throw new OrderAdminError('STATE')
     if(auditFirst)await writeAudit()
-    if(input.action==='CONFIRM_NEW_INTAKE'){
+    if(input.action==='RECONCILE_BILL'){
+      if(!billEvidence||!await reconcileBill(c,order,input.requestKey,billEvidence))throw new OrderAdminError('STATE')
+      await orderChanged(c,input.orderId,'bill_reconciled')
+    }else if(input.action==='CONFIRM_NEW_INTAKE'){
       await c.query("UPDATE daechion_orders.orders SET intake_action_id=$2,checkout_state='READY',review_code=NULL WHERE id=$1",[input.orderId,input.requestKey])
       await orderChanged(c,input.orderId,'new_intake_confirmed')
     }else if(input.action==='CLOSE_INTAKE'){
