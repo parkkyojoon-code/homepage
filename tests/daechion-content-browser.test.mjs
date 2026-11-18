@@ -288,10 +288,33 @@ ${mode==='timeout'?"document.querySelector('#total').remove();":''}</script>`
   }finally{await browser.close()}
 })
 
+test('ownership roster waits for debounced search and reset renders instead of reading the preceding student',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:15000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  const browser=await chromium.launch({headless:true})
+  try{
+    for(const [mode,delay] of [['absent',200],['absent',500],['owned',500],['never',0]]){
+      const page=await browser.newPage();page.setDefaultTimeout(mode==='never'?250:2000)
+      const row=id=>'<tr data-row-id="'+id+'">'+['','-',id===77?'검수학생':'다른 학생','-','010-0000-2222',id===77?'010-0000-0001':'010-0000-0002','','미',''].map(value=>'<td>'+value+'</td>').join('')+'</tr>'
+      const html=`<!doctype html><meta charset="utf-8"><button role="tab">수강생 목록 1명</button><button>일괄 학생 추가</button><input placeholder="검색어 입력 (초성 검색 가능)"><p id="filtered">필터 적용됨 : 1명</p><table><thead><tr>${['','','이름','','학부모 전화번호','학생 전화번호','','',''].map(value=>'<th>'+value+'</th>').join('')}</tr></thead><tbody>${row(88)}</tbody></table><script>
+window.writes=0;document.addEventListener('click',()=>window.writes++);window.searched=false;
+document.querySelector('input').addEventListener('input',event=>{const value=event.target.value;if(!value&&!window.searched)return;if(value)window.searched=true;
+if(${JSON.stringify(mode)}==='never')return;
+setTimeout(()=>{document.querySelector('#filtered').textContent='필터 적용됨 : '+(!value||${JSON.stringify(mode)}==='owned'?1:0)+'명';document.querySelector('tbody').innerHTML=!value?${JSON.stringify(row(88))}:${JSON.stringify(mode)}==='owned'?${JSON.stringify(row(77))}:''},${delay});});</script>`
+      await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:html}))
+      const result=provider.inspectRosterOwnership(page,{...input,lectureIds:[10]})
+      if(mode==='never')await assert.rejects(result)
+      else assert.deepEqual(await result,{studentId:77,lectures:[{id:10,state:mode==='owned'?'OWNED':'NOT_OWNED'}]})
+      assert.equal(await page.evaluate(()=>window.writes),0)
+      await page.close()
+    }
+  }finally{await browser.close()}
+})
+
 test('ownership provider rechecks identity and rejects default-empty rosters after failed API reads',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:15000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
-  for(const mode of ['success','profile-changed','api-error','api-network','no-api','page-error']){
+  for(const mode of ['success','aborted','profile-changed','api-error','api-network','no-api','page-error']){
     let reads=0,saves=0,closes=0
     const launch=async options=>{
       const browser=await chromium.launch(options),newContext=browser.newContext.bind(browser)
@@ -301,10 +324,11 @@ test('ownership provider rechecks identity and rejects default-empty rosters aft
           const page=await newPage()
           await page.route('**/*',route=>{
             if(new URL(route.request().url()).origin==='https://api.daechion.com'){
+              if(route.request().url().endsWith('/aborted'))return route.abort('aborted')
               if(mode==='api-network')return route.abort('failed')
               return route.fulfill({status:mode==='api-error'?503:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:'[]'})
             }
-            return route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><button role="tab">수강생 목록 0명</button><p>차시에서 수강생 추가가 가능해요.</p>'+`<script>${mode==='no-api'?'':"fetch('https://api.daechion.com/fixture-read').catch(()=>{})"};${mode==='page-error'?"setTimeout(()=>{throw Error('fixture failure')},0)":''}</script>`})
+            return route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><button role="tab">수강생 목록 0명</button><p>차시에서 수강생 추가가 가능해요.</p>'+`<script>${mode==='no-api'?'':"fetch('https://api.daechion.com/fixture-read').catch(()=>{})"};${mode==='aborted'?"fetch('https://api.daechion.com/aborted').catch(()=>{})":''};${mode==='page-error'?"setTimeout(()=>{throw Error('fixture failure')},0)":''}</script>`})
           })
           return page
         };return context
@@ -313,9 +337,9 @@ test('ownership provider rechecks identity and rejects default-empty rosters aft
     const sessions={run:work=>work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,assert:async()=>{},save:async()=>{saves++}})}
     const access=provider.browserAccessProvider(env,{...api,student:async()=>({...await api.student(),...(mode==='profile-changed'&&++reads>1?{parentPhoneNumber:'010-0000-3333'}:{})})},{launch,sessions})
     const result=access.inspectOwnership({...input,lectureIds:[10]})
-    if(mode!=='success')await assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
+    if(!['success','aborted'].includes(mode))await assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
     else assert.deepEqual(await result,{studentId:77,lectures:[{id:10,state:'NOT_OWNED'}]})
-    assert.equal(saves,mode==='success'?1:0);assert.equal(closes,1)
+    assert.equal(saves,['success','aborted'].includes(mode)?1:0);assert.equal(closes,1)
   }
 })
 
