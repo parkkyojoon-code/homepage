@@ -124,13 +124,26 @@ function runtime(env, overrides = {}) {
     ]) if (enabled) await observe(usingClient, phase, ready)
     let processingFailed = false, deliveryFailed = false
     try {
+      if (effective.send) await (overrides.autoReviewExistingOrder ?? built('orders/automatic-review').autoReviewExistingOrder)(id, {
+        tenantId: env.DAECHION_TENANT_ID.trim(), withClient: usingClient, api: official,
+        inspectOwnership: input => {
+          const browser = enrollmentProvider()
+          if (!browserAvailable(browser) || typeof browser.inspectOwnership !== 'function') throw Error('ORDER_OWNERSHIP_UNAVAILABLE')
+          return browser.inspectOwnership(input)
+        },
+      })
       // Read readiness again after diagnostic awaits. A quarantined browser
       // must not turn an untouched order into a claimed, unknown grant.
       if (!browserAvailable(enrollment)) { effective.enroll = false; effective.send = false }
       await (overrides.processOrder ?? built('orders/runner').processOrder)(id, effective, {
         withClient: usingClient, provider, daechion: enrollment, tenantId: env.DAECHION_TENANT_ID.trim(),
         preflight: context => built('orders/preflight').preflightOrder(context, {
-          tenantId: env.DAECHION_TENANT_ID.trim(), subjectSecret: env.DAECHION_ORDERS_SUBJECT_SECRET, api: official,
+          tenantId: env.DAECHION_TENANT_ID.trim(), subjectSecret: env.DAECHION_ORDERS_SUBJECT_SECRET, api: { ...official,
+            inspectOwnership: input => {
+              const browser = enrollmentProvider()
+              if (!browserAvailable(browser) || typeof browser.inspectOwnership !== 'function') throw Error('ORDER_OWNERSHIP_UNAVAILABLE')
+              return browser.inspectOwnership(input)
+            } },
           manualReview: context => usingClient(client => built('orders/manual-review').latestReview(client, context.orderId)) }),
       })
     } catch {

@@ -246,6 +246,89 @@ async function applyAndVerify(page,input,lecture,onStage=()=>{},authenticated=as
   return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:input.weeklyLectureIds}
 }
 
+// A missing row is proof only after the loaded roster explicitly reports zero
+// filtered students. Never infer absence from a timeout, a virtualized page, an
+// unchecked add-student picker, or unavailable file permissions.
+async function inspectRosterOwnership(page,input,onStage=()=>{}) {
+  const result=[]
+  for(const lectureId of input.lectureIds){
+    onStage('OWNERSHIP_ROSTER')
+    const target=`${ORIGIN}/crm/lectures/${lectureId}/participants`
+    await page.goto(target)
+    const roster=page.getByRole('tab',{name:/^수강생 목록\s*\d+명$/})
+    await roster.waitFor({state:'visible'})
+    await page.waitForLoadState('networkidle',{timeout:10000})
+    if(page.url()!==target||await roster.count()!==1)fail()
+    async function total(){
+      const match=(await roster.innerText()).replace(/\s+/g,'').match(/^수강생목록(\d+)명$/)
+      if(!match||!Number.isSafeInteger(Number(match[1])))fail()
+      return Number(match[1])
+    }
+    const count=await total()
+    const rows=page.locator('tbody tr[data-row-id]')
+    const search=page.getByPlaceholder('검색어 입력 (초성 검색 가능)',{exact:true})
+    const filtered=page.getByText(/^필터 적용됨\s*:\s*\d+명$/)
+    const filteredCount=async()=>{
+      if(await filtered.count()!==1)fail()
+      const match=(await filtered.innerText()).replace(/\s+/g,'').match(/^필터적용됨:(\d+)명$/)
+      if(!match||!Number.isSafeInteger(Number(match[1])))fail()
+      return Number(match[1])
+    }
+    const empty=page.getByText('차시에서 수강생 추가가 가능해요.',{exact:true})
+    if(count===0&&await empty.count()===1&&await empty.isVisible()){
+      if(await rows.count()!==0||await total()!==0)fail()
+      result.push({id:lectureId,state:'NOT_OWNED'})
+      continue
+    }
+    await page.getByRole('button',{name:'일괄 학생 추가',exact:true}).waitFor({state:'visible'})
+    if(await search.count()!==1)fail()
+    // Prove the initial roster is unfiltered before using a phone search to
+    // establish absence. Existing hidden filters must never hide a student.
+    await search.fill('')
+    await page.waitForLoadState('networkidle',{timeout:10000})
+    if(await filteredCount()!==count||await total()!==count)fail()
+    const headers=(await page.locator('thead th').allTextContents()).map(value=>value.replace(/\s+/g,' ').trim())
+    if(headers.length!==9||headers[2]!=='이름'||headers[4]!=='학부모 전화번호'||headers[5]!=='학생 전화번호')fail()
+    async function completeRosterIds(){
+      // A large or virtualized roster can still prove a positive match, but
+      // cannot prove absence until every advertised student is represented.
+      if(await rows.count()!==count)return null
+      const ids=[]
+      for(const row of await rows.all()){
+        const value=await row.getAttribute('data-row-id'),id=Number(value)
+        if(!/^[1-9]\d*$/.test(value??'')||!Number.isSafeInteger(id)||await row.locator('td').count()!==9)fail()
+        ids.push(id)
+      }
+      if(new Set(ids).size!==ids.length)fail()
+      return ids.sort((a,b)=>a-b)
+    }
+    const initialIds=await completeRosterIds()
+    await search.fill(input.studentPhone)
+    await page.waitForLoadState('networkidle',{timeout:10000})
+    if(await total()!==count)fail()
+    const found=await filteredCount(),visible=await rows.count()
+    if(found===0){
+      if(visible!==0||!initialIds||initialIds.includes(input.studentId))fail()
+      // Independently reread the complete unfiltered roster. A premature empty
+      // search result or a concurrent membership change is never nonownership.
+      await search.fill('')
+      await page.waitForLoadState('networkidle',{timeout:10000})
+      if(await total()!==count||await filteredCount()!==count||
+        JSON.stringify(await completeRosterIds())!==JSON.stringify(initialIds))fail()
+      result.push({id:lectureId,state:'NOT_OWNED'})
+    }else{
+      if(found!==1||visible!==1)fail()
+      const row=rows.first(),cells=row.locator('td')
+      if(await row.getAttribute('data-row-id')!==String(input.studentId)||await cells.count()!==9||
+        (await cells.nth(2).innerText()).normalize('NFC').trim()!==input.studentName.normalize('NFC').trim()||
+        phone(await cells.nth(5).innerText())!==input.studentPhone)fail()
+      result.push({id:lectureId,state:'OWNED'})
+    }
+    if(await total()!==count||found>0&&(await filteredCount()!==found||await rows.count()!==visible))fail()
+  }
+  return {studentId:input.studentId,lectures:result}
+}
+
 function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,operationTimeoutMs=300000,cleanupTimeoutMs=5000}={}) {
   if(env.DAECHION_CONTENT_BROWSER_ENABLED!=='true'||env.DAECHION_CONTENT_BROWSER_VERIFIED!=='true')throw Error('CONTENT_BROWSER_DISABLED')
   if(!Number.isSafeInteger(operationTimeoutMs)||operationTimeoutMs<20||operationTimeoutMs>300000||
@@ -281,9 +364,9 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
     }
     return wrap(page)
   }
-  function operation(){
+  function operation(maximumMs=operationTimeoutMs){
     let stopped=false,stopWork,rejectCaller,terminationPending=false,stage='API_PREFLIGHT'
-    const deadline=Date.now()+operationTimeoutMs,listeners=new Set()
+    const deadline=Date.now()+maximumMs,listeners=new Set()
     const error=()=>Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage,...(quarantined?{browserTerminationUnconfirmed:true}:{})})
     const interrupted=new Promise((_,reject)=>{stopWork=reject})
     // Cancellation can precede the first awaited step, or occur during cleanup.
@@ -291,8 +374,8 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
     const callerFailure=new Promise((_,reject)=>{rejectCaller=reject})
     const stop=()=>{if(!stopped){stopped=true;stopWork(error());for(const listener of listeners)listener()}}
     const check=()=>{if(stopped)throw error()}
-    const workTimer=setTimeout(stop,operationTimeoutMs-cleanupTimeoutMs)
-    const lifetimeTimer=setTimeout(()=>{if(terminationPending)quarantined=true;stop();rejectCaller(error())},operationTimeoutMs)
+    const workTimer=setTimeout(stop,maximumMs-cleanupTimeoutMs)
+    const lifetimeTimer=setTimeout(()=>{if(terminationPending)quarantined=true;stop();rejectCaller(error())},maximumMs)
     return {deadline,error,stop,check,callerFailure,
       report(value){check();stage=value;onStage(value)},
       onStop(listener){listeners.add(listener);if(stopped)listener();return ()=>listeners.delete(listener)},
@@ -302,7 +385,7 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
       clear(){clearTimeout(workTimer);clearTimeout(lifetimeTimer)},
     }
   }
-  async function execute(input,lease,scope,refreshOnly=false){
+  async function execute(input,lease,scope,refreshOnly=false,ownershipOnly=false){
     let browser,server,context,finished=false,closeBrowser,closeServer,killServer
     const report=scope.report
     const step=scope.step
@@ -347,16 +430,29 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
     try {
       await step(()=>lease.assert())
       report('API_PREFLIGHT')
-      if(!refreshOnly&&(!Number.isSafeInteger(input.lectureId)||input.lectureId<=0))fail()
-      if(!refreshOnly&&(!uniqueIds(input.weeklyLectureIds)||!Number.isSafeInteger(input.studentId)||input.studentId<=0||
+      if(ownershipOnly&&(!Array.isArray(input.lectureIds)||input.lectureIds.length<1||input.lectureIds.length>30||
+        input.lectureIds.some(id=>!Number.isSafeInteger(id)||id<=0)||new Set(input.lectureIds).size!==input.lectureIds.length))fail()
+      if(!refreshOnly&&!ownershipOnly&&(!Number.isSafeInteger(input.lectureId)||input.lectureId<=0))fail()
+      if(!refreshOnly&&(!Number.isSafeInteger(input.studentId)||input.studentId<=0||
+        !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()))fail()
+      if(!refreshOnly&&!ownershipOnly&&(!uniqueIds(input.weeklyLectureIds)||
         !/^01\d{9}$/.test(input.studentPhone)||!input.studentName?.trim()||typeof input.beforeWrite!=='function'))fail()
       if(String((await step(()=>api.me())).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
+      let initialProfile
       if(!refreshOnly){
         const student=await step(()=>api.student(input.studentId))
         if(student.id!==input.studentId||phone(student.studentPhoneNumber)!==input.studentPhone||student.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim())fail()
+        if(ownershipOnly)initialProfile=JSON.stringify({id:student.id,name:student.name.normalize('NFC').trim(),
+          studentPhone:phone(student.studentPhoneNumber),guardians:[phone(student.parentPhoneNumber),phone(student.parentPhoneNumber2)].sort()})
       }
       let lecture
-      if(!refreshOnly){
+      if(ownershipOnly){
+        const catalog=await step(()=>api.lectures())
+        for(const id of input.lectureIds){
+          const matches=catalog.filter(item=>item.id===id)
+          if(matches.length!==1||!matches[0].opened||!matches[0].weeklyLectures?.length)fail()
+        }
+      }else if(!refreshOnly){
         const matches=(await step(()=>api.lectures())).filter(item=>item.id===input.lectureId)
         if(matches.length!==1)fail()
         lecture=matches[0]
@@ -417,6 +513,32 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
         await authenticated()
         return {refreshed:true,...(input.exerciseExpiredAccess?{expiredAccessExercised:true}:{})}
       }
+      if(ownershipOnly){
+        let observedRead=false,failedRead=false
+        const apiRead=request=>['xhr','fetch'].includes(request.resourceType())&&new URL(request.url()).origin==='https://api.daechion.com'
+        // A UI may render its default zero while its roster request fails.
+        // Observe status only; never retain response bodies, URLs or students.
+        page.on('response',response=>{
+          try{
+            if(apiRead(response.request())){
+              if(response.status()>=400)failedRead=true
+              else if(response.status()>=200&&response.status()<300)observedRead=true
+            }
+          }catch{failedRead=true}
+        })
+        page.on('requestfailed',request=>{try{if(apiRead(request))failedRead=true}catch{failedRead=true}})
+        page.on('pageerror',()=>{failedRead=true})
+        const result=await step(()=>inspectRosterOwnership(page,input,report))
+        if(failedRead||!observedRead)fail()
+        const student=await step(()=>api.student(input.studentId)),matches=await step(()=>api.students(input.studentPhone,''))
+        const current=JSON.stringify({id:student.id,name:student.name.normalize('NFC').trim(),studentPhone:phone(student.studentPhoneNumber),
+          guardians:[phone(student.parentPhoneNumber),phone(student.parentPhoneNumber2)].sort()})
+        if(current!==initialProfile||matches.length!==1||matches[0].id!==input.studentId||
+          String((await step(()=>api.me())).tenantId)!==env.DAECHION_TENANT_ID?.trim())fail()
+        await authenticated()
+        if(failedRead||!observedRead)fail()
+        return result
+      }
       const guardedInput={...input,beforeWrite:async()=>{
         const current=await step(()=>api.student(input.studentId)),matches=await step(()=>api.students(input.studentPhone,''))
         if(current.id!==input.studentId||phone(current.studentPhoneNumber)!==input.studentPhone||current.name.normalize('NFC').trim()!==input.studentName.normalize('NFC').trim()||
@@ -442,23 +564,24 @@ function browserAccessProvider(env,api,{launch,chromium,onStage=()=>{},sessions,
       lease.signal.removeEventListener('abort',abort)
     }
   }
-  async function run(input,refreshOnly=false){
+  async function run(input,refreshOnly=false,ownershipOnly=false){
     if(quarantined)throw Object.assign(Error('CONTENT_ACCESS_UNCONFIRMED'),{stage:'BROWSER_CONTEXT',browserTerminationUnconfirmed:true})
-    const scope=operation()
+    const scope=operation(ownershipOnly?Math.min(operationTimeoutMs,60000):operationTimeoutMs)
     if(sessions){
-      try{return await Promise.race([Promise.resolve().then(()=>sessions.run(lease=>execute(input,lease,scope,refreshOnly))),scope.callerFailure])}
+      try{return await Promise.race([Promise.resolve().then(()=>sessions.run(lease=>execute(input,lease,scope,refreshOnly,ownershipOnly))),scope.callerFailure])}
       finally{scope.clear()}
     }
     // Isolated tests/local tooling only. Production injects durable sessions.
     if(memoryBusy){scope.clear();throw Error('CONTENT_SESSION_BUSY')}
     memoryBusy=true
-    const work=execute(input,{state:JSON.stringify(state),signal:new AbortController().signal,assert:async()=>{},save:async value=>{state=storageState(value)}},scope,refreshOnly)
+    const work=execute(input,{state:JSON.stringify(state),signal:new AbortController().signal,assert:async()=>{},save:async value=>{state=storageState(value)}},scope,refreshOnly,ownershipOnly)
       .finally(()=>{memoryBusy=false})
     try{return await Promise.race([work,scope.callerFailure])}
     finally{scope.clear()}
   }
   return {isAvailable:()=>!quarantined,ensureContentAccess:input=>run(input),
+    inspectOwnership:input=>run(input,false,true),
     ensureFirstLessonAccess:input=>run({...input,firstOnly:true,weeklyLectureIds:[input.weeklyLectureId]}),
     refreshSession:(lectureId,options={})=>run({lectureId,exerciseExpiredAccess:options.exerciseExpiredAccess===true},true)}
 }
-module.exports={browserAccessProvider,applyAndVerify,verifyFile,verifyCollection,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}
+module.exports={browserAccessProvider,applyAndVerify,inspectRosterOwnership,verifyFile,verifyCollection,verifyLibrary,storageState,exactStudentRow,ACCESS_LABELS}

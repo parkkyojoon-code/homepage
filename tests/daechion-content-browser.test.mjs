@@ -19,6 +19,19 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done});
 const nextTurn=()=>new Promise(resolve=>setImmediate(resolve))
 const never=()=>new Promise(()=>{})
 const shortDeadline={operationTimeoutMs:100,cleanupTimeoutMs:30}
+
+test('read-only ownership has a bounded lifetime and rejects invalid targets before launching',async()=>{
+  for(const lectureIds of [[],[10,10],[0],Array.from({length:31},(_,i)=>i+1)]){
+    let launches=0
+    const access=provider.browserAccessProvider(env,api,{...shortDeadline,launch:async()=>{launches++;throw Error('must not launch')}})
+    await assert.rejects(access.inspectOwnership({...input,lectureIds}),/CONTENT_ACCESS_UNCONFIRMED/)
+    assert.equal(launches,0)
+  }
+  const access=provider.browserAccessProvider(env,{...api,me:()=>new Promise(()=>{})},{...shortDeadline,launch:async()=>{throw Error('must not launch')}})
+  const started=Date.now()
+  await assert.rejects(access.inspectOwnership({...input,lectureIds:[10]}),/CONTENT_ACCESS_UNCONFIRMED/)
+  assert.ok(Date.now()-started<1000)
+})
 function refreshFixture(overrides={}){
   let currentUrl=''
   const locator={waitFor:async()=>{},getAttribute:async()=>'/crm/admin'}
@@ -248,6 +261,64 @@ test('academy API authentication failure is reported before browser launch and w
   }
   assert.equal(launched,0)
 })
+test('ownership roster proves a complete phone search, rejects uncertain tables and never selects or saves students',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:40000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  const browser=await chromium.launch({headless:true})
+  try{
+    for(const mode of ['owned','virtual-owned','absent','empty','hidden-filter','changed-total','changed-roster','virtual-absent','wrong-id','wrong-phone','no-id','malformed','stale-row','missing-filter','timeout']){
+      const page=await browser.newPage();page.setDefaultTimeout(200)
+      const row=(id=77,phone='010-0000-0001')=>`<tr ${mode==='no-id'?'':`data-row-id="${id}"`}>${['','-','검수학생','-','010-0000-2222',phone,'','미',''].slice(0,mode==='malformed'?8:9).map(value=>'<td>'+value+'</td>').join('')}</tr>`
+      const total=mode.startsWith('virtual-')?2:mode==='empty'?0:1
+      const source=`<!doctype html><meta charset="utf-8"><div id="root"><button role="tab" id="total">수강생 목록 ${total}명</button>${mode==='empty'?'<p>차시에서 수강생 추가가 가능해요.</p>':`<button>일괄 학생 추가</button><input placeholder="검색어 입력 (초성 검색 가능)">${mode==='missing-filter'?'':'<p id="filtered">필터 적용됨: '+(mode==='hidden-filter'?0:total)+'명</p>'}<table><thead><tr>${['','','이름','','학부모 전화번호','학생 전화번호','','',''].map(text=>'<th>'+text+'</th>').join('')}</tr></thead><tbody>${mode==='hidden-filter'?'':row(['absent','changed-roster'].includes(mode)?88:77)}</tbody></table>`}</div><script>
+window.writes=0;document.addEventListener('click',()=>window.writes++);
+const search=document.querySelector('input');if(search)search.addEventListener('input',()=>{
+const mode=${JSON.stringify(mode)},filtered=document.querySelector('#filtered');if(!search.value){if(window.searched){if(filtered)filtered.textContent='필터 적용됨: '+${total}+'명';document.querySelector('tbody').innerHTML=${JSON.stringify(row(mode==='changed-roster'?89:88))}}return};window.searched=true;
+if(mode==='changed-total')document.querySelector('#total').textContent='수강생 목록 2명';
+if(filtered)filtered.textContent='필터 적용됨: '+(['absent','virtual-absent','changed-roster','stale-row'].includes(mode)?0:1)+'명';
+document.querySelector('tbody').innerHTML=['absent','virtual-absent','changed-roster'].includes(mode)?'':${JSON.stringify(row(mode==='wrong-id'?88:77,mode==='wrong-phone'?'010-0000-0002':'010-0000-0001'))};});
+${mode==='timeout'?"document.querySelector('#total').remove();":''}</script>`
+      await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:source}))
+      const query=provider.inspectRosterOwnership(page,{...input,lectureIds:[10]})
+      if(['owned','virtual-owned','absent','empty'].includes(mode))assert.deepEqual(await query,{studentId:77,lectures:[{id:10,state:mode.includes('owned')?'OWNED':'NOT_OWNED'}]})
+      else await assert.rejects(query,undefined,mode)
+      assert.equal(await page.evaluate(()=>window.writes),0,mode+' must not click any add/select/save control')
+      await page.close()
+    }
+  }finally{await browser.close()}
+})
+
+test('ownership provider rechecks identity and rejects default-empty rosters after failed API reads',
+  {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:15000},async()=>{
+  const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
+  for(const mode of ['success','profile-changed','api-error','api-network','no-api','page-error']){
+    let reads=0,saves=0,closes=0
+    const launch=async options=>{
+      const browser=await chromium.launch(options),newContext=browser.newContext.bind(browser)
+      return {newContext:async options=>{
+        const context=await newContext(options),newPage=context.newPage.bind(context)
+        context.newPage=async()=>{
+          const page=await newPage()
+          await page.route('**/*',route=>{
+            if(new URL(route.request().url()).origin==='https://api.daechion.com'){
+              if(mode==='api-network')return route.abort('failed')
+              return route.fulfill({status:mode==='api-error'?503:200,contentType:'application/json',headers:{'access-control-allow-origin':'*'},body:'[]'})
+            }
+            return route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><button role="tab">수강생 목록 0명</button><p>차시에서 수강생 추가가 가능해요.</p>'+`<script>${mode==='no-api'?'':"fetch('https://api.daechion.com/fixture-read').catch(()=>{})"};${mode==='page-error'?"setTimeout(()=>{throw Error('fixture failure')},0)":''}</script>`})
+          })
+          return page
+        };return context
+      },close:async()=>{closes++;await browser.close()}}
+    }
+    const sessions={run:work=>work({state:env.DAECHION_BROWSER_STORAGE_STATE,signal:new AbortController().signal,assert:async()=>{},save:async()=>{saves++}})}
+    const access=provider.browserAccessProvider(env,{...api,student:async()=>({...await api.student(),...(mode==='profile-changed'&&++reads>1?{parentPhoneNumber:'010-0000-3333'}:{})})},{launch,sessions})
+    const result=access.inspectOwnership({...input,lectureIds:[10]})
+    if(mode!=='success')await assert.rejects(result,/CONTENT_ACCESS_UNCONFIRMED/)
+    else assert.deepEqual(await result,{studentId:77,lectures:[{id:10,state:'NOT_OWNED'}]})
+    assert.equal(saves,mode==='success'?1:0);assert.equal(closes,1)
+  }
+})
+
 test('production BrowserServer launch/connect/close APIs terminate the owned Chromium process after a local refresh',
   {skip:process.env.DAECHION_BROWSER_FIXTURE_TEST!=='true',timeout:20000},async()=>{
   const {chromium}=require('../workers/daechion/browser/node_modules/playwright')
