@@ -62,6 +62,56 @@ test('session-only diagnostics expose only approved stage codes and never start 
   }
 })
 
+test('fatal session termination stops the legacy runtime before selecting bills, payments, enrollment or delivery',async()=>{
+  let queries=0
+  const service=worker.runtime({DAECHION_API_KEY:'synthetic-only',DAECHION_TENANT_ID:'116',DAECHION_PAYMENT_READ_ENABLED:'true',
+    DAECHION_IDENTITY_LOOKUP_VERIFIED:'true',DAECHION_ACCESS_POLICY_VERIFIED:'true',DAECHION_DIAGNOSTICS_SHEETS_ENABLED:'true'},
+    {withClient:async()=>{queries++;assert.fail('A fatal refresh cannot continue to DB work')},providers:{
+      payment:{accountId:'fixture'},daechion:{me:async()=>({tenantId:116}),refreshSession:async()=>{
+        throw Object.assign(Error('private credentials'),{stage:'SESSION_REFRESH',browserTerminationUnconfirmed:true})
+      }}}})
+  const first=await service.cycle(false,{enrollmentEnabled:true,paymentsEnabled:true,sheetsEnabled:true,readyMessagesEnabled:true})
+  assert.equal(first.browserRestartRequired,true);assert.equal(first.failed,1)
+  assert.equal(first.sent+first.checked+first.enrolled+first.sheets+first.messages,0);assert.equal(queries,0)
+  const next=await service.cycle(false,{enrollmentEnabled:true,paymentsEnabled:true})
+  assert.equal(next.browserRestartRequired,true);assert.equal(queries,0)
+})
+
+test('fatal session-only refresh and legacy cycle require a restart without diagnostics or another wait',async()=>{
+  for(const sessionOnly of [true,false]){
+    const output=[],before=['SIGTERM','SIGINT'].map(event=>process.listenerCount(event));let cycles=0,waits=0
+    await assert.rejects(worker.main({argv:sessionOnly?['--session-only']:[],
+      env:{DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_SESSION_MAINTENANCE_ENABLED:'true',DAECHION_DIAGNOSTICS_SHEETS_ENABLED:'true'},
+      makeRuntime:()=>({check:async()=>{},maintainSession:async()=>{cycles++;throw Object.assign(Error('private key'),{browserTerminationUnconfirmed:true})},
+        cycle:async()=>{cycles++;return {browserRestartRequired:true,private:'must not log'}},syncDiagnostics:async()=>assert.fail('No later external writes')}),
+      write:value=>output.push(value),wait:async()=>{waits++}}),/^Error: DAECHION_BROWSER_RESTART_REQUIRED$/)
+    assert.equal(cycles,1);assert.equal(waits,0)
+    assert.deepEqual(output,[{...(sessionOnly?{sessionMaintenance:true}:{}),browserRestartRequired:true,code:'DAECHION_BROWSER_RESTART_REQUIRED',sending:false}])
+    assert.deepEqual(['SIGTERM','SIGINT'].map(event=>process.listenerCount(event)),before)
+    assert.equal(JSON.stringify(output).includes('private'),false)
+  }
+})
+
+test('ordinary session refresh failures still retry instead of restarting the worker',async()=>{
+  const output=[],controller=new AbortController();let refreshes=0,waits=0
+  await worker.main({argv:['--session-only'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_SESSION_MAINTENANCE_ENABLED:'true'},signal:controller.signal,
+    makeRuntime:()=>({check:async()=>{},maintainSession:async()=>{refreshes++;if(refreshes===1)throw Error('private transient failure');return {refreshed:true}}}),
+    write:value=>output.push(value),wait:async ms=>{waits++;assert.equal(ms,waits===1?60000:900000);if(waits===2)controller.abort()}})
+  assert.equal(refreshes,2);assert.equal(waits,2)
+  assert.deepEqual(output,[{sessionMaintenance:true,refreshed:false,sending:false},{sessionMaintenance:true,refreshed:true,sending:false}])
+})
+
+test('session-only CLI fatal exit cannot hang on live pools or timers',()=>{
+  const script=`const worker=require('./workers/daechion/billing.cjs');setInterval(()=>{},1000);
+    worker.runCli({argv:['--session-only'],env:{DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_SESSION_MAINTENANCE_ENABLED:'true'},
+    makeRuntime:()=>({check:async()=>{},maintainSession:async()=>{throw Object.assign(Error('private credentials'),{browserTerminationUnconfirmed:true})}})});`
+  const result=spawnSync(process.execPath,['-e',script],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:5000})
+  assert.equal(result.error,undefined);assert.equal(result.status,1)
+  assert.deepEqual(JSON.parse(result.stdout),{sessionMaintenance:true,browserRestartRequired:true,code:'DAECHION_BROWSER_RESTART_REQUIRED',sending:false})
+  assert.equal(result.stderr.trim(),'DAECHION_BROWSER_RESTART_REQUIRED')
+  assert.equal((result.stdout+result.stderr).includes('private'),false)
+})
+
 test('explicit scoped Sheets reconciliation cannot run financial phases even with their flags enabled',async()=>{
   const id='10000000-0000-4000-8000-000000000001',calls=[]
   const env={DAECHION_BILLING_WORKER_ENABLED:'true',DAECHION_ACCEPTANCE_TEST_ONLY:'true',DAECHION_ACCEPTANCE_APPLICATION_ID:id,

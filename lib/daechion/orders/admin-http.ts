@@ -6,6 +6,7 @@ import type {BillingContext} from './billing'
 import {paidContext,type PaidContext,type PaidEvidence} from './paid-recovery'
 import type {AccessEvidence} from './manual-access'
 import type {IntakeEvidence} from './intake-review'
+import {billRecoveryContext,type BillRecoveryContext,type BillRecoveryEvidence} from './bill-recovery'
 export interface OrderAdminPorts {
   enabled:boolean;tenantId:string;origins:string[];authed():Promise<boolean>
   withClient<T>(run:(c:LedgerClient)=>Promise<T>):Promise<T>
@@ -13,6 +14,7 @@ export interface OrderAdminPorts {
   inspectNewIntake?(context:BillingContext):Promise<IntakeEvidence|null>
   inspectExisting?(context:BillingContext,studentId:number,unambiguous?:boolean):Promise<ReviewEvidence>
   inspectPaid?(context:PaidContext):Promise<PaidEvidence|null>
+  inspectBillRecovery?(context:BillRecoveryContext):Promise<BillRecoveryEvidence|null>
   inspectAccess?(context:BillingContext,studentId:number,lectureId:number,revoke:boolean):Promise<AccessEvidence>
 }
 const json=(data:unknown,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Robots-Tag':'noindex'}})
@@ -58,10 +60,16 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
     let payment:PaidEvidence|undefined
     let access:AccessEvidence|undefined
     let intake:IntakeEvidence|undefined
-    if(['CONFIRM_NEW_INTAKE','APPROVE_EXISTING','RECONCILE_IDENTITY','RESUME_PAID','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)){
+    let billEvidence:BillRecoveryEvidence|undefined
+    if(['RECONCILE_BILL','CONFIRM_NEW_INTAKE','APPROVE_EXISTING','RECONCILE_IDENTITY','RESUME_PAID','MANUAL_ACCESS','RECORD_REVOKED'].includes(input.action)){
       const replay=await readOnly(ports,c=>replayOrderAction(c,ports.tenantId,input))
       if(replay)return json({success:true,...replay})
-      if(input.action==='CONFIRM_NEW_INTAKE'){
+      if(input.action==='RECONCILE_BILL'){
+        if(!ports.inspectBillRecovery)throw new OrderAdminError('STATE')
+        const context=await readOnly(ports,c=>billRecoveryContext(c,ports.tenantId,input.orderId,input.expectedVersion,input.billId))
+        if(!context)throw new OrderAdminError('STATE')
+        const checked=await ports.inspectBillRecovery(context);if(!checked)throw new OrderAdminError('PAYMENT');billEvidence=checked
+      }else if(input.action==='CONFIRM_NEW_INTAKE'){
         if(!ports.inspectNewIntake)throw new OrderAdminError('STATE')
         const context=await readOnly(ports,c=>contextFromOrder(c,ports.tenantId,input.orderId,input.expectedVersion))
         if(!context)throw new OrderAdminError('STALE')
@@ -102,7 +110,7 @@ export async function orderAdminPost(request:Request,ports:OrderAdminPorts){
         access=await ports.inspectAccess(context,input.studentId,input.lectureId,input.action==='RECORD_REVOKED')
       }
     }
-    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence,payment,access,intake)})})
+    return json({success:true,...await ports.withClient(async c=>{await ports.ready(c);return applyOrderAdminAction(c,ports.tenantId,input,evidence,payment,access,intake,billEvidence)})})
   }catch(error){
     // A duplicate may commit after the initial replay read, while this request
     // is still obtaining its context or external read-only evidence. Return the

@@ -1,4 +1,7 @@
 const { setTimeout: sleep } = require('node:timers/promises')
+const BROWSER_RESTART_REQUIRED = 'DAECHION_BROWSER_RESTART_REQUIRED'
+const fatalBrowser = value => value?.browserRestartRequired === true || value?.browserTerminationUnconfirmed === true || value?.message === BROWSER_RESTART_REQUIRED
+const restartError = () => Object.assign(Error(BROWSER_RESTART_REQUIRED), { browserTerminationUnconfirmed: true })
 
 // Only locally defined phase names may enter logs; never serialize errors.
 const sessionFailureStage = error => ['API_PREFLIGHT','BROWSER_LAUNCH','BROWSER_CONTEXT','SESSION_REFRESH'].includes(error?.stage) ? error.stage : undefined
@@ -59,7 +62,11 @@ function runtime(env,{withClient,providers={}}={}) {
       merchant:env.PAYSSAM_MERCHANT,callbackUrl:env.DAECHION_BILLING_CALLBACK_URL})
     return provider
   }
-  let daechion, tenantChecked = false,sessionRefreshAt=0
+  let daechion, tenantChecked = false,sessionRefreshAt=0,browserRestartRequired=false
+  function browserAvailable(){
+    if(daechion?.isAvailable?.()===false)browserRestartRequired=true
+    return !browserRestartRequired
+  }
   let messageProvider
   function readyMessageProvider(){
     if(providers.message)return providers.message
@@ -110,10 +117,17 @@ function runtime(env,{withClient,providers={}}={}) {
   }
   async function maintainSession(){
     try{
+      if(!browserAvailable())throw restartError()
       const result=await browserProvider().refreshSession()
+      if(!browserAvailable())throw restartError()
       await observe('sessionRefresh',undefined,result?.refreshed===true)
       return result
-    }catch(error){await observe('sessionRefresh',undefined,false,sessionFailureStage(error));throw error}
+    }catch(error){
+      if(fatalBrowser(error)||!browserAvailable())browserRestartRequired=true
+      if(browserRestartRequired)throw restartError()
+      await observe('sessionRefresh',undefined,false,sessionFailureStage(error))
+      throw error
+    }
   }
   return {
     maintainSession,
@@ -162,6 +176,8 @@ function runtime(env,{withClient,providers={}}={}) {
       // Never announce readiness until this external prerequisite is verified.
       if ((enrollmentEnabled || readyMessagesEnabled) && env.DAECHION_ACCESS_POLICY_VERIFIED !== 'true') throw Error('ACCESS_POLICY_VERIFICATION_REQUIRED')
       const outcomes = { sent: 0, unknown: 0, skipped: 0, failed: 0, checked: 0, enrolled: 0, review: 0, sheets:0,messages:0,deferred:0 }
+      const restartRequired=()=>({...outcomes,browserRestartRequired:true})
+      if(!browserAvailable())return restartRequired()
       const failed = (phase,error) => {
         outcomes.failed++
         outcomes.failurePhases ??= {}
@@ -178,6 +194,7 @@ function runtime(env,{withClient,providers={}}={}) {
         try{await maintainSession();sessionRefreshAt=Date.now()+15*60*1000}
         catch(error){failed('sessionRefresh',error);sessionRefreshAt=Date.now()+60000}
       }
+      if(!browserAvailable())return restartRequired()
       const ids = sendEnabled ? await withAutomationClient(async client => {
         const result = await client.query(`SELECT a.id FROM daechion_automation.applications a
           WHERE a.payment_state='PENDING' AND a.automation_state='ACTIVE'
@@ -223,11 +240,18 @@ function runtime(env,{withClient,providers={}}={}) {
         for (const row of applications) {
           try {
             const result = await enrollApplication(row.id, true, { daechion,tenantId:env.DAECHION_TENANT_ID.trim(), withClient: withAutomationClient })
+            if(!browserAvailable())return restartRequired()
             if(['DONE','REVIEW'].includes(result))await observe('enrollment',row.id,result==='DONE',result==='REVIEW'?'UNKNOWN':undefined)
             if (result === 'DONE') outcomes.enrolled++
             else if (result === 'REVIEW') outcomes.review++
             else outcomes.skipped++
-          } catch(error) { failed('enrollment',error);await observe('enrollment',row.id,false) }
+          } catch(error) {
+            if(fatalBrowser(error))browserRestartRequired=true
+            failed('enrollment',error)
+            if(!browserAvailable())return restartRequired()
+            await observe('enrollment',row.id,false)
+          }
+          if(!browserAvailable())return restartRequired()
         }
       }
       if(readyMessagesEnabled){
@@ -260,7 +284,7 @@ function runtime(env,{withClient,providers={}}={}) {
 }
 
 async function main({ argv = process.argv.slice(2), env = process.env, makeRuntime = runtime,
-  write = value => console.log(JSON.stringify(value)) } = {}) {
+  write = value => console.log(JSON.stringify(value)),signal,wait=(ms,options)=>sleep(ms,undefined,options) } = {}) {
   const parsed=workerArguments(argv,env)
   argv=parsed.options
   if (env.DAECHION_BILLING_WORKER_ENABLED !== 'true') {
@@ -284,43 +308,59 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     let stopping=false
     const stop=()=>{stopping=true;controller.abort()}
     process.once('SIGTERM',stop);process.once('SIGINT',stop)
+    signal?.addEventListener('abort',stop,{once:true})
+    if(signal?.aborted)stop()
     try{
       do{
+        if(stopping)break
         let refreshed=false, failureStage
-        try{refreshed=(await service.maintainSession())?.refreshed===true}catch(error){failureStage=sessionFailureStage(error)}
+        let restartRequired=false
+        try{const result=await service.maintainSession();refreshed=result?.refreshed===true;restartRequired=fatalBrowser(result)}
+        catch(error){failureStage=sessionFailureStage(error);restartRequired=fatalBrowser(error)}
+        if(restartRequired){write({sessionMaintenance:true,browserRestartRequired:true,code:BROWSER_RESTART_REQUIRED,sending:false});throw restartError()}
         const diagnostics=env.DAECHION_DIAGNOSTICS_SHEETS_ENABLED==='true'?await service.syncDiagnostics():undefined
         write({sessionMaintenance:true,refreshed,sending:false,...(failureStage?{failureStage}:{}),...(diagnostics?{diagnostics}:{})})
         if(argv.includes('--once')||stopping)break
-        try{await sleep(refreshed?900000:60000,undefined,{signal:controller.signal})}catch{if(!stopping)throw Error('SESSION_MAINTENANCE_WAIT_FAILED')}
+        try{await wait(refreshed?900000:60000,{signal:controller.signal})}catch{if(!stopping)throw Error('SESSION_MAINTENANCE_WAIT_FAILED')}
       }while(!stopping)
-    }finally{process.removeListener('SIGTERM',stop);process.removeListener('SIGINT',stop)}
+    }finally{process.removeListener('SIGTERM',stop);process.removeListener('SIGINT',stop);signal?.removeEventListener('abort',stop)}
     return
   }
   if(argv.includes('--setup-sheets')) {await service.setupSheets();write({sheetInitialized:true});return}
   let stopping = false
   const stop = () => { stopping = true }
   process.once('SIGTERM', stop); process.once('SIGINT', stop)
+  signal?.addEventListener('abort',stop,{once:true})
+  if(signal?.aborted)stop()
   try {
     do {
-      write({ ...await service.cycle(sendEnabled, {
+      if(stopping)break
+      let outcome
+      try{outcome=await service.cycle(sendEnabled, {
         paymentsEnabled: env.DAECHION_PAYMENT_READ_ENABLED === 'true',
         enrollmentEnabled: env.DAECHION_ENROLLMENT_ENABLED === 'true',
         sheetsEnabled: env.DAECHION_SHEETS_ENABLED === 'true',
         readyMessagesEnabled:env.DAECHION_READY_MESSAGE_ENABLED==='true',
         ...(parsed.applicationId?{applicationId:parsed.applicationId}:{}),
-      }), sending: sendEnabled })
+      })}catch(error){if(fatalBrowser(error)){write({browserRestartRequired:true,code:BROWSER_RESTART_REQUIRED,sending:false});throw restartError()}throw error}
+      if(fatalBrowser(outcome)){write({browserRestartRequired:true,code:BROWSER_RESTART_REQUIRED,sending:false});throw restartError()}
+      write({ ...outcome, sending: sendEnabled })
       if(env.DAECHION_DIAGNOSTICS_SHEETS_ENABLED==='true')write({diagnostics:await service.syncDiagnostics()})
       if (argv.includes('--once') || stopping) break
-      await sleep(30000)
+      await wait(30000)
     } while (!stopping)
   } finally {
     process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop)
+    signal?.removeEventListener('abort',stop)
   }
 }
 
-if (require.main === module) main().then(() => process.exit(0)).catch(error => {
+async function runCli(options,{exit=code=>process.exit(code),errorWrite=text=>console.error(text)}={}){
+  try{await main(options);exit(0)}catch(error){
   // No connection strings, applicant IDs/phones, provider bodies or credentials.
   const safe = /^(?:ACCESS_POLICY_VERIFICATION_REQUIRED|SHEETS_HTTP_(?:400|401|403|404|409|429|500|502|503|504)|SHEETS_CREDENTIALS_REQUIRED|SHEETS_REQUEST_UNCONFIRMED|NEW_SHEET_(?:CONFIGURATION_REQUIRED|TAB_REQUIRED|TAB_NOT_FOUND|TAB_NOT_EMPTY|HEADERS_CHANGED)|SHEET_SETUP_UNCONFIRMED|INVALID_SHEET_METADATA|INVALID_NEW_SHEET_TARGET)$/.test(error?.message??'') ? error.message : undefined
-  console.error('DAECHION_BILLING_WORKER_FAILED' + (safe ? ':' + safe : '')); process.exit(1)
-})
-module.exports = { main, runtime,workerArguments,checkAcceptanceTarget }
+    errorWrite(fatalBrowser(error)?BROWSER_RESTART_REQUIRED:'DAECHION_BILLING_WORKER_FAILED' + (safe ? ':' + safe : ''));exit(1)
+  }
+}
+if (require.main === module) runCli()
+module.exports = { main, runtime,workerArguments,checkAcceptanceTarget,runCli }

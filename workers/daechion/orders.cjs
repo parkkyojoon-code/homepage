@@ -1,4 +1,6 @@
 const built = name => require('../../.daechion-worker-build/lib/daechion/' + name + '.js')
+const BROWSER_RESTART_REQUIRED = 'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'
+const fatalBrowser = value => value?.browserRestartRequired === true || value?.browserTerminationUnconfirmed === true || value?.message === BROWSER_RESTART_REQUIRED
 
 function argumentsFor(argv, env) {
   if (argv.length === 1 && argv[0] === '--loop' && env.DAECHION_ORDER_WORKER_ENABLED === 'true' && env.DAECHION_ORDER_LOOP_ENABLED === 'true' &&
@@ -123,7 +125,9 @@ function runtime(env, overrides = {}) {
       ['sheets', deliveryFlags.sheets, sheetsEnabled],
     ]) if (enabled) await observe(usingClient, phase, ready)
     let processingFailed = false, deliveryFailed = false
+    const restartRequired = () => ({ processed: true, processingFailed, deliveryFailed, browserRestartRequired: true })
     try {
+      if (browserRestartRequired) return restartRequired()
       if (effective.send) await (overrides.autoReviewExistingOrder ?? built('orders/automatic-review').autoReviewExistingOrder)(id, {
         tenantId: env.DAECHION_TENANT_ID.trim(), withClient: usingClient, api: official,
         inspectOwnership: input => {
@@ -134,7 +138,7 @@ function runtime(env, overrides = {}) {
       })
       // Read readiness again after diagnostic awaits. A quarantined browser
       // must not turn an untouched order into a claimed, unknown grant.
-      if (!browserAvailable(enrollment)) { effective.enroll = false; effective.send = false }
+      if (!browserAvailable(enrollment)) return restartRequired()
       await (overrides.processOrder ?? built('orders/runner').processOrder)(id, effective, {
         withClient: usingClient, provider, daechion: enrollment, tenantId: env.DAECHION_TENANT_ID.trim(),
         preflight: context => built('orders/preflight').preflightOrder(context, {
@@ -146,7 +150,9 @@ function runtime(env, overrides = {}) {
             } },
           manualReview: context => usingClient(client => built('orders/manual-review').latestReview(client, context.orderId)) }),
       })
-    } catch {
+    } catch (error) {
+      if (fatalBrowser(error)) browserRestartRequired = true
+      if (!browserAvailable(enrollment)) return restartRequired()
       processingFailed = true
       // Record only our own bounded code; provider exceptions can contain secrets.
       try {
@@ -156,6 +162,7 @@ function runtime(env, overrides = {}) {
         }))
       } catch { /* A database outage cannot be reported through that same database. */ }
     }
+    if (!browserAvailable(enrollment)) return restartRequired()
     const browserReady = preparedEnrollment.ready && browserAvailable()
     if (phaseFlags.send && !effective.send && !deferredPhases.includes('billing')) deferredPhases.push('billing')
     if (phaseFlags.enroll && !browserReady && !deferredPhases.includes('enrollment')) deferredPhases.push('enrollment')
@@ -177,13 +184,21 @@ function runtime(env, overrides = {}) {
     return runBound(id, env.DAECHION_ORDER_ACCEPTANCE_FINGERPRINT)
   }
   async function cycle(signal) {
+    const restartRequired = () => ({ busy: false, processed: 0, failed: 1, sessionReady: false, browserRestartRequired: true })
+    // Quarantine is sticky even if reporting it or releasing the scheduler
+    // connection failed. A later call cannot reach the database or providers.
+    if (browserRestartRequired) return restartRequired()
     argumentsFor(['--loop'], env)
     if (!Object.values({ ...flags, ...deliveryFlags }).some(Boolean) && !maintain) throw Error('ORDER_WORKER_PHASES_DISABLED')
     if (!env.DAECHION_TENANT_ID?.trim()) throw Error('ORDER_TENANT_CONFIGURATION_REQUIRED')
     const scheduler = built('orders/scheduler'), tenant = env.DAECHION_TENANT_ID.trim()
     if (signal?.aborted) return { busy: false, processed: 0, failed: 0 }
-    return await scheduler.withSchedulerLock(overrides.withSchedulerClient ?? withClient, tenant, async assert => {
-      const guarded = async run => { await assert(); return withClient(async c => { await assert(); return run(c) }) }
+    const scheduled = () => scheduler.withSchedulerLock(overrides.withSchedulerClient ?? withClient, tenant, async assert => {
+      const assertBrowser = () => { if (browserRestartRequired) throw Error(BROWSER_RESTART_REQUIRED) }
+      const guarded = async run => {
+        assertBrowser(); await assert(); assertBrowser()
+        return withClient(async c => { assertBrowser(); await assert(); assertBrowser(); return run(c) })
+      }
       let healthy = true
       if (maintain) {
         // A prior process's READY record is not proof that this process can
@@ -192,10 +207,13 @@ function runtime(env, overrides = {}) {
         healthy = await scheduler.sessionReady({ withClient: guarded }, tenant, async () => {
           if (!browser.ready) throw Object.assign(Error('ORDER_BROWSER_UNAVAILABLE'), { stage: 'BROWSER_CONTEXT' })
           try { return await browser.value.refreshSession() }
-          catch (error) { if (error?.browserTerminationUnconfirmed === true) browserRestartRequired = true; throw error }
+          catch (error) { if (fatalBrowser(error)) browserRestartRequired = true; throw error }
         }, !sessionChecked || !browser.ready)
         sessionChecked = true
       }
+      // The browser may still own a write and its session lock. Do not release
+      // that lock or run another order; the CLI must replace this process.
+      if (browserRestartRequired) return restartRequired()
       const selected = await guarded(c => scheduler.selectScheduledOrders(c, tenant, { ...flags, ...deliveryFlags }))
       let processed = 0, failed = 0
       for (const row of selected) {
@@ -213,12 +231,21 @@ function runtime(env, overrides = {}) {
             }
             return scheduler.recordSessionIssue({ withClient: guarded }, row.id, healthy && localReady || (!flags.enroll && !flags.send))
           })
+        if (result.browserRestartRequired) return { busy: false, processed: processed + 1, failed: failed + 1, sessionReady: false, browserRestartRequired: true }
         const bad = result.processingFailed || result.deliveryFailed || result.deferredPhases?.length > 0
         await guarded(c => scheduler.finishScheduledOrder(c, row.id, bad, { ...flags, ...deliveryFlags }))
         processed++; if (bad) failed++
       }
       return { busy: false, processed, failed, ...(maintain ? { sessionReady: healthy } : {}), ...(browserRestartRequired ? { browserRestartRequired: true } : {}) }
-    }) ?? { busy: true, processed: 0, failed: 0 }
+    })
+    try {
+      return await scheduled() ?? { busy: true, processed: 0, failed: 0 }
+    } catch (error) {
+      // sessionReady and withSchedulerLock may replace the refresh error with
+      // a diagnostics/unlock failure. Never let that hide a fatal browser.
+      if (browserRestartRequired || fatalBrowser(error)) { browserRestartRequired = true; return restartRequired() }
+      throw error
+    }
   }
   return { check, once, cycle, async setupSheets() {
     argumentsFor(['--setup-sheets'], env)
@@ -241,12 +268,23 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     if (signal?.aborted) stop()
     try {
       while (!controller.signal.aborted) {
-        try { write(await service.cycle(controller.signal)) }
-        catch {
-          // Lost locks/DB connections end the current cycle. Never replay its
-          // unknown writes here; the next cycle consults durable job markers.
-          write({ cycleFailed: true, code: 'ORDER_CYCLE_UNAVAILABLE' })
+        let result, restart = false
+        try { result = await service.cycle(controller.signal) }
+        catch (error) {
+          if (fatalBrowser(error)) restart = true
+          else {
+            // Lost locks/DB connections end the current cycle. Never replay its
+            // unknown writes here; the next cycle consults durable job markers.
+            write({ cycleFailed: true, code: 'ORDER_CYCLE_UNAVAILABLE' })
+          }
         }
+        // Keep this outside the recoverable cycle catch. Re-entering the loop
+        // would leave an Online worker permanently unable to use its browser.
+        if (restart || fatalBrowser(result)) {
+          write({ cycleFailed: true, browserRestartRequired: true, code: BROWSER_RESTART_REQUIRED })
+          throw Error(BROWSER_RESTART_REQUIRED)
+        }
+        if (result !== undefined) write(result)
         if (controller.signal.aborted) break
         try { await wait(30000, { signal: controller.signal }) } catch { if (!controller.signal.aborted) throw Error('ORDER_LOOP_WAIT_FAILED') }
       }
@@ -254,8 +292,15 @@ async function main({ argv = process.argv.slice(2), env = process.env, makeRunti
     return
   }
   const result = options.command === 'once' ? await service.once(options.id) : await service.setupSheets()
+  if (fatalBrowser(result)) throw Error(BROWSER_RESTART_REQUIRED)
   write(result)
   if (result?.processingFailed || result?.deliveryFailed || result?.deferredPhases?.length) throw Error('ORDER_WORKER_PHASE_FAILED')
 }
-if (require.main === module) main().catch(() => { console.error('DAECHION_ORDER_WORKER_FAILED'); process.exitCode = 1 })
-module.exports = { argumentsFor, runtime, main }
+// An exit code alone cannot terminate open pg pools or an unresolved browser.
+// Real CLI failures terminate the process so the platform replaces its container.
+async function runCli(options, { exit = code => process.exit(code), errorWrite = text => console.error(text) } = {}) {
+  try { await main(options); exit(0) }
+  catch (error) { errorWrite(fatalBrowser(error) ? BROWSER_RESTART_REQUIRED : 'DAECHION_ORDER_WORKER_FAILED'); exit(1) }
+}
+if (require.main === module) runCli()
+module.exports = { argumentsFor, runtime, main, runCli }

@@ -230,6 +230,7 @@ test('migration 012 treats only historical persisted read-retry errors as safe a
     await db.query("UPDATE daechion_orders.jobs SET state='UNKNOWN',attempts=1,last_error='sheet_publish_unknown' WHERE id=$1",[unknown.jobId])
     await db.query("UPDATE daechion_orders.jobs SET state='RUNNING',attempts=1,lease_token=$2,lease_until=now()-interval '1 second' WHERE id=$1",[running.jobId,randomUUID()])
     await db.exec(migration('daechion-orders/012_sheet_read_recovery.sql'))
+    await db.exec(migration('daechion-orders/013_bill_send_recovery.sql'))
     assert.equal((await state(db,safe.jobId)).state,'PENDING');assert.equal((await state(db,safe.jobId)).sheet_write_started,false)
     assert.equal((await state(db,unknown.jobId)).state,'UNKNOWN');assert.equal((await state(db,unknown.jobId)).sheet_write_started,true)
     assert.equal((await state(db,running.jobId)).sheet_write_started,true)

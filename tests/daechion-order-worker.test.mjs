@@ -136,7 +136,7 @@ test('broken message and sheet setup do not block healthy payment and enrollment
     assert.equal(JSON.stringify(db.calls).includes('private-invalid-json'),false)
   }
 })
-test('enrollment quarantine invalidates cached READY before the next order and preserves payment reads and Sheets',async()=>{
+test('enrollment quarantine stops the batch without later orders, delivery or unlocking its browser lease',async()=>{
   const second=id.replace(/1$/,'2'),selected=[id,second].map(id=>({id,request_fingerprint:fingerprint,needs_enrollment:true}))
   const db=loopDatabase(selected),runs=[],deliveries=[];let available=true,refreshed=0
   const service=worker.runtime({...loopEnv,DAECHION_ORDER_SEND_ENABLED:'true',DAECHION_ORDERS_SUBJECT_SECRET:'s'.repeat(32),
@@ -150,14 +150,89 @@ test('enrollment quarantine invalidates cached READY before the next order and p
         else assert.ok(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_sessions')&&row.args[1]==='FAILED'))
       },deliverOrder:async(orderId,flags)=>{deliveries.push({id:orderId,...flags})}})
   const first=await service.cycle()
-  assert.equal(first.processed,2);assert.equal(first.sessionReady,false);assert.equal(first.browserRestartRequired,true)
-  assert.deepEqual(runs,[{id,send:true,read:true,enroll:true},{id:second,send:false,read:true,enroll:false}])
-  assert.deepEqual(deliveries,[{id,sheets:true,message:false},{id:second,sheets:true,message:false}])
-  assert.ok(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_orders SET session_issue')&&row.args[0]===second&&row.args[1]===true))
+  assert.equal(first.processed,1);assert.equal(first.sessionReady,false);assert.equal(first.browserRestartRequired,true)
+  assert.deepEqual(runs,[{id,send:true,read:true,enroll:true}])
+  assert.deepEqual(deliveries,[])
+  assert.equal(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_orders s SET finished_at')),false)
   assert.equal((await service.check()).providersReady.browser,false)
   const next=await service.cycle()
-  assert.equal(next.sessionReady,false);assert.equal(next.browserRestartRequired,true);assert.equal(refreshed,1)
-  assert.ok(runs.slice(2).every(row=>row.read&&!row.send&&!row.enroll),'quarantine must not be reset or trusted from cached READY')
+  assert.equal(next.processed,0);assert.equal(next.sessionReady,false);assert.equal(next.browserRestartRequired,true);assert.equal(refreshed,1)
+  assert.equal(runs.length,1,'quarantine cannot be reset or trusted from cached READY')
+})
+
+test('unconfirmed browser termination during refresh never selects an order or starts a business phase',async()=>{
+  const db=loopDatabase(),runs=[],deliveries=[]
+  const service=worker.runtime(loopEnv,{withClient:db.withClient,providers:{payment:{accountId:'fixture'},daechion:{
+    refreshSession:async()=>{throw Object.assign(Error('private upstream credentials'),{stage:'SESSION_REFRESH',browserTerminationUnconfirmed:true})}}},
+    processOrder:async()=>runs.push('business'),deliverOrder:async()=>deliveries.push('delivery')})
+  const result=await service.cycle()
+  assert.deepEqual(result,{busy:false,processed:0,failed:1,sessionReady:false,browserRestartRequired:true})
+  assert.deepEqual(runs,[]);assert.deepEqual(deliveries,[])
+  assert.equal(db.calls.some(row=>row.sql.startsWith('SELECT o.id,o.request_fingerprint')),false)
+  assert.equal(JSON.stringify(result).includes('private'),false)
+})
+
+test('a database outage cannot hide refresh quarantine or make a later cycle touch the database',async()=>{
+  const db=loopDatabase(),schedulerClient=new EventEmitter(),afterQuarantine=[]
+  let quarantined=false,connections=0,refreshes=0
+  schedulerClient.query=async(sql,args)=>{
+    if(quarantined){afterQuarantine.push(sql);throw Error('private database outage')}
+    return db.withClient(c=>c.query(sql,args))
+  }
+  const service=worker.runtime(loopEnv,{
+    withClient:async run=>{
+      connections++
+      if(quarantined)throw Error('private diagnostic outage')
+      return db.withClient(run)
+    },
+    withSchedulerClient:async run=>{connections++;return run(schedulerClient)},
+    providers:{daechion:{refreshSession:async()=>{
+      refreshes++;quarantined=true
+      throw Object.assign(Error('private browser session'),{browserTerminationUnconfirmed:true})
+    }}},
+    processOrder:async()=>assert.fail('No business phase after quarantine'),
+    deliverOrder:async()=>assert.fail('No delivery after quarantine'),
+  })
+  const first=await service.cycle()
+  assert.deepEqual(first,{busy:false,processed:0,failed:1,sessionReady:false,browserRestartRequired:true})
+  assert.equal(afterQuarantine.length,1,'Only the scheduler lock release may be attempted after quarantine')
+  assert.ok(afterQuarantine[0].includes('pg_advisory_unlock'))
+  assert.equal(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_sessions')),false)
+  const before=connections
+  assert.deepEqual(await service.cycle(),first)
+  assert.equal(connections,before);assert.equal(refreshes,1)
+  assert.equal(schedulerClient.listenerCount('error'),0);assert.equal(schedulerClient.listenerCount('end'),0)
+  const output=[];let waits=0
+  await assert.rejects(worker.main({argv:['--loop'],env:loopEnv,write:value=>output.push(value),wait:async()=>{waits++},
+    makeRuntime:()=>({check:async()=>{},cycle:service.cycle})}),/^Error: DAECHION_ORDER_BROWSER_RESTART_REQUIRED$/)
+  assert.equal(waits,0);assert.equal(connections,before)
+  assert.deepEqual(output,[{cycleFailed:true,browserRestartRequired:true,code:'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'}])
+})
+
+test('main treats browser quarantine as fatal outside its retry catch and removes signal handlers',async()=>{
+  for(const mode of ['return','throw']){
+    const output=[],before=['SIGTERM','SIGINT'].map(event=>process.listenerCount(event));let cycles=0,waits=0
+    await assert.rejects(worker.main({argv:['--loop'],env:loopEnv,write:value=>output.push(value),wait:async()=>{waits++},
+      makeRuntime:()=>({check:async()=>{},cycle:async()=>{cycles++
+        if(mode==='throw')throw Object.assign(Error('private cookie and phone'),{browserTerminationUnconfirmed:true})
+        return {browserRestartRequired:true,private:'must not log'}
+      }})}),/^Error: DAECHION_ORDER_BROWSER_RESTART_REQUIRED$/)
+    assert.equal(cycles,1);assert.equal(waits,0)
+    assert.deepEqual(output,[{cycleFailed:true,browserRestartRequired:true,code:'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'}])
+    assert.deepEqual(['SIGTERM','SIGINT'].map(event=>process.listenerCount(event)),before)
+    assert.equal(JSON.stringify(output).includes('private'),false)
+  }
+})
+
+test('real CLI termination exits even with active event-loop handles instead of retaining an Online fatal worker',()=>{
+  const script=`const worker=require('./workers/daechion/orders.cjs');setInterval(()=>{},1000);
+    worker.runCli({argv:['--loop'],env:{DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_LOOP_ENABLED:'true'},
+    makeRuntime:()=>({check:async()=>{},cycle:async()=>({browserRestartRequired:true,private:'must-not-print'})})});`
+  const result=spawnSync(process.execPath,['-e',script],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:5000})
+  assert.equal(result.error,undefined);assert.equal(result.status,1)
+  assert.deepEqual(JSON.parse(result.stdout),{cycleFailed:true,browserRestartRequired:true,code:'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'})
+  assert.equal(result.stderr.trim(),'DAECHION_ORDER_BROWSER_RESTART_REQUIRED')
+  assert.equal((result.stdout+result.stderr).includes('must-not-print'),false)
 })
 
 test('a new process rechecks cached READY and isolates unavailable browser credentials from payment reads',async()=>{
