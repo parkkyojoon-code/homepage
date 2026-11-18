@@ -195,6 +195,7 @@ test('a database outage cannot hide refresh quarantine or make a later cycle tou
   })
   const first=await service.cycle()
   assert.deepEqual(first,{busy:false,processed:0,failed:1,sessionReady:false,browserRestartRequired:true})
+  await new Promise(setImmediate)
   assert.equal(afterQuarantine.length,1,'Only the scheduler lock release may be attempted after quarantine')
   assert.ok(afterQuarantine[0].includes('pg_advisory_unlock'))
   assert.equal(db.calls.some(row=>row.sql.startsWith('UPDATE daechion_orders.scheduler_sessions')),false)
@@ -207,6 +208,120 @@ test('a database outage cannot hide refresh quarantine or make a later cycle tou
     makeRuntime:()=>({check:async()=>{},cycle:service.cycle})}),/^Error: DAECHION_ORDER_BROWSER_RESTART_REQUIRED$/)
   assert.equal(waits,0);assert.equal(connections,before)
   assert.deepEqual(output,[{cycleFailed:true,browserRestartRequired:true,code:'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'}])
+})
+
+test('a fatal grant interrupts cycle and once before runner cleanup settles, preserving receiver and fencing late DB work',async()=>{
+  for(const mode of ['cycle','once']){
+    const db=loopDatabase();let releaseLate,queryStarted,cleanupStarted=false,lateWork
+    const started=new Promise(resolve=>{queryStarted=resolve})
+    class BrowserFixture {
+      #receiver='original provider'
+      async refreshSession(){assert.equal(this.#receiver,'original provider');return {refreshed:true}}
+      async ensureFirstLessonAccess(){
+        assert.equal(this.#receiver,'original provider')
+        throw Object.assign(Error('private browser write state'),{browserTerminationUnconfirmed:true})
+      }
+    }
+    const service=worker.runtime({...loopEnv,...(mode==='once'?{DAECHION_ORDER_ACCEPTANCE_ID:id,DAECHION_ORDER_ACCEPTANCE_FINGERPRINT:fingerprint}:{} )},{
+      withClient:async run=>db.withClient(c=>run({query:async(sql,args)=>{
+        if(sql==='SELECT late_before_fatal')return new Promise(resolve=>{releaseLate=()=>resolve({rows:[]});queryStarted()})
+        return c.query(sql,args)
+      }})),
+      providers:{payment:{accountId:'fixture'},daechion:new BrowserFixture()},
+      processOrder:async(_id,_flags,ports)=>{
+        lateWork=ports.withClient(async c=>{
+          await c.query('SELECT late_before_fatal')
+          await c.query('UPDATE synthetic_late_business_write')
+        })
+        lateWork.catch(()=>{})
+        await started
+        try{await ports.daechion.ensureFirstLessonAccess({})}
+        catch{cleanupStarted=true;await new Promise(()=>{})}
+      },
+      deliverOrder:async()=>assert.fail('No delivery after fatal grant'),
+    })
+    const result=await (mode==='cycle'?service.cycle():service.once(id))
+    assert.equal(result.browserRestartRequired,true)
+    await new Promise(setImmediate)
+    assert.equal(cleanupStarted,true)
+    releaseLate()
+    await assert.rejects(lateWork,/^Error: DAECHION_ORDER_BROWSER_RESTART_REQUIRED$/)
+    assert.equal(db.calls.some(row=>row.sql==='UPDATE synthetic_late_business_write'),false)
+    const before=db.calls.length
+    assert.equal((await service.cycle()).browserRestartRequired,true)
+    assert.equal(db.calls.length,before)
+  }
+})
+
+test('quarantine query fencing preserves connection events and their original receiver',async()=>{
+  const db=loopDatabase();let checked=false
+  const service=worker.runtime(loopEnv,{withClient:db.withClient,
+    providers:{payment:{accountId:'fixture'},daechion:{refreshSession:async()=>({refreshed:true})}},
+    processOrder:async(_id,_flags,ports)=>ports.withClient(async client=>{
+      const listener=()=>{}
+      const before=client.listenerCount('end')
+      client.on('end',listener)
+      assert.equal(client.listenerCount('end'),before+1)
+      assert.equal(client.listeners('end').includes(listener),true)
+      client.removeListener('end',listener)
+      assert.equal(client.listenerCount('end'),before)
+      await client.query('SELECT receiver_preserved')
+      checked=true
+    }),deliverOrder:async()=>{},
+  })
+  const result=await service.cycle()
+  assert.equal(result.failed,0);assert.equal(checked,true)
+})
+
+test('actual runtime CLI exits with a fatal refresh while scheduler unlock is permanently pending',()=>{
+  const env={DAECHION_ORDER_WORKER_ENABLED:'true',DAECHION_ORDER_LOOP_ENABLED:'true',DAECHION_TENANT_ID:'fixture',
+    DAECHION_ORDER_PAYMENT_READ_ENABLED:'true',DAECHION_ORDER_SESSION_MAINTENANCE_ENABLED:'true'}
+  const script=`const {EventEmitter}=require('node:events');const worker=require('./workers/daechion/orders.cjs');
+    const env=${JSON.stringify(env)},client=new EventEmitter();
+    client.query=async sql=>{
+      if(sql.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]};
+      if(sql.includes('pg_advisory_unlock'))return new Promise(()=>{});
+      if(sql.startsWith('SELECT state,next_check_at'))return {rows:[{state:'READY',fresh:true}]};
+      return {rows:[]};
+    };
+    const service=worker.runtime(env,{withClient:async run=>run(client),checkSchemas:async()=>{},providers:{daechion:{
+      refreshSession:async()=>{throw Object.assign(Error('private browser credentials'),{browserTerminationUnconfirmed:true})}}}});
+    setInterval(()=>{},1000);worker.runCli({argv:['--loop'],env,makeRuntime:()=>service});`
+  const result=spawnSync(process.execPath,['-e',script],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:5000})
+  assert.equal(result.error,undefined);assert.equal(result.status,1)
+  assert.deepEqual(JSON.parse(result.stdout),{cycleFailed:true,browserRestartRequired:true,code:'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'})
+  assert.equal(result.stderr.trim(),'DAECHION_ORDER_BROWSER_RESTART_REQUIRED')
+  assert.equal((result.stdout+result.stderr).includes('private'),false)
+})
+
+test('actual runtime CLI exits on a fatal grant even when its DB connection cleanup never completes',()=>{
+  for(const mode of ['loop','once']){
+    const env={...loopEnv,...(mode==='once'?{DAECHION_ORDER_ACCEPTANCE_ID:id,DAECHION_ORDER_ACCEPTANCE_FINGERPRINT:fingerprint}:{})}
+    const script=`const {EventEmitter}=require('node:events');const worker=require('./workers/daechion/orders.cjs');
+      const id=${JSON.stringify(id)},fingerprint=${JSON.stringify(fingerprint)},env=${JSON.stringify(env)};
+      ${loopDatabase.toString()}
+      const db=loopDatabase();let unsafe=false;
+      const service=worker.runtime(env,{
+        withClient:async run=>{try{return await db.withClient(run)}finally{if(unsafe)await new Promise(()=>{})}},
+        checkSchemas:async()=>{},providers:{payment:{accountId:'fixture'},daechion:{
+          receiver:'original',refreshSession:async()=>({refreshed:true}),
+          async ensureFirstLessonAccess(){
+            if(this.receiver!=='original')throw Error('provider receiver lost');
+            unsafe=true;throw Object.assign(Error('private browser write state'),{browserTerminationUnconfirmed:true});
+          }
+        }},
+        processOrder:async(_id,_flags,ports)=>ports.withClient(async()=>{
+          try{await ports.daechion.ensureFirstLessonAccess({})}catch{throw Error('private runner review cleanup')}
+        }),deliverOrder:async()=>{throw Error('No late delivery')}
+      });
+      setInterval(()=>{},1000);worker.runCli({argv:${JSON.stringify(mode==='loop'?['--loop']:['--once','--order-id',id])},env,makeRuntime:()=>service});`
+    const result=spawnSync(process.execPath,['-e',script],{cwd:new URL('..',import.meta.url),encoding:'utf8',timeout:5000})
+    assert.equal(result.error,undefined);assert.equal(result.status,1)
+    if(mode==='loop')assert.deepEqual(JSON.parse(result.stdout),{cycleFailed:true,browserRestartRequired:true,code:'DAECHION_ORDER_BROWSER_RESTART_REQUIRED'})
+    else assert.equal(result.stdout,'')
+    assert.equal(result.stderr.trim(),'DAECHION_ORDER_BROWSER_RESTART_REQUIRED')
+    assert.equal((result.stdout+result.stderr).includes('private'),false)
+  }
 })
 
 test('main treats browser quarantine as fatal outside its retry catch and removes signal handlers',async()=>{
