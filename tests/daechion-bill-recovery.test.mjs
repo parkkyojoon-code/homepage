@@ -20,13 +20,13 @@ test('paid SEND_UNKNOWN reconciliation is an audited same-bill recovery with its
   const product={productId:'bill-recovery-fixture',title:'가상 복구 강의',saleKind:'SINGLE',priceWon:1200,tenantId:'fixture',revision:'r1',purchaseProcess:'PROCESS_2',visible:true,lectures:[{id:101,name:'가상 강의'}]}
   const ports={tenantId:'fixture',subjectSecret:'s'.repeat(32),catalog:async()=>[product],withClient,
     ownership:async(cart,_contact,key)=>({cartFingerprint:cart.fingerprint,subjectKey:key,checkedAt:new Date().toISOString(),identity:'PASSED',existingStudent:'NEW',lectures:[{id:101,state:'NOT_OWNED'}]})}
-  async function fixture(sendResult='UNKNOWN'){
+  async function fixture(sendResult='UNKNOWN',duringSend){
     const n=++sequence,contact={studentName:`가상 학생 ${n}`,studentPhone:`0100000${String(n).padStart(4,'0')}`,guardianName:'',guardianPhone:'',payerPhone:'01000009999',
       applicantType:'STUDENT',studentHistory:'NEW',agreePrivacy:true,confirmPayment:true}
     const quote=await checkout.quoteCheckout({items:[{productId:product.productId}],contact,expectedTotalWon:1200},ports)
     const {orderId}=await checkout.receiveOrder({quoteId:quote.quoteId,quoteToken:quote.quoteToken,requestKey:randomUUID(),expectedTotalWon:1200},ports)
     const f={orderId,contact,sends:0,reads:0,observation:{state:'UNKNOWN'},bill:null}
-    f.provider={accountId:'fixture-account',send:async bill=>{f.bill=bill;f.sends++;return sendResult},read:async()=>{f.reads++;return f.observation}}
+    f.provider={accountId:'fixture-account',send:async bill=>{f.bill=bill;f.sends++;if(duringSend)await duringSend(f);return sendResult},read:async()=>{f.reads++;return f.observation}}
     f.billing={withClient,provider:f.provider,preflight:async()=> 'READY'}
     assert.equal(await billing.sendOrderBill(orderId,true,f.billing),sendResult)
     f.paid=()=>{f.observation={state:'F',billId:f.bill.billId,amountWon:1200,paidAt:new Date().toISOString()}}
@@ -86,6 +86,34 @@ test('paid SEND_UNKNOWN reconciliation is an audited same-bill recovery with its
         ensureFirstLessonAccess:async grant=>{await grant.beforeWrite();await grant.recordEnrollment();return {verified:true,lectureId:grant.lectureId,studentId:grant.studentId,weeklyLectureIds:[grant.weeklyLectureId]}}}
       assert.equal(await enrollment.runOrderGrant(f.orderId,true,{withClient,provider:f.provider,tenantId:'fixture',daechion:api}),'VERIFIED')
       assert.equal(creates,1);assert.equal(f.sends,1);assert.equal((await orderRow(f.orderId)).notification_state,'PENDING')
+    })
+    await t.test('an administrator hold during the pending send response can reconcile paid evidence while keeping automatic processing held',async()=>{
+      const f=await fixture('UNKNOWN',async sending=>{
+        const current=await orderRow(sending.orderId)
+        const input={requestKey:randomUUID(),orderId:sending.orderId,expectedVersion:String(current.version),action:'HOLD',
+          operatorName:'검수 담당자',reason:'청구 전송 응답 대기 중 자동 처리 보류',confirmed:true}
+        const ports={tenantId:'fixture',enabled:true,origins:['https://fixture.invalid'],authed:async()=>true,ready:async()=>{},withClient}
+        const held=await adminHttp.orderAdminPost(request(input),ports)
+        assert.equal(held.status,200,await held.clone().text())
+        assert.equal((await orderRow(sending.orderId)).review_code,'admin_hold')
+      })
+      assert.equal((await orderRow(f.orderId)).review_code,'admin_hold')
+      assert.equal((await billRow(f.orderId)).state,'SEND_UNKNOWN')
+      f.paid();await billing.checkOrderPayment(f.orderId,true,f.billing)
+      assert.equal((await orderRow(f.orderId)).review_code,'admin_hold')
+      assert.ok(await f.context())
+      assert.equal((await withClient(c=>admin.orderDetail(c,'fixture',f.orderId))).canReconcileBill,true)
+      const input=await f.action(),response=await adminHttp.orderAdminPost(request(input),f.admin)
+      assert.equal(response.status,200,await response.clone().text())
+      const saved=await orderRow(f.orderId)
+      assert.equal(saved.checkout_state,'REVIEW');assert.equal(saved.payment_state,'PAID');assert.equal(saved.review_code,'bill_reconciled')
+      assert.equal(saved.identity_state,'WAITING');assert.equal(saved.student_id,null)
+      assert.equal((await billRow(f.orderId)).state,'SENT');assert.equal(f.sends,1)
+      const resume=await adminHttp.orderAdminPost(request(await f.action('RESUME_PAID')),f.admin)
+      assert.equal(resume.status,200,await resume.clone().text())
+      assert.equal((await orderRow(f.orderId)).checkout_state,'READY');assert.equal(f.sends,1)
+      assert.deepEqual((await query('SELECT action FROM daechion_orders.admin_actions WHERE order_id=$1 ORDER BY after_version',[f.orderId])).rows.map(row=>row.action),
+        ['HOLD','RECONCILE_BILL','RESUME_PAID'])
     })
     await t.test('wrong account, bill, amount, cancelled/unknown responses and invalid approval times are rejected without mutations',async()=>{
       for(const mode of ['account','bill','amount','cancelled','unknown','early','future','throw']){

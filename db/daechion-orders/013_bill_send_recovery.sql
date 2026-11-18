@@ -64,7 +64,7 @@ BEGIN
     OR NEW.state<>'SENT' OR NOT NEW.is_current OR NEW.last_payment_state IS DISTINCT FROM 'PAID'
     OR NEW.sent_at IS DISTINCT FROM OLD.send_attempted_at OR NEW.due_at IS DISTINCT FROM OLD.send_attempted_at+interval '7 days'
     OR NEW.checked_at IS NULL OR (OLD.checked_at IS NOT NULL AND NEW.checked_at<=OLD.checked_at)
-    OR o.checkout_state<>'REVIEW' OR o.review_code IS DISTINCT FROM 'bill_send_unknown' OR o.payment_state NOT IN ('PENDING','UNKNOWN')
+    OR o.checkout_state<>'REVIEW' OR COALESCE(o.review_code NOT IN ('bill_send_unknown','admin_hold'),true) OR o.payment_state NOT IN ('PENDING','UNKNOWN')
     OR o.identity_state<>'WAITING' OR o.student_id IS NOT NULL OR o.identity_write_started OR o.identity_token IS NOT NULL
     OR o.closed_action_id IS NOT NULL OR o.identity_recovery_action_id IS NOT NULL OR o.confirmed_at IS NULL OR o.paid_at IS NOT NULL
     OR a.action IS DISTINCT FROM 'RECONCILE_BILL' OR a.order_id IS DISTINCT FROM OLD.order_id OR a.before_version IS DISTINCT FROM o.version
@@ -90,7 +90,7 @@ CREATE TRIGGER guard_bill_send_recovery BEFORE INSERT OR UPDATE ON daechion_orde
 CREATE FUNCTION daechion_orders.guard_reconciled_bill_order() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.review_code='bill_reconciled' AND OLD.review_code IS DISTINCT FROM NEW.review_code THEN
-    IF OLD.checkout_state<>'REVIEW' OR OLD.review_code IS DISTINCT FROM 'bill_send_unknown' OR OLD.payment_state NOT IN ('PENDING','UNKNOWN')
+    IF OLD.checkout_state<>'REVIEW' OR COALESCE(OLD.review_code NOT IN ('bill_send_unknown','admin_hold'),true) OR OLD.payment_state NOT IN ('PENDING','UNKNOWN')
       OR NEW.checkout_state<>'REVIEW' OR NEW.payment_state<>'PAID' OR
       (NEW.student_id,NEW.identity_state,NEW.identity_write_started,NEW.identity_token,NEW.identity_recovery_action_id,NEW.closed_action_id)
       IS DISTINCT FROM (OLD.student_id,OLD.identity_state,OLD.identity_write_started,OLD.identity_token,OLD.identity_recovery_action_id,OLD.closed_action_id)

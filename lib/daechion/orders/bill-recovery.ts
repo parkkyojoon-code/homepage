@@ -15,7 +15,7 @@ export interface BillRecoveryContext {
   bill:{id:string;bill_id:string;provider_account:string;amount_won:number;attemptedAt:string;token:string|null}
 }
 export function billRecoveryAllowed(order:Record<string,unknown>){
-  return order.checkout_state==='REVIEW'&&order.review_code==='bill_send_unknown'&&['PENDING','UNKNOWN'].includes(String(order.payment_state))&&
+  return order.checkout_state==='REVIEW'&&['bill_send_unknown','admin_hold'].includes(String(order.review_code))&&['PENDING','UNKNOWN'].includes(String(order.payment_state))&&
     order.identity_state==='WAITING'&&order.student_id===null&&!order.identity_write_started&&!order.identity_token&&
     !order.closed_action_id&&!order.identity_recovery_action_id&&Boolean(order.confirmed_at)&&!order.paid_at
 }
