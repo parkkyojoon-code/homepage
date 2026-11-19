@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto'
 import {z} from 'zod'
-import {DaechionError,type StudentPort,type DaechionStudent} from '../client'
+import {DaechionError,normalizePhone,type StudentPort,type DaechionStudent} from '../client'
 import {resolveStudent} from '../identity'
 import type {EnrollmentPort} from '../enrollment'
 import {contactSchema,type OrderContact} from './checkout'
@@ -104,7 +104,12 @@ async function prepareIdentity(id:string,ports:OrderEnrollmentPorts):Promise<{st
       createStarted=true;return ports.daechion.createStudent(input)
     }}
     resolved=(await resolveStudent(guarded,{name:claim.contact.studentName,studentPhone:claim.contact.studentPhone,guardianPhone:claim.contact.guardianPhone||undefined},
-      {history:claim.contact.studentHistory,...(claim.review?(claim.review.automatic?{knownCreatedId:claim.review.studentId}:{manualApprovedId:claim.review.studentId}):claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
+      {history:claim.contact.studentHistory,...(claim.review?(claim.review.automatic?{knownExistingId:claim.review.studentId}:{manualApprovedId:claim.review.studentId}):claim.studentId?{knownCreatedId:claim.studentId}:{})})).student
+    // Applicant slots may contain either login number of this same account.
+    // Browser roster checks require the official student's canonical phone.
+    const canonical=await read(()=>ports.daechion.student(resolved!.id))
+    if(canonical.id!==resolved.id||studentProfileFingerprint(canonical)!==studentProfileFingerprint(resolved))throw new DaechionError('identity_changed')
+    resolved=canonical
     if(claim.review&&(studentProfileFingerprint(resolved)!==claim.review.profileFingerprint||claim.studentId&&resolved.id!==claim.studentId))throw new DaechionError('identity_changed')
     if(claim.token){
       await refreshPayment(id,ports)
@@ -202,7 +207,7 @@ export async function runOrderGrant(id:string,enabled:boolean,ports:OrderEnrollm
     }
     await fence()
     const result=await ports.daechion.ensureFirstLessonAccess({lectureId:job.lectureId,studentId:job.studentId,weeklyLectureId:target,
-      enrollmentRecorded:job.enrollmentRecorded,recordEnrollment,studentName:job.contact.studentName,studentPhone:job.contact.studentPhone,beforeWrite})
+      enrollmentRecorded:job.enrollmentRecorded,recordEnrollment,studentName:identity.student.name,studentPhone:normalizePhone(identity.student.studentPhoneNumber??''),beforeWrite})
     if(!job.enrollmentRecorded||result?.verified!==true||result.lectureId!==job.lectureId||result.studentId!==job.studentId||!same(ids.parse(result.weeklyLectureIds),job.weeklyIds))throw new DaechionError('content_unverified')
     await refresh()
     return await ports.withClient(c=>orderTransaction(c,async()=>{

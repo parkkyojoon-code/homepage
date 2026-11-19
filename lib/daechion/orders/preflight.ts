@@ -3,8 +3,8 @@ import type {BillingContext} from './billing'
 import {resolveCart,reviewOwnership} from './cart'
 import {subjectKey} from './checkout'
 import {lookupOwnership,type ReadOnlyStudentPort} from './ownership'
-import type {DaechionStudent} from '../client'
-import {inspectExisting,reviewContext,reviewEvidenceSchema,type ReviewEvidence} from './manual-review'
+import {normalizePhone,type DaechionStudent} from '../client'
+import {inspectExisting,reviewContext,reviewEvidenceSchema,studentProfileFingerprint,type ReviewEvidence} from './manual-review'
 
 export interface OrderPreflightPort extends ReadOnlyStudentPort {
   lectures():Promise<{id:number;opened:boolean;weeklyLectures:{id:number}[]}[]>
@@ -36,7 +36,9 @@ export async function preflightOrder(context:BillingContext,ports:{tenantId:stri
       let current=await inspectExisting(context,proof.studentId,identityApi,automatic===true)
       if(automatic){
         if(!ports.api.inspectOwnership)return 'REVIEW'
-        const owned=z.object({studentId:z.number().int().positive().safe(),lectures:z.array(z.object({id:z.number().int().positive().safe(),state:z.enum(['OWNED','NOT_OWNED'])}).strict()).min(1).max(30)}).strict().parse(await ports.api.inspectOwnership({studentId:proof.studentId,studentName:context.contact.studentName,studentPhone:context.contact.studentPhone,lectureIds:bound.targetIds}))
+        const canonical=await identityApi.student(proof.studentId)
+        if(canonical.id!==proof.studentId||studentProfileFingerprint(canonical)!==current.profileFingerprint)return 'REVIEW'
+        const owned=z.object({studentId:z.number().int().positive().safe(),lectures:z.array(z.object({id:z.number().int().positive().safe(),state:z.enum(['OWNED','NOT_OWNED'])}).strict()).min(1).max(30)}).strict().parse(await ports.api.inspectOwnership({studentId:proof.studentId,studentName:canonical.name,studentPhone:normalizePhone(canonical.studentPhoneNumber??''),lectureIds:bound.targetIds}))
         if(owned.studentId!==proof.studentId||owned.lectures.length!==bound.targetIds.length||new Set(owned.lectures.map(l=>l.id)).size!==bound.targetIds.length||
           owned.lectures.some(l=>!bound.targetIds.includes(l.id)||l.state!=='NOT_OWNED'))return 'REVIEW'
         current=await inspectExisting(context,proof.studentId,identityApi,true)

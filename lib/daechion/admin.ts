@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { normalizePhone, type DaechionStudent } from './client'
+import { type DaechionStudent } from './client'
+import { verifyExistingStudent } from './identity'
 import { applicationSnapshotSchema, type LedgerClient } from './ledger'
 import { automationTransaction, automationChanged } from './automation-store'
 import { queueReadyMessage } from './ready-message'
@@ -28,8 +29,8 @@ async function stopPendingWork(client:LedgerClient,id:string){
 }
 function verifyStudent(student:DaechionStudent|undefined,data:AdminAction,snapshot:ReturnType<typeof applicationSnapshotSchema.parse>){
   if(!student||student.id!==data.studentId||student.name.trim().normalize('NFC')!==snapshot.studentName.trim().normalize('NFC'))throw new AdminReviewError('INVALID_EVIDENCE')
-  const same=(value:string|null|undefined,phone:string)=>{try{return Boolean(value)&&normalizePhone(value!)===phone}catch{return false}}
-  if(!same(student.studentPhoneNumber,snapshot.studentPhone)||snapshot.guardianPhone&&![student.parentPhoneNumber,student.parentPhoneNumber2].some(value=>same(value,snapshot.guardianPhone)))throw new AdminReviewError('INVALID_EVIDENCE')
+  try{verifyExistingStudent(student,{name:snapshot.studentName,studentPhone:snapshot.studentPhone,guardianPhone:snapshot.guardianPhone||undefined})}
+  catch{throw new AdminReviewError('INVALID_EVIDENCE')}
 }
 export async function applyAdminAction(client:LedgerClient,raw:unknown,student?:DaechionStudent,tenantId?:string){
   const data=adminActionSchema.parse(raw),fingerprint=createHash('sha256').update(JSON.stringify(data)).digest('hex')

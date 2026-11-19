@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { applicationSnapshotSchema, type LedgerClient, type ApplicationSnapshot } from './ledger'
-import { DaechionError, type StudentPort, type DaechionEnrollment } from './client'
+import { DaechionError, normalizePhone, type StudentPort, type DaechionEnrollment } from './client'
 import { resolveStudent, IdentityReview } from './identity'
 import { claimIdentityPhones, releaseIdentityPhones, identityBinding, saveIdentity } from './identity-store'
 import { automationChanged, automationTransaction } from './automation-store'
@@ -127,8 +127,8 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
     }
     const resolved = await resolveStudent(guarded, { name: job.snapshot.studentName, studentPhone: job.snapshot.studentPhone,
       ...(job.snapshot.guardianPhone ? { guardianPhone: job.snapshot.guardianPhone } : {}) }, {
-      history: job.snapshot.studentHistory, knownCreatedId: binding?.origin === 'CREATED' ? binding.id : undefined,
-      manualApprovedId:binding?.manualReviewed?binding.id:undefined,
+      history: job.snapshot.studentHistory,
+      ...(binding?.origin==='CREATED'?{knownCreatedId:binding.id}:binding?.manualReviewed?{manualApprovedId:binding.id}:{}),
     })
     await ports.withClient(client => saveIdentity(client, applicationId, {status:'PASSED', detected:resolved.detected, studentId:resolved.student.id, created:resolved.created}))
     identitySaved = true
@@ -154,7 +154,7 @@ export async function enrollApplication(applicationId: string, enabled: boolean,
     let enrollmentConfirmed=false
     const access=await ports.daechion.ensureFirstLessonAccess({lectureId:job.lectureId,studentId:resolved.student.id,weeklyLectureId,
       enrollmentRecorded:false,recordEnrollment:async()=>{await fence(true);enrollmentConfirmed=true},
-      studentName:job.snapshot.studentName,studentPhone:job.snapshot.studentPhone,beforeWrite:()=>fence(true)})
+      studentName:job.snapshot.studentName,studentPhone:normalizePhone(resolved.student.studentPhoneNumber??''),beforeWrite:()=>fence(true)})
     if(!enrollmentConfirmed||access?.verified!==true||access.lectureId!==job.lectureId||access.studentId!==resolved.student.id||
       JSON.stringify([...access.weeklyLectureIds].sort((a,b)=>a-b))!==JSON.stringify(weeklyLectureIds))throw new DaechionError('content_access_unverified')
     await ports.withClient(client=>automationTransaction(client,async()=>{

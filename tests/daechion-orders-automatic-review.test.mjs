@@ -94,6 +94,64 @@ test('existing-student automatic review admits only fresh complete read-only evi
       assert.deepEqual(granted,[[101,f.profiles[0].id],[102,f.profiles[0].id]]);assert.equal(f.creates,0)
       assert.equal(Number((await row(f.orderId)).student_id),f.profiles[0].id)
     })
+    await t.test('swapped or guardian-only applicant slots reuse the same account and pass its canonical phone to every browser check',async()=>{
+      for(const mode of ['swapped','guardian-only','two-guardians']){
+        const f=await fixture(mode==='guardian-only'?{contact:{guardianName:'',guardianPhone:''}}:{})
+        const profile=f.profiles[0],originalContact={...(await row(f.orderId)).contact_snapshot}
+        if(mode==='swapped'){
+          profile.studentPhoneNumber=f.contact.guardianPhone
+          profile.parentPhoneNumber2=f.contact.studentPhone
+        }else{
+          profile.studentPhoneNumber=`010-9000-${String(sequence).padStart(4,'0')}`
+          profile.parentPhoneNumber=f.contact.studentPhone
+          profile.parentPhoneNumber2=f.contact.guardianPhone||'01000008888'
+        }
+        const canonicalPhone=profile.studentPhoneNumber.replace(/\D/g,''),inspections=[],grants=[]
+        f.scan=async input=>{
+          assert.equal(input.studentId,profile.id);assert.equal(input.studentName,profile.name)
+          assert.equal(input.studentPhone,canonicalPhone)
+          inspections.push(input)
+          return {studentId:input.studentId,lectures:input.lectureIds.map(id=>({id,state:'NOT_OWNED'}))}
+        }
+        assert.equal(await automatic.autoReviewExistingOrder(f.orderId,f.autoPorts),'APPROVED',mode)
+        const provider=providerFor(),ports=billingPorts(f,provider)
+        assert.equal(await billing.sendOrderBill(f.orderId,true,ports),'SENT',mode)
+        provider.paid();assert.equal(await billing.checkOrderPayment(f.orderId,true,ports),'PAID')
+        const daechion={...f.api,ensureFirstLessonAccess:async input=>{
+          assert.equal(input.studentId,profile.id);assert.equal(input.studentName,profile.name)
+          assert.equal(input.studentPhone,canonicalPhone)
+          await input.beforeWrite()
+          if(!input.enrollmentRecorded){grants.push([input.lectureId,input.studentId]);await input.recordEnrollment()}
+          return {verified:true,lectureId:input.lectureId,studentId:input.studentId,weeklyLectureIds:[input.weeklyLectureId]}
+        }}
+        for(let n=0;n<2;n++)assert.equal(await enrollment.runOrderGrant(f.orderId,true,{withClient,provider,tenantId:'fixture',daechion}),'VERIFIED',mode)
+        assert.equal(inspections.length,2);assert.deepEqual(grants,[[101,profile.id],[102,profile.id]])
+        assert.equal(provider.sends,1);assert.equal(f.creates,0)
+        assert.equal(Number((await row(f.orderId)).student_id),profile.id)
+        assert.deepEqual((await row(f.orderId)).contact_snapshot,originalContact,'Applicant contacts must remain unchanged for messages and Sheets')
+      }
+    })
+    await t.test('a canonical account changing between identity evidence and the browser lookup is held before browser access',async()=>{
+      const f=await fixture(),student=f.api.student;let reads=0
+      f.api.student=async id=>{
+        const profile=await student(id)
+        return ++reads===2?{...profile,studentPhoneNumber:'01000007777'}:profile
+      }
+      assert.equal(await automatic.autoReviewExistingOrder(f.orderId,f.autoPorts),'REVIEW')
+      assert.equal(f.scans,0);await assertUntouched(f)
+    })
+    await t.test('post-payment canonical profile drift cannot grant access or create a replacement account',async()=>{
+      const f=await fixture()
+      assert.equal(await automatic.autoReviewExistingOrder(f.orderId,f.autoPorts),'APPROVED')
+      const provider=providerFor(),ports=billingPorts(f,provider)
+      assert.equal(await billing.sendOrderBill(f.orderId,true,ports),'SENT')
+      provider.paid();assert.equal(await billing.checkOrderPayment(f.orderId,true,ports),'PAID')
+      const daechion={...f.api,student:async()=>({...f.profiles[0],parentPhoneNumber:'01000006666'}),
+        ensureFirstLessonAccess:async()=>assert.fail('Changed canonical account must not receive access')}
+      assert.equal(await enrollment.runOrderGrant(f.orderId,true,{withClient,provider,tenantId:'fixture',daechion}),'SKIPPED')
+      assert.equal((await row(f.orderId)).checkout_state,'REVIEW');assert.equal(f.creates,0)
+      assert.equal((await query("SELECT count(*)::int AS n FROM daechion_orders.grants WHERE order_id=$1 AND state='VERIFIED'",[f.orderId])).rows[0].n,0)
+    })
     await t.test('missing, duplicate, unexpected, uncertain or mismatched ownership evidence never approves an order',async()=>{
       for(const mode of ['missing','duplicate','unexpected','student','unknown','transport']){
         const f=await fixture()

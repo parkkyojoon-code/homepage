@@ -397,6 +397,37 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.ok((await db.query('SELECT access_targets FROM daechion_automation.registrations WHERE application_id=$1',[id])).rows.every(row=>JSON.stringify(row.access_targets)==='[900]'))
       await observe(id,{state:'C',paidAt:null}) // Keep this fixture's queued notice out of later global-claim tests.
     })
+    await t.test('single-product existing accounts accept swapped login roles while preserving the submission and canonical browser target',async()=>{
+      for(const manual of [false,true]){
+        const swapped={...input,studentPhone:input.guardianPhone,guardianPhone:input.studentPhone}
+        const id=(await make(undefined,swapped)).id
+        await billing.sendApplicationBill(id,true,{provider:{accountId:'payment-test',send:async()=> 'SENT'},withClient:run=>run(client)})
+        await observe(id)
+        if(manual){
+          const action=async(action,extra={})=>({requestKey:randomUUID(),applicationId:id,expectedVersion:String((await appRow(id)).version),
+            action,operatorName:'검수 담당자',reason:'기존 계정 연락처 역할 대조 확인',confirmed:true,...extra})
+          await admin.applyAdminAction(client,await action('HOLD'))
+          const resume=await action('RESUME',{studentId:77})
+          await assert.rejects(admin.applyAdminAction(client,resume,{...student,parentPhoneNumber:'01099999999'}),/INVALID_EVIDENCE/)
+          await admin.applyAdminAction(client,resume,student)
+        }
+        const targets=[]
+        const daechion=fakeDaechion({createStudent:async()=>assert.fail('An existing account must never be recreated'),
+          ensureFirstLessonAccess:async target=>{
+            assert.equal(target.studentId,student.id);assert.equal(target.studentPhone,student.studentPhoneNumber)
+            await target.beforeWrite();await target.recordEnrollment();targets.push(target.lectureId)
+            return {verified:true,lectureId:target.lectureId,studentId:target.studentId,weeklyLectureIds:[target.weeklyLectureId]}
+          }})
+        const ports={daechion,withClient:run=>run(client)}
+        assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+        assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+        assert.deepEqual(targets,[10,11])
+        const row=await appRow(id)
+        assert.equal(row.submission.studentPhone,'01000000002');assert.equal(row.submission.guardianPhone,'01000000001')
+        assert.equal(row.submission.payerPhone,'01000000003');assert.equal(row.notification_state,'PENDING')
+        await observe(id,{state:'C',paidAt:null})
+      }
+    })
     await t.test('unknown enrollment writes and expired claims require review rather than replay',async()=>{
       const id = await paymentFixture();await observe(id);let calls = 0
       const ports = {daechion:fakeDaechion({enroll:async()=>{calls++;throw Error('private timeout')}}),withClient:run=>run(client)}
@@ -591,6 +622,20 @@ test('isolated ledger and separate Sheets projection',{timeout:90000},async t =>
       assert.equal((await appRow(id)).automation_state,'REVOKED')
       await observe(id)
       assert.equal((await appRow(id)).automation_state,'REVOKED')
+    })
+    await t.test('a created identity can resume after human review without conflicting pins or a second profile',async()=>{
+      const id=await paymentFixture('NEW');await observe(id)
+      let created=null,creates=0
+      const daechion=fakeDaechion({students:async()=>created?[created]:[],createStudent:async()=>{creates++;created=student;return student}})
+      const ports={daechion,withClient:run=>run(client)}
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      await admin.applyAdminAction(client,await adminInput(id,'HOLD'))
+      await admin.applyAdminAction(client,await adminInput(id,'RESUME',{studentId:student.id}),student)
+      const binding=(await db.query('SELECT origin,manual_review_id FROM daechion_automation.identity_checks WHERE application_id=$1',[id])).rows[0]
+      assert.equal(binding.origin,'CREATED');assert.ok(binding.manual_review_id)
+      assert.equal(await enrollment.enrollApplication(id,true,ports),'DONE')
+      assert.equal(creates,1);assert.equal((await appRow(id)).notification_state,'PENDING')
+      await observe(id,{state:'C',paidAt:null})
     })
     await t.test('manual payment evidence is checked and late manual registration is not undone by the polling worker',async()=>{
       const id=(await make(undefined,{...input,studentHistory:'NEW'})).id
