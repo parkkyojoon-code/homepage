@@ -1,10 +1,10 @@
 import {randomUUID} from 'node:crypto'
 import {z} from 'zod'
 import {resolveStudent} from '../identity'
-import type {DaechionStudent} from '../client'
+import {normalizePhone,type DaechionStudent} from '../client'
 import type {LedgerClient} from '../ledger'
 import {applyOrderAdminAction,OrderAdminError} from './admin'
-import {contextFromOrder,inspectExisting,reviewContext} from './manual-review'
+import {contextFromOrder,inspectExisting,reviewContext,studentProfileFingerprint} from './manual-review'
 import type {BillingContext} from './billing'
 import {holdOrder,lockOrder,orderTransaction,type OrderConnection} from './worker-store'
 import type {ReadOnlyStudentPort} from './ownership'
@@ -81,8 +81,10 @@ export async function autoReviewExistingOrder(id:string,ports:AutomaticReviewPor
     const selected=await resolveStudent(readonly,{name:bound.contact.studentName,studentPhone:bound.contact.studentPhone,
       guardianPhone:bound.contact.guardianPhone||undefined},{history:'EXISTING'})
     const before=await inspectExisting(context,selected.student.id,readonly,true)
-    const report=ownershipResult.parse(await ports.inspectOwnership({studentId:before.studentId,studentName:bound.contact.studentName,
-      studentPhone:bound.contact.studentPhone,lectureIds:[...bound.targetIds]}))
+    const canonical=await readonly.student(before.studentId)
+    if(canonical.id!==before.studentId||studentProfileFingerprint(canonical)!==before.profileFingerprint)return 'REVIEW'
+    const report=ownershipResult.parse(await ports.inspectOwnership({studentId:before.studentId,studentName:canonical.name,
+      studentPhone:normalizePhone(canonical.studentPhoneNumber??''),lectureIds:[...bound.targetIds]}))
     if(!fresh(started)||report.studentId!==before.studentId||new Set(report.lectures.map(lecture=>lecture.id)).size!==report.lectures.length||
       JSON.stringify(report.lectures.map(lecture=>lecture.id).sort((a,b)=>a-b))!==JSON.stringify(bound.targetIds))return 'REVIEW'
     owned=report.lectures.some(lecture=>lecture.state==='OWNED')

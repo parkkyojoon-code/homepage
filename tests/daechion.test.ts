@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { daechionClient, DaechionError, normalizePhone, type DaechionStudent, type StudentPort } from '../lib/daechion/client'
-import { resolveStudent as resolveDeclaredStudent } from '../lib/daechion/identity'
+import { resolveStudent as resolveDeclaredStudent,studentLoginPhones,verifyExistingStudent } from '../lib/daechion/identity'
 import { productBinding,configuredProductBinding } from '../lib/daechion/product-policy'
 import { lectureCatalog,resolveClassBinding } from '../lib/daechion/class-binding'
 import { parsePurchaseProcess, purchaseProcessOf } from '../lib/purchase-process'
@@ -127,9 +127,59 @@ test('an existing inactive student is reused without creating or resetting an ac
   const result = await resolveStudent(port({ students: async () => [existing] }), input)
   assert.equal(result.student.id, 100); assert.equal(result.student.active, false); assert.equal(result.created, false)
 })
-test('a parent-only phone match does not enroll a different child', async () => {
-  const wrong = { ...existing, studentPhoneNumber: '01000000009', parentPhoneNumber: input.studentPhone }
+test('a parent login match still rejects a differently named child', async () => {
+  const wrong = { ...existing, name:'다른 학생', studentPhoneNumber: '01000000009', parentPhoneNumber: input.studentPhone }
   await assert.rejects(resolveStudent(port({ students: async () => [wrong] }), input), e => e instanceof DaechionError && e.code === 'student_identity_review')
+})
+test('existing identity accepts reversed student and guardian roles only within one named profile',async()=>{
+  const profile={...existing,parentPhoneNumber:'010-0000-0002',parentPhoneNumber2:'010-0000-0003'}
+  const service=port({students:async phone=>studentLoginPhones(profile).includes(phone)?[profile]:[]})
+  for(const raw of [
+    {name:' 검수학생 ',studentPhone:'010-0000-0002',guardianPhone:'010-0000-0001'},
+    {name:input.name,studentPhone:'01000000003',guardianPhone:'01000000002'},
+    {name:input.name,studentPhone:'01000000002'},
+    {name:input.name.normalize('NFD'),studentPhone:'01000000002'},
+  ]){
+    const result=await resolveStudent(service,raw)
+    assert.equal(result.student,profile);assert.equal(result.created,false);assert.equal(result.detected,'EXISTING')
+    assert.equal(result.student.studentPhoneNumber,input.studentPhone);assert.equal(result.student.active,false)
+    assert.equal(verifyExistingStudent(profile,raw),profile)
+  }
+  assert.deepEqual(studentLoginPhones({...profile,parentPhoneNumber2:profile.parentPhoneNumber}),[input.studentPhone,'01000000002'])
+})
+test('role-independent matching requires every login number and never treats a payer as identity',async()=>{
+  const profile={...existing,parentPhoneNumber:'01000000002',parentPhoneNumber2:'01000000003'}
+  let creates=0
+  const service=port({students:async phone=>studentLoginPhones(profile).includes(phone)?[profile]:[],createStudent:async()=>{creates++;return profile}})
+  await assert.rejects(resolveStudent(service,{name:input.name,studentPhone:'01000000009',guardianPhone:'01000000002'}),/student_identity_review/)
+  await assert.rejects(resolveStudent(service,{name:input.name,studentPhone:'01000000002',guardianPhone:'01000000009'}),/guardian_identity_review/)
+  const payerOnly={name:input.name,studentPhone:'01000000009',payerPhone:'01000000002'}
+  await assert.rejects(resolveStudent(service,payerOnly),/identity_declaration_mismatch/)
+  assert.equal(creates,0)
+})
+test('manual and known-existing pins cannot select one of multiple matching accounts',async()=>{
+  const profile={...existing,parentPhoneNumber:'01000000002'},sibling={...profile,id:101,name:'다른 학생',studentPhoneNumber:'01000000009'}
+  const raw={name:input.name,studentPhone:'01000000002',guardianPhone:input.studentPhone}
+  const ambiguous=port({students:async phone=>phone===raw.studentPhone?[profile,sibling]:[profile]})
+  for(const options of [{history:'EXISTING' as const},{manualApprovedId:100},{history:'EXISTING' as const,knownExistingId:100}]){
+    await assert.rejects(resolveDeclaredStudent(ambiguous,raw,options),/student_identity_review|identity_binding_changed/)
+  }
+  const unique=port({students:async()=>[profile]})
+  assert.equal((await resolveDeclaredStudent(unique,raw,{manualApprovedId:100})).student,profile)
+  assert.equal((await resolveDeclaredStudent(unique,raw,{history:'EXISTING',knownExistingId:100})).student,profile)
+  await assert.rejects(resolveDeclaredStudent(unique,raw,{history:'EXISTING',knownExistingId:101}),/identity_binding_changed/)
+  await assert.rejects(resolveDeclaredStudent(unique,raw,{history:'EXISTING',manualApprovedId:0}),/identity_binding_changed/)
+})
+test('creation and known-created responses retain exact student and guardian role integrity',async()=>{
+  const profile={...existing,parentPhoneNumber:'01000000002'},raw={name:input.name,studentPhone:'01000000002',guardianPhone:input.studentPhone}
+  let creates=0
+  await assert.rejects(resolveDeclaredStudent(port({createStudent:async()=>{creates++;return profile}}),raw,{history:'NEW'}),/student_identity_review/)
+  assert.equal(creates,1)
+  const known=port({students:async()=>[profile],createStudent:async()=>assert.fail('A pinned created account must never be recreated')})
+  await assert.rejects(resolveDeclaredStudent(known,raw,{history:'NEW',knownCreatedId:100}),/student_identity_review/)
+  assert.equal((await resolveDeclaredStudent(known,{...input,guardianPhone:'01000000002'},{history:'NEW',knownCreatedId:100})).student,profile)
+  await assert.rejects(resolveDeclaredStudent(known,raw,{history:'NEW',knownCreatedId:100,knownExistingId:100}),/identity_binding_changed/)
+  await assert.rejects(resolveDeclaredStudent(known,raw,{history:'NEW',knownCreatedId:100,manualApprovedId:100}),/identity_binding_changed/)
 })
 test('multiple matches or an unlinked requested guardian require review', async () => {
   await assert.rejects(resolveStudent(port({ students: async () => [existing, { ...existing, id: 101 }] }), input), /student_identity_review/)
