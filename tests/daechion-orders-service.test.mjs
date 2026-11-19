@@ -541,6 +541,29 @@ test('checkout service persists token-bound quotes and atomic orders without ext
         if(stage==='create')assert.ok((await db.query('SELECT phone FROM daechion_orders.phone_claims WHERE order_id=$1',[order.orderId])).rows.length)
       }
     })
+    await t.test('an acknowledged new student is persisted without an extra GET; later canonical read outages retry the same ID',async()=>{
+      const {orderId}=await workerOrder(['a','b']),payment=providerFor(31400),api=enrollmentFor()
+      const billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      const original=api.student;let failRead=true,reads=0
+      api.student=async id=>{reads++;if(failRead)throw Error('Temporary post-create GET outage');return original(id)}
+      const enrollment={withClient:db.withClient,tenantId:'fixture',daechion:api}
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED')
+      let row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(reads,0);assert.equal(api.creates,1);assert.equal(Number(row.student_id),1000)
+      assert.equal(row.identity_state,'PASSED');assert.equal(row.checkout_state,'READY');assert.equal(row.review_code,null)
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'SKIPPED')
+      row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(reads,1);assert.equal(api.creates,1);assert.equal(Number(row.student_id),1000)
+      assert.equal(row.identity_state,'PASSED');assert.equal(row.checkout_state,'READY');assert.equal(row.review_code,null)
+      assert.equal(row.identity_read_attempts,1);assert.ok(row.identity_retry_at)
+      await db.query("UPDATE daechion_orders.orders SET identity_retry_at=now()-interval '1 second' WHERE id=$1",[orderId])
+      failRead=false
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED')
+      row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(api.creates,1);assert.equal(Number(row.student_id),1000);assert.equal(row.identity_read_attempts,0)
+      assert.equal(row.identity_retry_at,null);assert.equal(row.review_code,null);assert.deepEqual(api.enrolled,[10,11])
+    })
     await t.test('transient identity reads keep retrying before any create with persisted backoff capped at five minutes',async()=>{
       for(const recover of [true,false]){
         const {orderId}=await workerOrder(['a']),payment=providerFor(12900),api=enrollmentFor()
@@ -940,6 +963,38 @@ test('checkout service persists token-bound quotes and atomic orders without ext
       assert.equal(creates,0);assert.deepEqual(enrolments,[{lectureId:20,studentId:9090},{lectureId:21,studentId:9090}])
       assert.equal(Number((await db.query('SELECT student_id FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0].student_id),9090)
       const before=inspections;assert.equal((await orderAdminHttp.orderAdminPost(request(input),{...admin,inspectExisting:async()=>{throw Error('Should replay without API')}})).status,200);assert.equal(inspections,before)
+    })
+    await t.test('an approved existing account with a transient canonical GET failure remains eligible for read-only retry',async()=>{
+      const person={...contact(),studentHistory:'EXISTING'}
+      const q=await checkout.quoteCheckout({items:[{productId:'a'}],contact:person,expectedTotalWon:12900},{...ports,
+        ownership:async(cart,_person,key)=>({...report(cart,key),identity:'REVIEW',existingStudent:'EXISTING'})})
+      const {orderId}=await checkout.receiveOrder(orderInput(q),ports),api=enrollmentFor()
+      const profile={id:9191,name:person.studentName,active:false,studentPhoneNumber:person.studentPhone}
+      let failRead=false,reads=0
+      api.students=async phone=>phone===person.studentPhone?[{...profile}]:[]
+      api.student=async()=>{reads++;if(failRead)throw Error('Temporary canonical account GET outage');return {...profile}}
+      const context=await db.withClient(c=>manualReview.contextFromOrder(c,'fixture',orderId))
+      const proof=await manualReview.inspectExisting(context,profile.id,api,true)
+      const approval=await adminAction(orderId,'APPROVE_EXISTING',{studentId:profile.id,targetIds:[10],confirmNotOwned:true,
+        operatorName:'시스템 자동 확인',reason:'자동 보유 강의 확인: 기존 계정 읽기 재시도 검수'})
+      await db.withClient(c=>orderAdmin.applyOrderAdminAction(c,'fixture',approval,proof))
+      assert.equal((await db.withClient(c=>manualReview.latestReview(c,orderId))).automatic,true)
+      const payment=providerFor(12900),billing={withClient:db.withClient,provider:payment,preflight:async()=> 'READY'}
+      await orderBilling.sendOrderBill(orderId,true,billing);payment.paid();await orderBilling.checkOrderPayment(orderId,true,billing)
+      failRead=true;reads=0
+      const enrollment={withClient:db.withClient,tenantId:'fixture',daechion:api}
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'SKIPPED')
+      let row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(reads,1);assert.equal(api.creates,0);assert.equal(row.student_id,null)
+      assert.equal(row.identity_state,'WAITING');assert.equal(row.identity_write_started,false)
+      assert.equal(row.checkout_state,'READY');assert.equal(row.review_code,null);assert.equal(row.identity_read_attempts,1)
+      assert.equal((await db.query('SELECT count(*)::int AS n FROM daechion_orders.phone_claims WHERE order_id=$1',[orderId])).rows[0].n,0)
+      await db.query("UPDATE daechion_orders.orders SET identity_retry_at=now()-interval '1 second' WHERE id=$1",[orderId])
+      failRead=false
+      assert.equal(await orderEnrollment.runOrderGrant(orderId,true,enrollment),'VERIFIED')
+      row=(await db.query('SELECT * FROM daechion_orders.orders WHERE id=$1',[orderId])).rows[0]
+      assert.equal(api.creates,0);assert.equal(Number(row.student_id),profile.id);assert.equal(row.identity_read_attempts,0)
+      assert.equal(row.review_code,null);assert.deepEqual(api.enrolled,[10])
     })
     await t.test('only an unbilled administrative hold can resume; incomplete audit commits and identity mismatches stay blocked',async()=>{
       const {orderId}=await workerOrder(['a'])
