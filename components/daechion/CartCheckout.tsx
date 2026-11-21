@@ -7,6 +7,7 @@ import base from './application.module.css'
 import styles from './cart.module.css'
 
 const storageKey='pkjmath-cart-pending-v1'
+const discountFallbackNotice='입력한 할인코드는 선택한 상품에 적용되지 않아 할인 없이 계산합니다. 정상가를 확인한 뒤 신청해주세요.'
 type Pending=ReturnType<typeof pendingOrder.parse>
 type Checked=ReturnType<typeof cartResponse.parse>
 class VisibleError extends Error{}
@@ -16,9 +17,11 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
   const [form,setForm]=useState({studentName:'',studentPhone:'',guardianName:'',guardianPhone:'',payerPhone:'',applicantType:'',confirmPayment:false,agreePrivacy:false})
   const [history,setHistory]=useState<StudentHistory>(),[quote,setQuote]=useState<CartQuote|null>(null),[finalConfirmed,setFinalConfirmed]=useState(false),[now,setNow]=useState(Date.now())
   const [codeDraft,setCodeDraft]=useState(''),[appliedCode,setAppliedCode]=useState('')
+  const [discountNotice,setDiscountNotice]=useState(''),[cartRevision,setCartRevision]=useState(0)
   const [pending,setPending]=useState<Pending|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[none,setNone]=useState(false)
   const [receipt,setReceipt]=useState<ReturnType<typeof receiptResponse.parse>|null>(null)
   const operation=useRef(false)
+  const cartRequest=useRef<AbortController|null>(null)
   useEffect(()=>{
     try{const saved=sessionStorage.getItem(storageKey);if(saved){const p=pendingOrder.safeParse(JSON.parse(saved));if(p.success)setPending(p.data);else sessionStorage.removeItem(storageKey)}}catch{}
   },[])
@@ -37,25 +40,38 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
     return()=>controller.abort()
   },[refresh,initialProductId])
   useEffect(()=>{
-    const controller=new AbortController();setChecked(null)
+    const controller=new AbortController();cartRequest.current=controller;setChecked(null)
     if(!selected.length||!available||pending){setChecking(false);return()=>controller.abort()}
     setChecking(true)
     fetch('/api/daechion/orders/cart',{method:'POST',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId})),discountCode:appliedCode})})
-      .then(async r=>{const data=await r.json();if(data.code==='DISCOUNT_NOT_APPLICABLE')throw new VisibleError(data.error);if(r.status!==200&&r.status!==409)throw Error();return cartResponse.parse(data)})
-      .then(data=>{if(!controller.signal.aborted)setChecked(data)})
+      .then(async r=>{
+        const data=await r.json()
+        if(controller.signal.aborted)return null
+        if(data.code==='DISCOUNT_NOT_APPLICABLE'&&appliedCode){rejectDiscount();return null}
+        if(r.status!==200&&r.status!==409)throw Error()
+        return cartResponse.parse(data)
+      })
+      .then(data=>{if(data&&!controller.signal.aborted)setChecked(data)})
       .catch(e=>{if(!controller.signal.aborted)setError(e instanceof VisibleError?e.message:'선택한 상품을 확인하지 못했습니다. 선택 내용을 다시 확인해주세요.')})
       .finally(()=>{if(!controller.signal.aborted)setChecking(false)})
     return()=>controller.abort()
-  },[selected,available,products,pending,appliedCode])
+  },[selected,available,products,pending,appliedCode,cartRevision])
   useEffect(()=>{if(!quote)return;setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer)},[quote])
   function invalidate(){setQuote(null);setFinalConfirmed(false);setNone(false);setError('')}
-  function changeSelection(id:string){invalidate();setChecked(null);setForm(old=>({...old,confirmPayment:false}));setSelected(old=>old.includes(id)?old.filter(v=>v!==id):[...old,id])}
+  function invalidateCart(){cartRequest.current?.abort();setChecked(null);setForm(old=>({...old,confirmPayment:false}))}
+  function rejectDiscount(){
+    invalidate();invalidateCart();setAppliedCode('');setDiscountNotice(discountFallbackNotice)
+    // Invalid syntax can be entered while the applied code is already empty.
+    // Recheck the regular price even when clearing the code changes no state.
+    setCartRevision(value=>value+1)
+  }
+  function changeSelection(id:string){invalidate();invalidateCart();setDiscountNotice('');setSelected(old=>old.includes(id)?old.filter(v=>v!==id):[...old,id])}
   function update(key:keyof typeof form,value:string|boolean){invalidate();setForm(old=>({...old,[key]:value}))}
   function applyCode(code:string){
     const normalized=code.trim().toUpperCase()
-    if(!/^[A-Z0-9_-]{0,64}$/.test(normalized)){setError('할인코드는 영문·숫자·밑줄·하이픈으로 입력해주세요.');return}
-    if(normalized===appliedCode)return
-    invalidate();setChecked(null);setForm(old=>({...old,confirmPayment:false}));setAppliedCode(normalized);setCodeDraft(normalized)
+    if(!/^[A-Z0-9_-]{0,64}$/.test(normalized)){rejectDiscount();return}
+    if(normalized===appliedCode){setCodeDraft(normalized);setDiscountNotice('');return}
+    invalidate();invalidateCart();setDiscountNotice('');setAppliedCode(normalized);setCodeDraft(normalized)
   }
   async function createQuote(event:FormEvent){
     event.preventDefault()
@@ -67,6 +83,7 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
     try{
       const r=await fetch('/api/daechion/orders/quotes',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json'},body:JSON.stringify({items:selected.map(productId=>({productId})),discountCode:appliedCode,contact:{...form,studentHistory:history},expectedTotalWon:checked.totalWon})})
       const data=await r.json()
+      if(data.code==='DISCOUNT_NOT_APPLICABLE'&&appliedCode){rejectDiscount();return}
       if(!r.ok){if(data.code==='PRICE_CHANGED'||data.status==='CART_CONFLICT')setRefresh(v=>v+1);throw new VisibleError(typeof data.error==='string'?data.error:'선택한 상품을 다시 확인해주세요.')}
       if(noPurchaseResponse.safeParse(data).success){setNone(true);return}
       const parsed=quoteResponse.parse(data);setQuote(parsed);setNow(Date.now())
@@ -113,8 +130,9 @@ export default function CartCheckout({initialProductId}:{initialProductId?:strin
         <form className={styles.discount} onSubmit={e=>{e.preventDefault();applyCode(codeDraft)}}>
           <label className={base.field}>할인코드<input aria-label="할인코드" maxLength={64} value={codeDraft} disabled={locked} autoComplete="off" onChange={e=>setCodeDraft(e.target.value)}/></label>
           <button type="submit" className={styles.secondary} disabled={locked||!selected.length}>적용</button>
-          {appliedCode&&<button type="button" className={styles.secondary} disabled={locked} onClick={()=>applyCode('')}>할인코드 해제</button>}
+          {(appliedCode||codeDraft)&&<button type="button" className={styles.secondary} disabled={locked} onClick={()=>applyCode('')}>할인코드 해제</button>}
         </form>
+        {discountNotice&&<p className={styles.notice} role="status" aria-label="할인코드 안내">{discountNotice}</p>}
         {checked?.discountCode&&<p role="status">적용 코드: {checked.discountCode} · 적용 가능한 상품에만 할인됩니다.</p>}
         {Boolean(checked?.discountWon)&&<><p className={styles.total}>정상가 합계 <span>{checked!.regularTotalWon!.toLocaleString('ko-KR')}원</span></p><p className={styles.total}>총 할인액 <span>−{checked!.discountWon!.toLocaleString('ko-KR')}원</span></p></>}
         <p className={styles.total}>선택 금액 <strong>{total.toLocaleString('ko-KR')}원</strong></p>
