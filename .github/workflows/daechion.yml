@@ -40,6 +40,7 @@ on:
       - 'tests/daechion-bundle-admin-preview.mjs'
       - 'tests/daechion-bundle-components-http.test.mjs'
       - 'tests/daechion-cart-preview.mjs'
+      - 'tests/daechion-discount-fallback.browser.test.mjs'
       - 'tests/daechion-ledger.test.mjs'
       - 'tests/daechion-worker.test.mjs'
       - 'tests/daechion-operations.test.mjs'
@@ -94,6 +95,14 @@ jobs:
       - run: node --check tests/daechion-cart-preview.mjs
       - run: node --check tests/daechion-order-admin-preview.mjs
       - run: npm run test:legacy-auth
+      - name: Install pinned browser test runtime
+        run: |
+          npm ci --prefix workers/daechion/browser
+          node workers/daechion/browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Verify invalid discount recovery with synthetic student requests
+        env:
+          DAECHION_DISCOUNT_BROWSER_TEST: 'true'
+        run: node --test tests/daechion-discount-fallback.browser.test.mjs
       - run: node --test tests/daechion-http.integration.mjs
       - run: node --test tests/daechion-bundle-components-http.test.mjs
       - name: Build isolated Daechion worker image
